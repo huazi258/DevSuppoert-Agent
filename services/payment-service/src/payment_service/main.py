@@ -15,6 +15,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response
 
+from payment_service.deployment_state import get_deployment_state
 from payment_service.runtime_state import (
     metrics_snapshot,
     record_payment_result,
@@ -112,6 +113,18 @@ def health_check() -> dict[str, str]:
 def internal_metrics() -> dict[str, str | int | float | None]:
     """Return minimal runtime evidence for the future metrics adapter."""
     return {"service": SERVICE_NAME, **metrics_snapshot()}
+
+
+@app.get("/internal/deployment")
+def internal_deployment() -> dict[str, str | None]:
+    """Return stable deployment facts separate from runtime timeout state."""
+    deployment = get_deployment_state()
+    return {
+        "service": deployment.service,
+        "current_version": deployment.current_version,
+        "previous_version": deployment.previous_version,
+        "deployed_at": deployment.deployed_at,
+    }
 
 
 @app.post("/payments", response_model=PaymentResponse)

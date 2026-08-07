@@ -2,7 +2,20 @@
 
 import argparse
 
+from order_service.deployment_state import deploy_faulty_version, reset_deployment_state
 from order_service.runtime_state import inject_missing_config, reset_runtime_state
+
+
+def inject_missing_config_fault() -> None:
+    """Activate Scenario A's deployment and runtime configuration conditions."""
+    deploy_faulty_version()
+    inject_missing_config()
+
+
+def reset_fault_lab() -> None:
+    """Restore deployment and runtime state to the Fault Lab baseline."""
+    reset_deployment_state()
+    reset_runtime_state()
 
 
 def main() -> None:
@@ -15,11 +28,11 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "inject":
-        inject_missing_config()
+        inject_missing_config_fault()
         print("Injected missing_config")
         return
 
-    reset_runtime_state()
+    reset_fault_lab()
     print("Fault Lab reset")
 
 

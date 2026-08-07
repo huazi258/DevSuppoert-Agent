@@ -23,6 +23,18 @@ def test_health_check_returns_service_identity() -> None:
     assert response.json() == {"status": "ok", "service": "payment-service"}
 
 
+def test_deployment_reports_stable_payment_service_version() -> None:
+    response = client.get("/internal/deployment")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "service": "payment-service",
+        "current_version": "v1.0.0",
+        "previous_version": None,
+        "deployed_at": None,
+    }
+
+
 def test_create_payment_approves_valid_request() -> None:
     response = client.post("/payments", json={"order_id": "order-123", "amount": 99.9})
 
@@ -62,6 +74,14 @@ def test_payment_timeout_fault_adds_real_response_delay() -> None:
 
     assert response.status_code == 200
     assert elapsed_seconds >= 0.04
+
+
+def test_payment_timeout_fault_does_not_change_deployment_state() -> None:
+    before = client.get("/internal/deployment").json()
+    inject_payment_timeout(delay_seconds=0.05)
+    after = client.get("/internal/deployment").json()
+
+    assert after == before
 
 
 def test_reset_removes_payment_timeout_delay() -> None:

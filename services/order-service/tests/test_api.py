@@ -1,24 +1,25 @@
 import json
 from collections.abc import Callable
+from datetime import UTC, datetime
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
+from order_service.fault_control import inject_missing_config_fault, reset_fault_lab
 from order_service.main import REQUEST_ID_HEADER, app, get_payment_client
-from order_service.runtime_state import inject_missing_config, reset_runtime_state
 
 client = TestClient(app)
 
 
 @pytest.fixture(autouse=True)
 def clear_dependency_overrides() -> None:
-    reset_runtime_state()
+    reset_fault_lab()
     app.dependency_overrides.clear()
     yield
     app.dependency_overrides.clear()
-    reset_runtime_state()
+    reset_fault_lab()
 
 
 def mock_payment_service(handler: Callable[[httpx.Request], httpx.Response]) -> None:
@@ -37,6 +38,18 @@ def test_health_check_returns_service_identity() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "service": "order-service"}
+
+
+def test_deployment_reports_clean_order_service_baseline() -> None:
+    response = client.get("/internal/deployment")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "service": "order-service",
+        "current_version": "v1.0.0",
+        "previous_version": None,
+        "deployed_at": None,
+    }
 
 
 def test_create_order_confirms_after_payment_approval() -> None:
@@ -154,16 +167,18 @@ def test_create_order_returns_bad_gateway_when_payment_service_times_out() -> No
 
 
 def test_missing_configuration_returns_internal_server_error() -> None:
-    inject_missing_config()
+    inject_missing_config_fault()
 
     response = client.post("/orders", json={"amount": 99.9})
+    deployment_response = client.get("/internal/deployment")
 
     assert response.status_code == 500
     assert response.json()["detail"] == "Order service configuration error"
+    assert deployment_response.json()["current_version"] == "v1.1.0"
 
 
 def test_health_remains_alive_when_missing_configuration_is_active() -> None:
-    inject_missing_config()
+    inject_missing_config_fault()
 
     response = client.get("/health")
 
@@ -180,7 +195,7 @@ def test_payment_service_is_not_called_when_configuration_is_missing() -> None:
         return httpx.Response(200)
 
     mock_payment_service(payment_handler)
-    inject_missing_config()
+    inject_missing_config_fault()
 
     response = client.post("/orders", json={"amount": 99.9})
 
@@ -189,7 +204,7 @@ def test_payment_service_is_not_called_when_configuration_is_missing() -> None:
 
 
 def test_request_id_is_preserved_when_configuration_is_missing() -> None:
-    inject_missing_config()
+    inject_missing_config_fault()
 
     response = client.post(
         "/orders",
@@ -210,19 +225,21 @@ def test_reset_recovers_from_missing_configuration() -> None:
         )
 
     mock_payment_service(payment_handler)
-    inject_missing_config()
+    inject_missing_config_fault()
 
     failed_response = client.post("/orders", json={"amount": 99.9})
-    reset_runtime_state()
+    reset_fault_lab()
     recovered_response = client.post("/orders", json={"amount": 99.9})
+    deployment_response = client.get("/internal/deployment")
 
     assert failed_response.status_code == 500
     assert recovered_response.status_code == 200
     assert recovered_response.json()["status"] == "confirmed"
+    assert deployment_response.json()["current_version"] == "v1.0.0"
 
 
 def test_metrics_reflect_configuration_failure_without_exposing_diagnosis() -> None:
-    inject_missing_config()
+    inject_missing_config_fault()
 
     failed_response = client.post("/orders", json={"amount": 99.9})
     metrics_response = client.get("/internal/metrics")
@@ -237,3 +254,34 @@ def test_metrics_reflect_configuration_failure_without_exposing_diagnosis() -> N
     assert "fault_name" not in metrics
     assert "root_cause" not in metrics
     assert "expected_answer" not in metrics
+
+
+def test_missing_config_fault_records_deployment_transition_without_leaking_fault_details() -> None:
+    inject_missing_config_fault()
+
+    response = client.get("/internal/deployment")
+    deployment = response.json()
+
+    assert response.status_code == 200
+    assert deployment["service"] == "order-service"
+    assert deployment["current_version"] == "v1.1.0"
+    assert deployment["previous_version"] == "v1.0.0"
+    deployed_at = datetime.fromisoformat(deployment["deployed_at"])
+    assert deployed_at.tzinfo is not None
+    assert deployed_at.utcoffset() == UTC.utcoffset(deployed_at)
+    assert not {"fault_name", "root_cause", "config_key", "action"} & deployment.keys()
+
+
+def test_reset_restores_deployment_baseline_after_missing_config_fault() -> None:
+    inject_missing_config_fault()
+    reset_fault_lab()
+
+    response = client.get("/internal/deployment")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "service": "order-service",
+        "current_version": "v1.0.0",
+        "previous_version": None,
+        "deployed_at": None,
+    }

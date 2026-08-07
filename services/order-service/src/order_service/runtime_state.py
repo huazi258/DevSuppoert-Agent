@@ -5,8 +5,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from threading import Lock
 
-HEALTHY_VERSION = "v1.0.0"
-FAULTY_VERSION = "v1.1.0"
 STATE_PATH = Path(__file__).resolve().parents[2] / ".fault-lab-state.json"
 _state_lock = Lock()
 
@@ -21,7 +19,6 @@ class RuntimeMetrics:
 
 @dataclass
 class RuntimeState:
-    order_service_version: str = HEALTHY_VERSION
     payment_timeout_configured: bool = True
     metrics: RuntimeMetrics = field(default_factory=RuntimeMetrics)
 
@@ -37,7 +34,6 @@ def _load_state_unlocked() -> RuntimeState:
     data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
     metrics = data.get("metrics", {})
     return RuntimeState(
-        order_service_version=data["order_service_version"],
         payment_timeout_configured=data["payment_timeout_configured"],
         metrics=RuntimeMetrics(**metrics),
     )
@@ -54,11 +50,10 @@ def get_runtime_state() -> RuntimeState:
 
 
 def inject_missing_config() -> None:
-    """Deploy the version that requires a missing PAYMENT_TIMEOUT setting."""
+    """Activate the runtime configuration condition used by Scenario A."""
     with _state_lock:
         _save_state_unlocked(
             RuntimeState(
-                order_service_version=FAULTY_VERSION,
                 payment_timeout_configured=False,
             )
         )

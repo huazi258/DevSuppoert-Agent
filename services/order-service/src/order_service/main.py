@@ -17,8 +17,8 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from order_service.config import settings
+from order_service.deployment_state import FAULTY_VERSION, get_deployment_state
 from order_service.runtime_state import (
-    FAULTY_VERSION,
     get_runtime_state,
     metrics_snapshot,
     record_order_result,
@@ -142,6 +142,18 @@ def internal_metrics() -> dict[str, str | int | float | None]:
     return {"service": SERVICE_NAME, **metrics_snapshot()}
 
 
+@app.get("/internal/deployment")
+def internal_deployment() -> dict[str, str | None]:
+    """Return only deployment facts for the future deployment adapter."""
+    deployment = get_deployment_state()
+    return {
+        "service": deployment.service,
+        "current_version": deployment.current_version,
+        "previous_version": deployment.previous_version,
+        "deployed_at": deployment.deployed_at,
+    }
+
+
 @app.post("/orders", response_model=OrderResponse)
 async def create_order(
     order: OrderRequest,
@@ -153,9 +165,10 @@ async def create_order(
     order_id = f"order-{uuid4().hex}"
     request_id = request.state.request_id
     runtime_state = get_runtime_state()
+    deployment = get_deployment_state()
 
     if (
-        runtime_state.order_service_version == FAULTY_VERSION
+        deployment.current_version == FAULTY_VERSION
         and not runtime_state.payment_timeout_configured
     ):
         duration_ms = round((perf_counter() - started_at) * 1000, 2)
@@ -164,7 +177,7 @@ async def create_order(
             extra={
                 "request_id": request_id,
                 "error_type": "MissingRequiredConfiguration",
-                "version": runtime_state.order_service_version,
+                "version": deployment.current_version,
                 "config_key": "PAYMENT_TIMEOUT",
             },
         )
