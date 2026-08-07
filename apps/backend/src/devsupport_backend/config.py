@@ -8,6 +8,7 @@ class Settings(BaseSettings):
 
     app_name: str = "DevSupport Agent V0"
     app_environment: str = "local"
+    database_url: str = "postgresql+psycopg://devsupport:devsupport@127.0.0.1:15432/devsupport"
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="DEVSUPPORT_")
 
