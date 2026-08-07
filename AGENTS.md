@@ -112,3 +112,21 @@ Ready for Review
 ```
 
 完成当前任务后停止，不自动进入下一开发阶段。
+
+## Git Commit Rule
+
+每完成一个 `docs/IMPLEMENTATION_PLAN.md` 中定义的子任务，并通过相关测试和验收后，必须创建一次独立 Git commit。
+
+提交前必须：
+
+1. 运行当前任务相关测试和验证；
+2. 执行 `git diff --check`；
+3. 检查 `git status --short` 和 `git diff --stat`；
+4. 确认没有 Secret、缓存、生成垃圾或范围外修改。
+
+如果子任务因为阻塞没有完成，不创建“完成”commit。
+
+完成 commit 后必须在任务报告中提供：
+
+- commit hash；
+- commit message。
