@@ -130,3 +130,23 @@ Ready for Review
 
 - commit hash；
 - commit message。
+
+## Git Workflow
+
+开发默认直接基于 `main`。
+
+每完成一个 `docs/IMPLEMENTATION_PLAN.md` 中的子任务，并通过测试和验收后：
+
+1. 检查 diff；
+2. 创建独立 commit；
+3. push 到 `origin/main`；
+4. 停止，不自动开始下一子任务。
+
+除非用户明确要求，否则：
+
+- 不创建 feature branch；
+- 不创建 Pull Request；
+- 不执行 force push；
+- 不修改或重写已有公共 commit 历史。
+
+如果 `origin/main` 在开发期间出现新的远程提交，应先安全同步并解决问题，再 push。
