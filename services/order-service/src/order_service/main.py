@@ -3,6 +3,7 @@
 import json
 import logging
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from time import perf_counter
 from typing import Annotated
@@ -95,16 +96,23 @@ class OrderResponse(BaseModel):
     status: str
 
 
-async def get_payment_client() -> AsyncIterator[httpx.AsyncClient]:
-    """Provide a timeout-bounded client for the downstream payment service."""
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Own one timeout-bounded downstream client for the app lifecycle."""
     async with httpx.AsyncClient(
         base_url=settings.payment_service_url.rstrip("/"),
         timeout=settings.payment_timeout_seconds,
-    ) as client:
-        yield client
+    ) as payment_client:
+        app.state.payment_client = payment_client
+        yield
 
 
-app = FastAPI(title=SERVICE_NAME)
+def get_payment_client(request: Request) -> httpx.AsyncClient:
+    """Return the app-scoped downstream client for this request."""
+    return request.app.state.payment_client
+
+
+app = FastAPI(title=SERVICE_NAME, lifespan=lifespan)
 
 
 @app.middleware("http")

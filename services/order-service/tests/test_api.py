@@ -15,8 +15,16 @@ client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 def clear_dependency_overrides() -> None:
+    async def default_payment_client():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: httpx.Response(500, request=request)),
+            base_url="http://payment-service.test",
+        ) as payment_client:
+            yield payment_client
+
     reset_fault_lab()
     app.dependency_overrides.clear()
+    app.dependency_overrides[get_payment_client] = default_payment_client
     yield
     app.dependency_overrides.clear()
     reset_fault_lab()
@@ -50,6 +58,16 @@ def test_deployment_reports_clean_order_service_baseline() -> None:
         "previous_version": None,
         "deployed_at": None,
     }
+
+
+def test_lifespan_makes_a_shared_payment_client_available() -> None:
+    with TestClient(app) as lifespan_client:
+        payment_client = lifespan_client.app.state.payment_client
+
+        assert isinstance(payment_client, httpx.AsyncClient)
+        assert not payment_client.is_closed
+
+    assert payment_client.is_closed
 
 
 def test_create_order_confirms_after_payment_approval() -> None:
