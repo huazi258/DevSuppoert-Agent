@@ -13,3 +13,4 @@ build/
 *.log
 .mypy_cache/
 .DS_Store
+services/order-service/.fault-lab-state.json

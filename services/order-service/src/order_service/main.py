@@ -16,6 +16,12 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from order_service.config import settings
+from order_service.runtime_state import (
+    FAULTY_VERSION,
+    get_runtime_state,
+    metrics_snapshot,
+    record_order_result,
+)
 
 SERVICE_NAME = "order-service"
 PAYMENT_SERVICE_NAME = "payment-service"
@@ -41,6 +47,8 @@ class JsonFormatter(logging.Formatter):
             "downstream_service",
             "downstream_status",
             "error_type",
+            "version",
+            "config_key",
         ):
             value = getattr(record, field, None)
             if value is not None:
@@ -122,6 +130,12 @@ def health_check() -> dict[str, str]:
     return {"status": "ok", "service": SERVICE_NAME}
 
 
+@app.get("/internal/metrics")
+def internal_metrics() -> dict[str, str | int | float | None]:
+    """Return minimal runtime request metrics for the future metrics adapter."""
+    return {"service": SERVICE_NAME, **metrics_snapshot()}
+
+
 @app.post("/orders", response_model=OrderResponse)
 async def create_order(
     order: OrderRequest,
@@ -129,8 +143,27 @@ async def create_order(
     payment_client: httpx.AsyncClient = Depends(get_payment_client),
 ) -> OrderResponse:
     """Create a normal-state order after payment-service approval."""
+    started_at = perf_counter()
     order_id = f"order-{uuid4().hex}"
     request_id = request.state.request_id
+    runtime_state = get_runtime_state()
+
+    if (
+        runtime_state.order_service_version == FAULTY_VERSION
+        and not runtime_state.payment_timeout_configured
+    ):
+        duration_ms = round((perf_counter() - started_at) * 1000, 2)
+        logger.error(
+            "required runtime configuration is missing",
+            extra={
+                "request_id": request_id,
+                "error_type": "MissingRequiredConfiguration",
+                "version": runtime_state.order_service_version,
+                "config_key": "PAYMENT_TIMEOUT",
+            },
+        )
+        record_order_result(succeeded=False, duration_ms=duration_ms)
+        raise HTTPException(status_code=500, detail="Order service configuration error")
 
     try:
         payment_response = await payment_client.post(
@@ -151,6 +184,10 @@ async def create_order(
                 "error_type": type(error).__name__,
             },
         )
+        record_order_result(
+            succeeded=False,
+            duration_ms=round((perf_counter() - started_at) * 1000, 2),
+        )
         raise HTTPException(status_code=502, detail="Payment service unavailable") from error
 
     if payment.order_id != order_id or payment.status != "approved":
@@ -162,8 +199,16 @@ async def create_order(
                 "downstream_status": payment_response.status_code,
             },
         )
+        record_order_result(
+            succeeded=False,
+            duration_ms=round((perf_counter() - started_at) * 1000, 2),
+        )
         raise HTTPException(status_code=502, detail="Payment service returned an invalid result")
 
+    record_order_result(
+        succeeded=True,
+        duration_ms=round((perf_counter() - started_at) * 1000, 2),
+    )
     return OrderResponse(
         order_id=order_id,
         payment_id=payment.payment_id,

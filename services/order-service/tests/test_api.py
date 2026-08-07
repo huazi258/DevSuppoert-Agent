@@ -6,15 +6,18 @@ import pytest
 from fastapi.testclient import TestClient
 
 from order_service.main import REQUEST_ID_HEADER, app, get_payment_client
+from order_service.runtime_state import inject_missing_config, reset_runtime_state
 
 client = TestClient(app)
 
 
 @pytest.fixture(autouse=True)
 def clear_dependency_overrides() -> None:
+    reset_runtime_state()
     app.dependency_overrides.clear()
     yield
     app.dependency_overrides.clear()
+    reset_runtime_state()
 
 
 def mock_payment_service(handler: Callable[[httpx.Request], httpx.Response]) -> None:
@@ -133,3 +136,89 @@ def test_create_order_returns_bad_gateway_when_payment_service_rejects_request()
 
     assert response.status_code == 502
     assert response.json()["detail"] == "Payment service unavailable"
+
+
+def test_missing_configuration_returns_internal_server_error() -> None:
+    inject_missing_config()
+
+    response = client.post("/orders", json={"amount": 99.9})
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Order service configuration error"
+
+
+def test_health_remains_alive_when_missing_configuration_is_active() -> None:
+    inject_missing_config()
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "service": "order-service"}
+
+
+def test_payment_service_is_not_called_when_configuration_is_missing() -> None:
+    called = False
+
+    def payment_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200)
+
+    mock_payment_service(payment_handler)
+    inject_missing_config()
+
+    response = client.post("/orders", json={"amount": 99.9})
+
+    assert response.status_code == 500
+    assert not called
+
+
+def test_request_id_is_preserved_when_configuration_is_missing() -> None:
+    inject_missing_config()
+
+    response = client.post(
+        "/orders",
+        json={"amount": 99.9},
+        headers={REQUEST_ID_HEADER: "missing-config-test"},
+    )
+
+    assert response.status_code == 500
+    assert response.headers[REQUEST_ID_HEADER] == "missing-config-test"
+
+
+def test_reset_recovers_from_missing_configuration() -> None:
+    def payment_handler(request: httpx.Request) -> httpx.Response:
+        order_id = json.loads(request.content)["order_id"]
+        return httpx.Response(
+            200,
+            json={"payment_id": "pay-123", "order_id": order_id, "status": "approved"},
+        )
+
+    mock_payment_service(payment_handler)
+    inject_missing_config()
+
+    failed_response = client.post("/orders", json={"amount": 99.9})
+    reset_runtime_state()
+    recovered_response = client.post("/orders", json={"amount": 99.9})
+
+    assert failed_response.status_code == 500
+    assert recovered_response.status_code == 200
+    assert recovered_response.json()["status"] == "confirmed"
+
+
+def test_metrics_reflect_configuration_failure_without_exposing_diagnosis() -> None:
+    inject_missing_config()
+
+    failed_response = client.post("/orders", json={"amount": 99.9})
+    metrics_response = client.get("/internal/metrics")
+    metrics = metrics_response.json()
+
+    assert failed_response.status_code == 500
+    assert metrics_response.status_code == 200
+    assert metrics["service"] == "order-service"
+    assert metrics["request_count"] == 1
+    assert metrics["success_count"] == 0
+    assert metrics["error_count"] == 1
+    assert "fault_name" not in metrics
+    assert "root_cause" not in metrics
+    assert "expected_answer" not in metrics
