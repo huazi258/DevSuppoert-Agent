@@ -7,7 +7,18 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Computed, DateTime, Float, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import (
+    Computed,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -153,6 +164,7 @@ class KnowledgeDocument(TimestampMixin, Base):
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     source_path: Mapped[str] = mapped_column(String(500), unique=True, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     document_type: Mapped[str] = mapped_column(String(100), nullable=False)
     service: Mapped[str | None] = mapped_column(String(100), nullable=True)
     environment: Mapped[str | None] = mapped_column(String(50), nullable=True)
@@ -166,6 +178,7 @@ class KnowledgeDocument(TimestampMixin, Base):
 class KnowledgeChunk(TimestampMixin, Base):
     __tablename__ = "knowledge_chunks"
     __table_args__ = (
+        UniqueConstraint("document_id", "chunk_index", name="uq_knowledge_chunks_document_index"),
         Index(
             "ix_knowledge_chunks_text_search_vector",
             "text_search_vector",

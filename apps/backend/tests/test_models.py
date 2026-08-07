@@ -47,6 +47,7 @@ def test_schema_models_include_required_v0_fields_without_fixed_vector_dimension
     action_columns = Action.__table__.c
     verification_columns = Verification.__table__.c
     report_columns = Report.__table__.c
+    knowledge_document_columns = KnowledgeDocument.__table__.c
     chunk_embedding = KnowledgeChunk.__table__.c.embedding
 
     assert {"time_range_start", "time_range_end", "thread_id"} <= set(incident_columns.keys())
@@ -57,4 +58,5 @@ def test_schema_models_include_required_v0_fields_without_fixed_vector_dimension
     assert {"parameters", "executed_at"} <= set(action_columns.keys())
     assert {"action_id", "details"} <= set(verification_columns.keys())
     assert {"content", "root_cause"} <= set(report_columns.keys())
+    assert "content_hash" in knowledge_document_columns
     assert chunk_embedding.type.dim is None
