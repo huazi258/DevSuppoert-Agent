@@ -1,9 +1,10 @@
+from datetime import UTC, datetime, timedelta
 from time import perf_counter
 
 import pytest
 from fastapi.testclient import TestClient
 
-from payment_service.main import REQUEST_ID_HEADER, app
+from payment_service.main import REQUEST_ID_HEADER, app, log_buffer
 from payment_service.runtime_state import inject_payment_timeout, reset_runtime_state
 
 client = TestClient(app)
@@ -12,7 +13,9 @@ client = TestClient(app)
 @pytest.fixture(autouse=True)
 def reset_fault_lab_state() -> None:
     reset_runtime_state()
+    log_buffer.clear()
     yield
+    log_buffer.clear()
     reset_runtime_state()
 
 
@@ -122,3 +125,28 @@ def test_metrics_capture_delayed_payment_without_exposing_diagnosis() -> None:
     assert "fault_name" not in metrics
     assert "root_cause" not in metrics
     assert "expected_answer" not in metrics
+
+
+def test_internal_logs_returns_bounded_structured_stdout_events() -> None:
+    started_at = datetime.now(UTC)
+    payment_response = client.post("/payments", json={"order_id": "order-123", "amount": 99.9})
+    logs_response = client.get(
+        "/internal/logs",
+        params={
+            "time_range_start": (started_at - timedelta(seconds=1)).isoformat(),
+            "time_range_end": (datetime.now(UTC) + timedelta(seconds=1)).isoformat(),
+            "level": "info",
+            "limit": 1,
+        },
+    )
+
+    assert payment_response.status_code == 200
+    assert logs_response.status_code == 200
+    logs = logs_response.json()
+    assert logs["service"] == "payment-service"
+    assert logs["match_count"] == 1
+    assert len(logs["events"]) == 1
+    assert logs["events"][0]["message"] == "http_request"
+    assert not {"fault_name", "root_cause", "expected_answer", "recommended_action"} & logs[
+        "events"
+    ][0].keys()

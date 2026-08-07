@@ -22,6 +22,8 @@ class Settings(BaseSettings):
         default="https://api.openai.com/v1",
         validation_alias=AliasChoices("EMBEDDING_BASE_URL", "DEVSUPPORT_EMBEDDING_BASE_URL"),
     )
+    fault_lab_order_service_url: str = "http://127.0.0.1:8000"
+    fault_lab_payment_service_url: str = "http://127.0.0.1:8001"
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="DEVSUPPORT_")
 

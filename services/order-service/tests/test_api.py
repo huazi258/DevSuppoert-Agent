@@ -1,6 +1,6 @@
 import json
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
 from order_service.fault_control import inject_missing_config_fault, reset_fault_lab
-from order_service.main import REQUEST_ID_HEADER, app, get_payment_client
+from order_service.main import REQUEST_ID_HEADER, app, get_payment_client, log_buffer
 
 client = TestClient(app)
 
@@ -23,10 +23,12 @@ def clear_dependency_overrides() -> None:
             yield payment_client
 
     reset_fault_lab()
+    log_buffer.clear()
     app.dependency_overrides.clear()
     app.dependency_overrides[get_payment_client] = default_payment_client
     yield
     app.dependency_overrides.clear()
+    log_buffer.clear()
     reset_fault_lab()
 
 
@@ -272,6 +274,62 @@ def test_metrics_reflect_configuration_failure_without_exposing_diagnosis() -> N
     assert "fault_name" not in metrics
     assert "root_cause" not in metrics
     assert "expected_answer" not in metrics
+
+
+def test_internal_logs_returns_real_missing_configuration_event_without_cheat_fields() -> None:
+    inject_missing_config_fault()
+    started_at = datetime.now(UTC)
+
+    order_response = client.post("/orders", json={"amount": 99.9})
+    logs_response = client.get(
+        "/internal/logs",
+        params={
+            "time_range_start": (started_at - timedelta(seconds=1)).isoformat(),
+            "time_range_end": (datetime.now(UTC) + timedelta(seconds=1)).isoformat(),
+            "level": "error",
+            "limit": 10,
+        },
+    )
+
+    assert order_response.status_code == 500
+    assert logs_response.status_code == 200
+    logs = logs_response.json()
+    assert logs["service"] == "order-service"
+    assert logs["match_count"] >= 1
+    event = next(
+        event
+        for event in logs["events"]
+        if event["error_type"] == "MissingRequiredConfiguration"
+    )
+    assert event["request_id"]
+    assert not {"fault_name", "root_cause", "expected_answer", "recommended_action"} & event.keys()
+
+
+def test_internal_logs_filters_real_timeout_events_and_is_bounded() -> None:
+    def payment_handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("payment-service timed out", request=request)
+
+    mock_payment_service(payment_handler)
+    started_at = datetime.now(UTC)
+    order_response = client.post("/orders", json={"amount": 99.9})
+    logs_response = client.get(
+        "/internal/logs",
+        params={
+            "time_range_start": (started_at - timedelta(seconds=1)).isoformat(),
+            "time_range_end": (datetime.now(UTC) + timedelta(seconds=1)).isoformat(),
+            "level": "error",
+            "query": "payment_request_failed",
+            "limit": 1,
+        },
+    )
+
+    assert order_response.status_code == 502
+    assert logs_response.status_code == 200
+    logs = logs_response.json()
+    assert logs["match_count"] == 1
+    assert len(logs["events"]) == 1
+    assert logs["events"][0]["message"] == "payment_request_failed"
+    assert logs["events"][0]["error_type"] == "ReadTimeout"
 
 
 def test_missing_config_fault_records_deployment_transition_without_leaking_fault_details() -> None:

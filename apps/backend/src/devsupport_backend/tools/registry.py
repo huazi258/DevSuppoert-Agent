@@ -53,7 +53,7 @@ _DEFINITIONS = (
         SearchKnowledgeOutput,
         implemented=True,
     ),
-    ToolDefinition(ToolName.QUERY_LOGS, QueryLogsInput, QueryLogsOutput, implemented=False),
+    ToolDefinition(ToolName.QUERY_LOGS, QueryLogsInput, QueryLogsOutput, implemented=True),
     ToolDefinition(
         ToolName.QUERY_METRICS,
         QueryMetricsInput,

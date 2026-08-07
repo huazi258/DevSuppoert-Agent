@@ -117,8 +117,9 @@ class TimeRangeToolInput(ToolInput):
 
 
 class QueryLogsInput(TimeRangeToolInput):
-    """Future bounded log-query input."""
+    """Bounded query for structured Fault Lab logs."""
 
+    level: str | None = Field(default=None, min_length=1, max_length=20)
     query: str | None = Field(default=None, min_length=1, max_length=1_000)
     limit: int = Field(default=20, ge=1, le=100)
 
@@ -138,15 +139,23 @@ class LogSample(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     timestamp: datetime
+    service: str = Field(min_length=1)
     level: str = Field(min_length=1)
     message: str = Field(min_length=1)
+    request_id: str | None = None
     trace_id: str | None = None
+    error_type: str | None = None
+    status_code: int | None = None
+    duration_ms: float | None = Field(default=None, ge=0)
+    downstream_service: str | None = None
 
 
 class QueryLogsOutput(ToolOutput):
-    """Structured summary shape for the later logs adapter."""
+    """Structured, bounded result from the Fault Lab logs adapter."""
 
     match_count: int = Field(default=0, ge=0)
+    first_seen: datetime | None = None
+    last_seen: datetime | None = None
     error_patterns: list[ErrorPattern] = Field(default_factory=list)
     samples: list[LogSample] = Field(default_factory=list)
     trace_ids: list[str] = Field(default_factory=list)
