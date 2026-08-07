@@ -58,7 +58,7 @@ _DEFINITIONS = (
         ToolName.QUERY_METRICS,
         QueryMetricsInput,
         QueryMetricsOutput,
-        implemented=False,
+        implemented=True,
     ),
     ToolDefinition(ToolName.QUERY_TRACES, QueryTracesInput, QueryTracesOutput, implemented=False),
     ToolDefinition(

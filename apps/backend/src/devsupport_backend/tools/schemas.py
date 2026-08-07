@@ -161,35 +161,42 @@ class QueryLogsOutput(ToolOutput):
     trace_ids: list[str] = Field(default_factory=list)
 
 
-class QueryMetricsInput(TimeRangeToolInput):
-    """Future bounded metrics-query input."""
+class QueryMetricsInput(ToolInput):
+    """One current runtime snapshot from a fixed Fault Lab service."""
 
-    metric_names: list[str] = Field(min_length=1, max_length=20)
-
-
-class MetricPoint(BaseModel):
-    """One time-series data point."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    timestamp: datetime
-    value: float
+    service: str = Field(min_length=1, max_length=100)
+    environment: str = Field(min_length=1, max_length=50)
 
 
-class MetricSeries(BaseModel):
-    """One named metric series returned by the metrics adapter."""
+class MetricSnapshot(BaseModel):
+    """The fields actually exposed by the Fault Lab metric snapshot."""
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1)
-    unit: str | None = None
-    points: list[MetricPoint] = Field(default_factory=list)
+    service: str = Field(min_length=1)
+    environment: str = Field(min_length=1)
+    health_status: str = Field(min_length=1)
+    request_count: int = Field(ge=0)
+    success_count: int = Field(ge=0)
+    error_count: int = Field(ge=0)
+    error_rate: float = Field(ge=0, le=1)
+    last_request_duration_ms: float | None = Field(default=None, ge=0)
+    average_request_duration_ms: float | None = Field(default=None, ge=0)
 
 
 class QueryMetricsOutput(ToolOutput):
-    """Structured summary shape for the later metrics adapter."""
+    """Structured outcome for a single current Fault Lab metric snapshot."""
 
-    series: list[MetricSeries] = Field(default_factory=list)
+    metrics: MetricSnapshot | None = None
+
+    @model_validator(mode="after")
+    def validate_metrics_outcome(self) -> "QueryMetricsOutput":
+        """Require a snapshot only when the whitelisted query succeeded."""
+        if self.status is ToolStatus.SUCCESS and self.metrics is None:
+            raise ValueError("successful metrics output must include metrics")
+        if self.status is not ToolStatus.SUCCESS and self.metrics is not None:
+            raise ValueError("unsuccessful metrics output must not include metrics")
+        return self
 
 
 class QueryTracesInput(TimeRangeToolInput):

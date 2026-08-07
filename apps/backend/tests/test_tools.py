@@ -68,6 +68,7 @@ def test_registry_lists_only_the_six_fixed_v0_tools() -> None:
         ToolName.ROLLBACK_DEPLOYMENT,
     }
     assert tool_registry.get("search_knowledge").implemented
+    assert tool_registry.get("query_metrics").implemented
     assert not tool_registry.get("rollback_deployment").implemented
     assert all(
         blocked_name not in {definition.name.value for definition in definitions}
@@ -94,9 +95,6 @@ def test_all_tool_input_and_output_models_validate() -> None:
         QueryMetricsInput(
             service="order-service",
             environment="local",
-            time_range_start=now,
-            time_range_end=now + timedelta(minutes=5),
-            metric_names=["request_count"],
         ),
         QueryTracesInput(
             service="order-service",
