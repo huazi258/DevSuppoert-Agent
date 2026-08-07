@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException
+from opentelemetry import trace
 from pydantic import BaseModel, Field, ValidationError
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.requests import Request
@@ -22,6 +23,7 @@ from order_service.runtime_state import (
     metrics_snapshot,
     record_order_result,
 )
+from order_service.telemetry import configure_telemetry
 
 SERVICE_NAME = "order-service"
 PAYMENT_SERVICE_NAME = "payment-service"
@@ -53,6 +55,10 @@ class JsonFormatter(logging.Formatter):
             value = getattr(record, field, None)
             if value is not None:
                 log_entry[field] = value
+        span_context = trace.get_current_span().get_span_context()
+        if span_context.is_valid:
+            log_entry["trace_id"] = f"{span_context.trace_id:032x}"
+            log_entry["span_id"] = f"{span_context.span_id:016x}"
         return json.dumps(log_entry)
 
 
@@ -214,3 +220,7 @@ async def create_order(
         payment_id=payment.payment_id,
         status="confirmed",
     )
+
+
+telemetry = configure_telemetry(app, SERVICE_NAME)
+app.router.on_shutdown.append(telemetry.shutdown)

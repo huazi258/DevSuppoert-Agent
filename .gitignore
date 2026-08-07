@@ -14,3 +14,4 @@ build/
 .mypy_cache/
 .DS_Store
 services/order-service/.fault-lab-state.json
+services/payment-service/.fault-lab-state.json

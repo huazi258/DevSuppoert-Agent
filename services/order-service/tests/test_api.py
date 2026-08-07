@@ -4,6 +4,7 @@ from collections.abc import Callable
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
 from order_service.main import REQUEST_ID_HEADER, app, get_payment_client
 from order_service.runtime_state import inject_missing_config, reset_runtime_state
@@ -25,6 +26,7 @@ def mock_payment_service(handler: Callable[[httpx.Request], httpx.Response]) -> 
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(handler), base_url="http://payment-service.test"
         ) as payment_client:
+            HTTPXClientInstrumentor.instrument_client(payment_client)
             yield payment_client
 
     app.dependency_overrides[get_payment_client] = get_mock_client
@@ -105,6 +107,7 @@ def test_request_id_is_propagated_to_payment_service_and_response() -> None:
     assert response.status_code == 200
     assert response.headers[REQUEST_ID_HEADER] == request_id
     assert captured_headers[REQUEST_ID_HEADER.lower()] == request_id
+    assert "traceparent" in captured_headers
 
 
 @pytest.mark.parametrize("amount", [0, -1])
@@ -129,6 +132,18 @@ def test_create_order_returns_bad_gateway_when_payment_service_is_unavailable() 
 def test_create_order_returns_bad_gateway_when_payment_service_rejects_request() -> None:
     def payment_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503, json={"detail": "unavailable"}, request=request)
+
+    mock_payment_service(payment_handler)
+
+    response = client.post("/orders", json={"amount": 99.9})
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Payment service unavailable"
+
+
+def test_create_order_returns_bad_gateway_when_payment_service_times_out() -> None:
+    def payment_handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("payment-service timed out", request=request)
 
     mock_payment_service(payment_handler)
 
