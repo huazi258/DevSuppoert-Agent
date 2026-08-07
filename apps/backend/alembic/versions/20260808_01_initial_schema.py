@@ -47,7 +47,6 @@ def incident_record_columns() -> list[sa.Column[object]]:
             sa.ForeignKey("incidents.id", ondelete="CASCADE"),
             nullable=False,
         ),
-        sa.Column("details", postgresql.JSONB(), nullable=False),
         *timestamp_columns(),
     ]
 
@@ -64,6 +63,9 @@ def upgrade() -> None:
         sa.Column("status", sa.String(length=50), nullable=False),
         sa.Column("description", sa.Text(), nullable=False),
         sa.Column("details", postgresql.JSONB(), nullable=False),
+        sa.Column("time_range_start", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("time_range_end", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("thread_id", sa.String(length=255), nullable=True),
         *timestamp_columns(),
     )
     op.create_table(
@@ -72,12 +74,21 @@ def upgrade() -> None:
         sa.Column("summary", sa.Text(), nullable=False),
         sa.Column("status", sa.String(length=50), nullable=False),
         sa.Column("confidence", sa.Float(), nullable=True),
+        sa.Column("details", postgresql.JSONB(), nullable=False),
     )
     op.create_table(
         "evidence",
         *incident_record_columns(),
+        sa.Column(
+            "hypothesis_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("hypotheses.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+        sa.Column("evidence_type", sa.String(length=100), nullable=False),
         sa.Column("source", sa.String(length=100), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
+        sa.Column("data", postgresql.JSONB(), nullable=False),
     )
     op.create_table(
         "tool_calls",
@@ -85,29 +96,47 @@ def upgrade() -> None:
         sa.Column("tool_name", sa.String(length=100), nullable=False),
         sa.Column("status", sa.String(length=50), nullable=False),
         sa.Column("input_data", postgresql.JSONB(), nullable=False),
-        sa.Column("output_data", postgresql.JSONB(), nullable=False),
-    )
-    op.create_table(
-        "approvals",
-        *incident_record_columns(),
-        sa.Column("decision", sa.String(length=50), nullable=False),
+        sa.Column("result", postgresql.JSONB(), nullable=True),
+        sa.Column("error", sa.Text(), nullable=True),
+        sa.Column("duration_ms", sa.Float(), nullable=True),
     )
     op.create_table(
         "actions",
         *incident_record_columns(),
         sa.Column("action_type", sa.String(length=100), nullable=False),
         sa.Column("status", sa.String(length=50), nullable=False),
+        sa.Column("parameters", postgresql.JSONB(), nullable=False),
+        sa.Column("executed_at", sa.DateTime(timezone=True), nullable=True),
+    )
+    op.create_table(
+        "approvals",
+        *incident_record_columns(),
+        sa.Column(
+            "action_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("actions.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+        sa.Column("status", sa.String(length=50), nullable=False),
     )
     op.create_table(
         "verifications",
         *incident_record_columns(),
+        sa.Column(
+            "action_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("actions.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
         sa.Column("status", sa.String(length=50), nullable=False),
         sa.Column("summary", sa.Text(), nullable=False),
+        sa.Column("details", postgresql.JSONB(), nullable=False),
     )
     op.create_table(
         "reports",
         *incident_record_columns(),
-        sa.Column("content", sa.Text(), nullable=False),
+        sa.Column("content", postgresql.JSONB(), nullable=False),
+        sa.Column("root_cause", sa.Text(), nullable=True),
     )
     op.create_table(
         "knowledge_documents",
@@ -132,7 +161,7 @@ def upgrade() -> None:
         sa.Column("chunk_index", sa.Integer(), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
         sa.Column("metadata_data", postgresql.JSONB(), nullable=False),
-        sa.Column("embedding", Vector(1536), nullable=True),
+        sa.Column("embedding", Vector(), nullable=True),
         sa.Column(
             "text_search_vector",
             postgresql.TSVECTOR(),
@@ -143,14 +172,17 @@ def upgrade() -> None:
     )
     for table_name in (
         "hypotheses",
-        "evidence",
         "tool_calls",
-        "approvals",
         "actions",
-        "verifications",
         "reports",
     ):
         op.create_index(f"ix_{table_name}_incident_id", table_name, ["incident_id"])
+    op.create_index("ix_evidence_incident_id", "evidence", ["incident_id"])
+    op.create_index("ix_evidence_hypothesis_id", "evidence", ["hypothesis_id"])
+    op.create_index("ix_approvals_incident_id", "approvals", ["incident_id"])
+    op.create_index("ix_approvals_action_id", "approvals", ["action_id"])
+    op.create_index("ix_verifications_incident_id", "verifications", ["incident_id"])
+    op.create_index("ix_verifications_action_id", "verifications", ["action_id"])
     op.create_index("ix_knowledge_chunks_document_id", "knowledge_chunks", ["document_id"])
     op.create_index(
         "ix_knowledge_chunks_text_search_vector",
@@ -169,13 +201,12 @@ def downgrade() -> None:
     for table_name in (
         "reports",
         "verifications",
-        "actions",
         "approvals",
         "tool_calls",
         "evidence",
         "hypotheses",
     ):
-        op.drop_index(f"ix_{table_name}_incident_id", table_name=table_name)
         op.drop_table(table_name)
+    op.drop_table("actions")
     op.drop_table("incidents")
     op.execute("DROP EXTENSION IF EXISTS vector")

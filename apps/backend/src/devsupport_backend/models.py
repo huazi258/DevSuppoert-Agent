@@ -1,5 +1,7 @@
 """Initial PostgreSQL domain and knowledge models for DevSupport Agent V0."""
 
+from __future__ import annotations
+
 from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -9,8 +11,6 @@ from sqlalchemy import Computed, DateTime, Float, ForeignKey, Index, Integer, St
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-
-EMBEDDING_DIMENSIONS = 1536
 
 
 class Base(DeclarativeBase):
@@ -37,6 +37,9 @@ class Incident(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(50), default="OPEN", nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    time_range_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    time_range_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    thread_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     hypotheses: Mapped[list["Hypothesis"]] = relationship(back_populates="incident")
     evidence_items: Mapped[list["Evidence"]] = relationship(back_populates="incident")
@@ -54,7 +57,6 @@ class IncidentRecordMixin:
     incident_id: Mapped[UUID] = mapped_column(
         ForeignKey("incidents.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
 
 
 class Hypothesis(TimestampMixin, IncidentRecordMixin, Base):
@@ -63,17 +65,25 @@ class Hypothesis(TimestampMixin, IncidentRecordMixin, Base):
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="OPEN", nullable=False)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
 
     incident: Mapped[Incident] = relationship(back_populates="hypotheses")
+    evidence_items: Mapped[list["Evidence"]] = relationship(back_populates="hypothesis")
 
 
 class Evidence(TimestampMixin, IncidentRecordMixin, Base):
     __tablename__ = "evidence"
 
+    hypothesis_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("hypotheses.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    evidence_type: Mapped[str] = mapped_column(String(100), nullable=False)
     source: Mapped[str] = mapped_column(String(100), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
 
     incident: Mapped[Incident] = relationship(back_populates="evidence_items")
+    hypothesis: Mapped[Hypothesis | None] = relationship(back_populates="evidence_items")
 
 
 class ToolCall(TimestampMixin, IncidentRecordMixin, Base):
@@ -82,7 +92,9 @@ class ToolCall(TimestampMixin, IncidentRecordMixin, Base):
     tool_name: Mapped[str] = mapped_column(String(100), nullable=False)
     status: Mapped[str] = mapped_column(String(50), nullable=False)
     input_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
-    output_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     incident: Mapped[Incident] = relationship(back_populates="tool_calls")
 
@@ -90,9 +102,13 @@ class ToolCall(TimestampMixin, IncidentRecordMixin, Base):
 class Approval(TimestampMixin, IncidentRecordMixin, Base):
     __tablename__ = "approvals"
 
-    decision: Mapped[str] = mapped_column(String(50), nullable=False)
+    action_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("actions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(50), nullable=False)
 
     incident: Mapped[Incident] = relationship(back_populates="approvals")
+    action: Mapped[Action | None] = relationship(back_populates="approvals")
 
 
 class Action(TimestampMixin, IncidentRecordMixin, Base):
@@ -100,23 +116,33 @@ class Action(TimestampMixin, IncidentRecordMixin, Base):
 
     action_type: Mapped[str] = mapped_column(String(100), nullable=False)
     status: Mapped[str] = mapped_column(String(50), nullable=False)
+    parameters: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     incident: Mapped[Incident] = relationship(back_populates="actions")
+    approvals: Mapped[list[Approval]] = relationship(back_populates="action")
+    verifications: Mapped[list["Verification"]] = relationship(back_populates="action")
 
 
 class Verification(TimestampMixin, IncidentRecordMixin, Base):
     __tablename__ = "verifications"
 
+    action_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("actions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     status: Mapped[str] = mapped_column(String(50), nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
+    details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
 
     incident: Mapped[Incident] = relationship(back_populates="verifications")
+    action: Mapped[Action | None] = relationship(back_populates="verifications")
 
 
 class Report(TimestampMixin, IncidentRecordMixin, Base):
     __tablename__ = "reports"
 
-    content: Mapped[str] = mapped_column(Text, nullable=False)
+    content: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    root_cause: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     incident: Mapped[Incident] = relationship(back_populates="reports")
 
@@ -155,7 +181,7 @@ class KnowledgeChunk(TimestampMixin, Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     metadata_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
     embedding: Mapped[list[float] | None] = mapped_column(
-        Vector(EMBEDDING_DIMENSIONS), nullable=True
+        Vector(), nullable=True
     )
     text_search_vector: Mapped[Any] = mapped_column(
         TSVECTOR,
