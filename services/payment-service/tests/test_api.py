@@ -4,7 +4,7 @@ from time import perf_counter
 import pytest
 from fastapi.testclient import TestClient
 
-from payment_service.main import REQUEST_ID_HEADER, app, log_buffer
+from payment_service.main import REQUEST_ID_HEADER, app, log_buffer, telemetry
 from payment_service.runtime_state import inject_payment_timeout, reset_runtime_state
 
 client = TestClient(app)
@@ -14,8 +14,10 @@ client = TestClient(app)
 def reset_fault_lab_state() -> None:
     reset_runtime_state()
     log_buffer.clear()
+    telemetry.span_buffer.clear()
     yield
     log_buffer.clear()
+    telemetry.span_buffer.clear()
     reset_runtime_state()
 
 
@@ -24,6 +26,30 @@ def test_health_check_returns_service_identity() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "service": "payment-service"}
+
+
+def test_internal_traces_returns_real_ended_payment_span() -> None:
+    started_at = datetime.now(UTC)
+    payment_response = client.post("/payments", json={"order_id": "order-123", "amount": 99.9})
+    traces_response = client.get(
+        "/internal/traces",
+        params={
+            "time_range_start": (started_at - timedelta(seconds=1)).isoformat(),
+            "time_range_end": (datetime.now(UTC) + timedelta(seconds=1)).isoformat(),
+            "limit": 20,
+        },
+    )
+
+    assert payment_response.status_code == 200
+    assert traces_response.status_code == 200
+    payment_span = next(
+        span
+        for span in traces_response.json()["spans"]
+        if span["operation"] == "POST /payments"
+    )
+    assert payment_span["service"] == "payment-service"
+    assert payment_span["trace_id"]
+    assert payment_span["duration_ms"] >= 0
 
 
 def test_deployment_reports_stable_payment_service_version() -> None:

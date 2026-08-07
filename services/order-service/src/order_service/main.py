@@ -196,6 +196,30 @@ def internal_logs(
     return {"service": SERVICE_NAME, "match_count": match_count, "events": events}
 
 
+@app.get("/internal/traces")
+def internal_traces(
+    time_range_start: datetime,
+    time_range_end: datetime,
+    trace_id: str | None = Query(default=None, min_length=1, max_length=128),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> dict[str, object]:
+    """Return bounded facts from real ended OpenTelemetry spans in this service."""
+    if time_range_start.tzinfo is None or time_range_end.tzinfo is None:
+        raise HTTPException(status_code=422, detail="time range must include a timezone")
+    if time_range_start > time_range_end:
+        raise HTTPException(
+            status_code=422,
+            detail="time_range_start must not be after time_range_end",
+        )
+    match_count, spans = telemetry.span_buffer.query(
+        time_range_start=time_range_start,
+        time_range_end=time_range_end,
+        trace_id=trace_id,
+        limit=limit,
+    )
+    return {"service": SERVICE_NAME, "match_count": match_count, "spans": spans}
+
+
 @app.get("/internal/deployment")
 def internal_deployment() -> dict[str, str | None]:
     """Return only deployment facts for the future deployment adapter."""

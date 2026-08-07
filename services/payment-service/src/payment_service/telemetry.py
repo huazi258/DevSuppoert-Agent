@@ -11,20 +11,25 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
+from payment_service.trace_buffer import SpanBuffer
+
 
 @dataclass
 class Telemetry:
     """Own the service-local tracing provider and optional exporter."""
 
     provider: TracerProvider
+    span_buffer: SpanBuffer
 
     def shutdown(self) -> None:
         self.provider.shutdown()
 
 
 def configure_telemetry(app: FastAPI, service_name: str) -> Telemetry:
-    """Instrument FastAPI and HTTPX, exporting only when an OTLP endpoint is set."""
+    """Instrument FastAPI/HTTPX and preserve bounded local ended-span evidence."""
     provider = TracerProvider(resource=Resource.create({"service.name": service_name}))
+    span_buffer = SpanBuffer()
+    provider.add_span_processor(span_buffer)
     endpoint = os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
     if endpoint:
         provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
@@ -34,4 +39,4 @@ def configure_telemetry(app: FastAPI, service_name: str) -> Telemetry:
     if not httpx_instrumentor.is_instrumented_by_opentelemetry:
         httpx_instrumentor.instrument(tracer_provider=provider)
 
-    return Telemetry(provider=provider)
+    return Telemetry(provider=provider, span_buffer=span_buffer)

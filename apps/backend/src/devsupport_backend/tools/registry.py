@@ -60,7 +60,7 @@ _DEFINITIONS = (
         QueryMetricsOutput,
         implemented=True,
     ),
-    ToolDefinition(ToolName.QUERY_TRACES, QueryTracesInput, QueryTracesOutput, implemented=False),
+    ToolDefinition(ToolName.QUERY_TRACES, QueryTracesInput, QueryTracesOutput, implemented=True),
     ToolDefinition(
         ToolName.GET_DEPLOYMENT_HISTORY,
         GetDeploymentHistoryInput,

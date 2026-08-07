@@ -200,25 +200,41 @@ class QueryMetricsOutput(ToolOutput):
 
 
 class QueryTracesInput(TimeRangeToolInput):
-    """Future bounded trace-query input."""
+    """Bounded distributed-trace query anchored to one Fault Lab service."""
 
     trace_id: str | None = Field(default=None, min_length=1, max_length=128)
     limit: int = Field(default=20, ge=1, le=100)
 
 
 class TraceSpan(BaseModel):
-    """A concise span summary that avoids returning raw trace payloads."""
+    """A concise fact projection of one real ended OpenTelemetry span."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    span_id: str = Field(min_length=1)
+    parent_span_id: str | None = None
+    service: str = Field(min_length=1)
+    operation: str = Field(min_length=1)
+    start_time: datetime
+    end_time: datetime
+    duration_ms: float = Field(ge=0)
+    status: str = Field(min_length=1)
+    error: str | None = None
+
+
+class TraceError(BaseModel):
+    """A compact failure fact attached to a span in one trace."""
 
     model_config = ConfigDict(extra="forbid")
 
     service: str = Field(min_length=1)
+    span_id: str = Field(min_length=1)
     operation: str = Field(min_length=1)
-    duration_ms: float = Field(ge=0)
-    status: str = Field(min_length=1)
+    message: str = Field(min_length=1)
 
 
 class TraceSummary(BaseModel):
-    """One trace with bounded, ordered span summaries."""
+    """One reconstructed trace with bounded, ordered service span facts."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -226,10 +242,12 @@ class TraceSummary(BaseModel):
     duration_ms: float = Field(ge=0)
     status: str = Field(min_length=1)
     spans: list[TraceSpan] = Field(default_factory=list)
+    errors: list[TraceError] = Field(default_factory=list)
+    slowest_span: TraceSpan | None = None
 
 
 class QueryTracesOutput(ToolOutput):
-    """Structured summary shape for the later trace adapter."""
+    """Structured outcome for reconstructing bounded Fault Lab traces."""
 
     traces: list[TraceSummary] = Field(default_factory=list)
 

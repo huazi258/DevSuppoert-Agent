@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
 from order_service.fault_control import inject_missing_config_fault, reset_fault_lab
-from order_service.main import REQUEST_ID_HEADER, app, get_payment_client, log_buffer
+from order_service.main import REQUEST_ID_HEADER, app, get_payment_client, log_buffer, telemetry
 
 client = TestClient(app)
 
@@ -24,11 +24,13 @@ def clear_dependency_overrides() -> None:
 
     reset_fault_lab()
     log_buffer.clear()
+    telemetry.span_buffer.clear()
     app.dependency_overrides.clear()
     app.dependency_overrides[get_payment_client] = default_payment_client
     yield
     app.dependency_overrides.clear()
     log_buffer.clear()
+    telemetry.span_buffer.clear()
     reset_fault_lab()
 
 
@@ -48,6 +50,47 @@ def test_health_check_returns_service_identity() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "service": "order-service"}
+
+
+def test_internal_traces_returns_real_ended_spans_with_filters() -> None:
+    started_at = datetime.now(UTC)
+    health_response = client.get("/health")
+    traces_response = client.get(
+        "/internal/traces",
+        params={
+            "time_range_start": (started_at - timedelta(seconds=1)).isoformat(),
+            "time_range_end": (datetime.now(UTC) + timedelta(seconds=1)).isoformat(),
+            "limit": 20,
+        },
+    )
+
+    assert health_response.status_code == 200
+    assert traces_response.status_code == 200
+    traces = traces_response.json()
+    assert traces["service"] == "order-service"
+    health_span = next(span for span in traces["spans"] if span["operation"] == "GET /health")
+    filtered_response = client.get(
+        "/internal/traces",
+        params={
+            "time_range_start": (started_at - timedelta(seconds=1)).isoformat(),
+            "time_range_end": (datetime.now(UTC) + timedelta(seconds=1)).isoformat(),
+            "trace_id": health_span["trace_id"],
+            "limit": 1,
+        },
+    )
+
+    filtered = filtered_response.json()
+    assert filtered_response.status_code == 200
+    assert filtered["match_count"] >= 1
+    assert len(filtered["spans"]) == 1
+    assert filtered["spans"][0]["trace_id"] == health_span["trace_id"]
+    assert health_span["span_id"]
+    assert health_span["start_time"]
+    assert health_span["end_time"]
+    assert health_span["status"] == "ok"
+    assert not {"fault_name", "root_cause", "expected_answer", "recommended_action"} & set(
+        health_span
+    )
 
 
 def test_deployment_reports_clean_order_service_baseline() -> None:
