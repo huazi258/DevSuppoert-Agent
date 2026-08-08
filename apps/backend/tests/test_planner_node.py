@@ -20,6 +20,7 @@ from devsupport_backend.agent.state import (
     create_initial_agent_state,
 )
 from devsupport_backend.models import Incident
+from devsupport_backend.tools.registry import ToolName, tool_registry
 from devsupport_backend.tools.schemas import ToolStatus
 
 
@@ -138,13 +139,41 @@ def test_planner_context_contains_current_investigation_facts() -> None:
 
     assert client.user_prompt is not None
     context = json.loads(client.user_prompt)
-    assert set(context) == {"incident", "hypotheses", "evidence", "tool_history"}
+    assert set(context) == {
+        "incident",
+        "hypotheses",
+        "evidence",
+        "tool_history",
+        "tool_input_contracts",
+    }
     assert context["incident"]["service"] == "catalog-service"
     assert context["hypotheses"][0]["id"] == str(hypothesis.id)
     assert context["evidence"][0]["id"] == str(evidence.id)
     assert context["tool_history"][0]["tool_name"] == "search_knowledge"
+    contracts = context["tool_input_contracts"]
+    assert set(contracts) == {
+        "search_knowledge",
+        "query_logs",
+        "query_metrics",
+        "query_traces",
+        "get_deployment_history",
+    }
+    assert contracts["query_metrics"] == tool_registry.get(
+        ToolName.QUERY_METRICS
+    ).input_model.model_json_schema()
+    assert set(contracts["query_metrics"]["properties"]) == {"service", "environment"}
+    assert {"time_range_start", "time_range_end"}.issubset(
+        contracts["query_logs"]["properties"]
+    )
+    assert {"time_range_start", "time_range_end"}.issubset(
+        contracts["query_traces"]["properties"]
+    )
+    assert "time_range_start" not in contracts["get_deployment_history"]["properties"]
+    assert "rollback_deployment" not in contracts
     assert client.system_prompt is not None
     assert "rollback_deployment" in client.system_prompt
+    assert "Select exactly one Tool" in client.system_prompt
+    assert "do not add fields that are absent" in client.system_prompt
 
 
 def test_planner_can_choose_different_tools_from_different_valid_outputs() -> None:
@@ -189,6 +218,17 @@ def test_planner_can_choose_different_tools_from_different_valid_outputs() -> No
             "disallowed tool",
         ),
         ("query_logs", {"service": "catalog-service"}, "tool arguments are invalid"),
+        (
+            "query_metrics",
+            {
+                "service": "catalog-service",
+                "environment": "staging",
+                "time_range_start": "2026-08-08T10:00:00+00:00",
+                "time_range_end": "2026-08-08T10:05:00+00:00",
+                "metrics": ["request_count"],
+            },
+            "tool arguments are invalid",
+        ),
     ],
 )
 def test_planner_rejects_invalid_or_disallowed_tool_plans(
