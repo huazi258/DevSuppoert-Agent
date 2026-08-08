@@ -18,6 +18,7 @@ from devsupport_backend.agent.nodes.tool_execution import (
     ToolExecutionDependencies,
     tool_execution_node,
 )
+from devsupport_backend.agent.resolution_proposal import resolution_proposal_node
 from devsupport_backend.agent.state import AgentStage, AgentState, EvaluationDecision
 from devsupport_backend.rag.retrieval import RAGService
 
@@ -96,6 +97,10 @@ def build_investigation_graph(
         "evidence_evaluation",
         lambda state: evidence_evaluation_node(state, dependencies.evaluator, loop_limits),
     )
+    graph.add_node(
+        "resolution_proposal",
+        lambda state: resolution_proposal_node(state, dependencies.llm_client),
+    )
 
     graph.add_edge(START, "intake")
     graph.add_conditional_edges(
@@ -136,8 +141,13 @@ def build_investigation_graph(
     graph.add_conditional_edges(
         "evidence_evaluation",
         _route_after_evidence_evaluation,
-        {"planning_guard": "planning_guard", "end": END},
+        {
+            "planning_guard": "planning_guard",
+            "resolution_proposal": "resolution_proposal",
+            "end": END,
+        },
     )
+    graph.add_edge("resolution_proposal", END)
     return graph.compile()
 
 
@@ -250,4 +260,6 @@ def _route_after_hypothesis_update(state: AgentState) -> str:
 def _route_after_evidence_evaluation(state: AgentState) -> str:
     if state["evaluation_decision"] is EvaluationDecision.CONTINUE:
         return "planning_guard"
+    if state["evaluation_decision"] is EvaluationDecision.CONCLUDE:
+        return "resolution_proposal"
     return "end"

@@ -39,6 +39,7 @@ class WorkflowFakeLLM:
         self.generation_calls = 0
         self.planning_calls = 0
         self.update_calls = 0
+        self.resolution_calls = 0
 
     def complete(self, *, system_prompt: str, user_prompt: str) -> str:
         context = json.loads(user_prompt)
@@ -87,11 +88,30 @@ class WorkflowFakeLLM:
                             "supporting_evidence_ids": [evidence_id],
                             "contradicting_evidence_ids": [],
                             "confidence": 0.6,
-                            "status": "SUPPORTED",
+                            "status": "CONFIRMED" if index == 0 else "SUPPORTED",
                             "next_check": "Collect another distinguishing signal if needed.",
                         }
-                        for hypothesis in context["hypotheses"]
+                        for index, hypothesis in enumerate(context["hypotheses"])
                     ]
+                }
+            )
+        if system_prompt.startswith("Generate one structured"):
+            self.resolution_calls += 1
+            confirmed = next(
+                hypothesis
+                for hypothesis in context["hypotheses"]
+                if hypothesis["status"] == "CONFIRMED"
+            )
+            return json.dumps(
+                {
+                    "confirmed_hypothesis_id": confirmed["id"],
+                    "root_cause": confirmed["summary"],
+                    "confidence": confirmed["confidence"],
+                    "recommended_action": "Request operator review of the confirmed evidence.",
+                    "action_type": "manual_remediation",
+                    "reason": "The confirmed hypothesis is tied to the cited evidence.",
+                    "supporting_evidence_ids": confirmed["supporting_evidence_ids"],
+                    "risk": "Any change requires later policy review and human approval.",
                 }
             )
         raise AssertionError("unexpected LLM node prompt")
@@ -234,11 +254,15 @@ def test_continue_forms_a_second_plan_then_conclude_without_repeating_initial_no
     )
 
     assert result["evaluation_decision"] is EvaluationDecision.CONCLUDE
+    assert result["current_stage"] is AgentStage.CONCLUSION
+    assert result["final_conclusion"] is not None
+    assert result["proposed_action"] is not None
     assert result["investigation_round"] == 2
     assert result["tool_call_count"] == 2
     assert llm_client.generation_calls == 1
     assert llm_client.planning_calls == 2
     assert llm_client.update_calls == 2
+    assert llm_client.resolution_calls == 1
     assert evaluator.calls == 2
     assert calls == (1, 2)
 
@@ -259,6 +283,7 @@ def test_tool_failure_replans_without_incrementing_the_failed_round(
     assert result["investigation_round"] == 1
     assert llm_client.planning_calls == 2
     assert llm_client.update_calls == 1
+    assert llm_client.resolution_calls == 1
     assert evaluator.calls == 1
 
 
@@ -289,4 +314,5 @@ def test_limit_stops_future_planning_and_tools_with_manual_action(
     assert result["tool_call_count"] == 1
     assert llm_client.planning_calls == 1
     assert llm_client.update_calls == 1
+    assert llm_client.resolution_calls == 0
     assert evaluator.calls == 0
