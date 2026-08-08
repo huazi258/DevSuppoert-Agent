@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Literal, Protocol
 
 import httpx
 
@@ -24,12 +24,19 @@ class OpenAICompatibleLLMClient:
     """Synchronous adapter for an OpenAI-compatible chat-completions endpoint."""
 
     def __init__(
-        self, *, model: str, api_key: str, base_url: str, timeout_seconds: float
+        self,
+        *,
+        model: str,
+        api_key: str,
+        base_url: str,
+        timeout_seconds: float,
+        thinking_mode: Literal["enabled", "disabled"] | None,
     ) -> None:
         self._model = model
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
+        self._thinking_mode = thinking_mode
         self._timeout = httpx.Timeout(
             connect=10.0,
             read=timeout_seconds,
@@ -49,22 +56,26 @@ class OpenAICompatibleLLMClient:
             api_key=config.llm_api_key.get_secret_value(),
             base_url=config.llm_base_url,
             timeout_seconds=config.llm_timeout_seconds,
+            thinking_mode=config.llm_thinking_mode,
         )
 
     def complete(self, *, system_prompt: str, user_prompt: str) -> str:
         """Call the provider and extract one non-empty assistant message."""
+        request_body: dict[str, object] = {
+            "model": self._model,
+            "temperature": 0,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        if self._thinking_mode is not None:
+            request_body["thinking"] = {"type": self._thinking_mode}
         try:
             response = httpx.post(
                 f"{self._base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {self._api_key}"},
-                json={
-                    "model": self._model,
-                    "temperature": 0,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                },
+                json=request_body,
                 timeout=self._timeout,
             )
             response.raise_for_status()

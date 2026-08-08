@@ -1,5 +1,7 @@
 """Application configuration for the backend foundation."""
 
+from typing import Literal
+
 from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -40,6 +42,10 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices(
             "LLM_TIMEOUT_SECONDS", "DEVSUPPORT_LLM_TIMEOUT_SECONDS"
         ),
+    )
+    llm_thinking_mode: Literal["enabled", "disabled"] | None = Field(
+        default=None,
+        validation_alias=AliasChoices("LLM_THINKING_MODE", "DEVSUPPORT_LLM_THINKING_MODE"),
     )
     fault_lab_order_service_url: str = "http://127.0.0.1:8000"
     fault_lab_payment_service_url: str = "http://127.0.0.1:8001"

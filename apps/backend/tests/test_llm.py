@@ -2,6 +2,7 @@
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from devsupport_backend.agent.llm import LLMError, OpenAICompatibleLLMClient
 from devsupport_backend.config import Settings
@@ -17,6 +18,8 @@ def _settings(monkeypatch: pytest.MonkeyPatch, **environment: str) -> Settings:
         "DEVSUPPORT_LLM_BASE_URL",
         "LLM_TIMEOUT_SECONDS",
         "DEVSUPPORT_LLM_TIMEOUT_SECONDS",
+        "LLM_THINKING_MODE",
+        "DEVSUPPORT_LLM_THINKING_MODE",
     ):
         monkeypatch.delenv(name, raising=False)
     for name, value in environment.items():
@@ -35,6 +38,15 @@ def test_llm_timeout_accepts_both_environment_variable_names(
     monkeypatch.delenv("LLM_TIMEOUT_SECONDS")
     monkeypatch.setenv("DEVSUPPORT_LLM_TIMEOUT_SECONDS", "75")
     assert Settings().llm_timeout_seconds == 75.0
+
+
+def test_llm_thinking_mode_defaults_to_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _settings(monkeypatch).llm_thinking_mode is None
+
+
+def test_llm_thinking_mode_rejects_invalid_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValidationError):
+        _settings(monkeypatch, LLM_THINKING_MODE="automatic")
 
 
 def test_client_uses_configured_connect_and_read_timeouts(
@@ -68,6 +80,47 @@ def test_client_uses_configured_connect_and_read_timeouts(
     assert timeout.read == 45.0
 
 
+@pytest.mark.parametrize(
+    ("thinking_mode", "expected_thinking"),
+    [
+        (None, None),
+        ("disabled", {"type": "disabled"}),
+        ("enabled", {"type": "enabled"}),
+    ],
+)
+def test_client_adds_thinking_only_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+    thinking_mode: str | None,
+    expected_thinking: dict[str, str] | None,
+) -> None:
+    environment = {"LLM_MODEL": "test-model", "LLM_API_KEY": "test-key"}
+    if thinking_mode is not None:
+        environment["LLM_THINKING_MODE"] = thinking_mode
+    config = _settings(monkeypatch, **environment)
+    captured: dict[str, object] = {}
+
+    def fake_post(*args: object, **kwargs: object) -> httpx.Response:
+        captured.update(kwargs)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "completed"}}]},
+            request=httpx.Request("POST", "https://example.test/chat/completions"),
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    OpenAICompatibleLLMClient.from_settings(config).complete(
+        system_prompt="system", user_prompt="user"
+    )
+
+    request_body = captured["json"]
+    assert isinstance(request_body, dict)
+    if expected_thinking is None:
+        assert "thinking" not in request_body
+    else:
+        assert request_body["thinking"] == expected_thinking
+
+
 def test_read_timeout_is_wrapped_without_exposing_credentials(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -84,6 +137,32 @@ def test_read_timeout_is_wrapped_without_exposing_credentials(
     monkeypatch.setattr(httpx, "post", fake_post)
 
     with pytest.raises(LLMError, match="read timed out after 45 seconds") as error:
+        OpenAICompatibleLLMClient.from_settings(config).complete(
+            system_prompt="system", user_prompt="user"
+        )
+
+    assert "secret-value" not in str(error.value)
+
+
+def test_empty_content_is_rejected_even_with_reasoning_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _settings(monkeypatch, LLM_MODEL="test-model", LLM_API_KEY="secret-value")
+
+    def fake_post(*args: object, **kwargs: object) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": "", "reasoning_content": "private reasoning"}}
+                ]
+            },
+            request=httpx.Request("POST", "https://example.test/chat/completions"),
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    with pytest.raises(LLMError, match="non-empty message content") as error:
         OpenAICompatibleLLMClient.from_settings(config).complete(
             system_prompt="system", user_prompt="user"
         )
