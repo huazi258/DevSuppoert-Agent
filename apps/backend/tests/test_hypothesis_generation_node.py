@@ -148,6 +148,8 @@ def test_generation_prompt_uses_only_incident_and_knowledge_evidence() -> None:
     ]
     assert client.system_prompt is not None
     assert "knowledge-evidence" in client.system_prompt
+    assert "JSON number between 0.0 and 1.0 inclusive" in client.system_prompt
+    assert "Do not use text confidence levels such as low, medium, or high" in client.system_prompt
 
 
 @pytest.mark.parametrize(
@@ -161,6 +163,24 @@ def test_generation_prompt_uses_only_incident_and_knowledge_evidence() -> None:
                     {
                         "summary": "Invalid confidence.",
                         "confidence": 1.1,
+                        "supporting_evidence_ids": [],
+                        "next_check": "Check another fact.",
+                    },
+                    {
+                        "summary": "Second item.",
+                        "confidence": 0.2,
+                        "supporting_evidence_ids": [],
+                        "next_check": "Check another fact.",
+                    },
+                ]
+            }
+        ),
+        json.dumps(
+            {
+                "hypotheses": [
+                    {
+                        "summary": "Text confidence is invalid.",
+                        "confidence": "medium",
                         "supporting_evidence_ids": [],
                         "next_check": "Check another fact.",
                     },
