@@ -23,10 +23,19 @@ class LLMClient(Protocol):
 class OpenAICompatibleLLMClient:
     """Synchronous adapter for an OpenAI-compatible chat-completions endpoint."""
 
-    def __init__(self, *, model: str, api_key: str, base_url: str) -> None:
+    def __init__(
+        self, *, model: str, api_key: str, base_url: str, timeout_seconds: float
+    ) -> None:
         self._model = model
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
+        self._timeout_seconds = timeout_seconds
+        self._timeout = httpx.Timeout(
+            connect=10.0,
+            read=timeout_seconds,
+            write=timeout_seconds,
+            pool=timeout_seconds,
+        )
 
     @classmethod
     def from_settings(cls, config: Settings) -> "OpenAICompatibleLLMClient":
@@ -39,6 +48,7 @@ class OpenAICompatibleLLMClient:
             model=config.llm_model,
             api_key=config.llm_api_key.get_secret_value(),
             base_url=config.llm_base_url,
+            timeout_seconds=config.llm_timeout_seconds,
         )
 
     def complete(self, *, system_prompt: str, user_prompt: str) -> str:
@@ -55,11 +65,15 @@ class OpenAICompatibleLLMClient:
                         {"role": "user", "content": user_prompt},
                     ],
                 },
-                timeout=30.0,
+                timeout=self._timeout,
             )
             response.raise_for_status()
             payload = response.json()
             content = payload["choices"][0]["message"]["content"]
+        except httpx.ReadTimeout as error:
+            raise LLMError(
+                f"LLM request read timed out after {self._timeout_seconds:g} seconds"
+            ) from error
         except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as error:
             raise LLMError(f"LLM request failed: {error}") from error
 

@@ -34,6 +34,13 @@ class Settings(BaseSettings):
         default="https://api.openai.com/v1",
         validation_alias=AliasChoices("LLM_BASE_URL", "DEVSUPPORT_LLM_BASE_URL"),
     )
+    llm_timeout_seconds: float = Field(
+        default=90.0,
+        gt=0,
+        validation_alias=AliasChoices(
+            "LLM_TIMEOUT_SECONDS", "DEVSUPPORT_LLM_TIMEOUT_SECONDS"
+        ),
+    )
     fault_lab_order_service_url: str = "http://127.0.0.1:8000"
     fault_lab_payment_service_url: str = "http://127.0.0.1:8001"
 
