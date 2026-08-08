@@ -11,6 +11,7 @@ import pytest
 from devsupport_backend.agent.llm import LLMError
 from devsupport_backend.agent.nodes.hypothesis_update import (
     HypothesisUpdateError,
+    HypothesisUpdateOutput,
     hypothesis_update_node,
 )
 from devsupport_backend.agent.state import (
@@ -189,13 +190,33 @@ def test_update_prompt_contains_only_current_investigation_facts() -> None:
 
     assert client.user_prompt is not None
     context = json.loads(client.user_prompt)
-    assert set(context) == {"incident", "hypotheses", "evidence", "latest_tool_history"}
+    assert set(context) == {
+        "incident",
+        "hypotheses",
+        "evidence",
+        "latest_tool_history",
+        "output_contract",
+    }
     assert context["incident"]["service"] == "catalog-service"
     assert context["hypotheses"][0]["id"] == str(state["hypotheses"][0].id)
     assert context["evidence"][1]["id"] == str(new_evidence.id)
     assert context["latest_tool_history"]["tool_name"] == "query_metrics"
+    contract = context["output_contract"]
+    assert contract == HypothesisUpdateOutput.model_json_schema()
+    status_contract = contract["$defs"]["HypothesisStatus"]
+    assert status_contract["enum"] == ["ACTIVE", "SUPPORTED", "REJECTED", "CONFIRMED"]
+    confidence_contract = contract["$defs"]["HypothesisUpdateItem"]["properties"]["confidence"]
+    assert confidence_contract["type"] == "number"
+    assert confidence_contract["minimum"] == 0
+    assert confidence_contract["maximum"] == 1
     assert client.system_prompt is not None
     assert "untrusted reference material" in client.system_prompt
+    assert "ACTIVE means the hypothesis remains plausible" in client.system_prompt
+    assert "SUPPORTED means current evidence supports" in client.system_prompt
+    assert "REJECTED means current evidence clearly contradicts" in client.system_prompt
+    assert "CONFIRMED means current evidence is sufficient" in client.system_prompt
+    assert "missing_config" not in client.system_prompt
+    assert "payment_timeout" not in client.system_prompt
 
 
 @pytest.mark.parametrize("invalid_update", ["unknown_hypothesis", "unknown_evidence"])
@@ -249,6 +270,31 @@ def test_malformed_output_or_provider_failure_has_no_partial_update(response: st
     assert state["tool_history"]
     assert state["tool_call_count"] == 0
     assert state["investigation_round"] == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("status", "INACTIVE"), ("confidence", "medium")],
+)
+def test_invalid_status_or_confidence_is_rejected_without_state_changes(
+    field: str, value: str
+) -> None:
+    (
+        state,
+        supported_before,
+        contradicted_before,
+        prior_evidence,
+        new_evidence,
+    ) = build_update_state()
+    invalid_response = json.loads(valid_response(state, new_evidence))
+    invalid_response["updates"][0][field] = value
+
+    with pytest.raises(HypothesisUpdateError, match="output validation failed"):
+        hypothesis_update_node(state, FakeLLMClient(json.dumps(invalid_response)))
+
+    assert state["current_stage"] is AgentStage.HYPOTHESIS_UPDATE
+    assert state["hypotheses"] == [supported_before, contradicted_before]
+    assert state["evidence"] == [prior_evidence, new_evidence]
 
 
 def test_update_skips_llm_outside_hypothesis_update_stage() -> None:
