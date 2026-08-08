@@ -8,6 +8,10 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 from devsupport_backend.agent.llm import LLMClient, LLMError
 from devsupport_backend.agent.state import AgentStage, AgentState, PendingToolCall
+from devsupport_backend.agent.structured_output import (
+    StructuredOutputParseError,
+    parse_structured_json,
+)
 from devsupport_backend.tools.registry import ToolName, tool_registry
 
 
@@ -64,8 +68,8 @@ def investigation_planner_node(state: AgentState, llm_client: LLMClient) -> Agen
 def _parse_plan(raw_output: str) -> PlannerOutput:
     """Reject malformed or incomplete planner output explicitly."""
     try:
-        return PlannerOutput.model_validate(json.loads(raw_output))
-    except (json.JSONDecodeError, ValidationError) as error:
+        return PlannerOutput.model_validate(parse_structured_json(raw_output))
+    except (StructuredOutputParseError, ValidationError) as error:
         raise PlanningError(f"planner output validation failed: {error}") from error
 
 

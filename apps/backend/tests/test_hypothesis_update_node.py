@@ -182,6 +182,15 @@ def test_update_merges_evidence_and_advances_without_changing_other_state() -> N
     assert updated["final_conclusion"] is state["final_conclusion"] is None
 
 
+def test_update_accepts_complete_json_fence_without_relaxing_validation() -> None:
+    state, *_rest, new_evidence = build_update_state()
+    response = f"```json\n{valid_response(state, new_evidence)}\n```"
+
+    updated = hypothesis_update_node(state, FakeLLMClient(response))
+
+    assert updated["current_stage"] is AgentStage.EVIDENCE_EVALUATION
+
+
 def test_update_prompt_contains_only_current_investigation_facts() -> None:
     state, _, _, _, new_evidence = build_update_state()
     client = FakeLLMClient(valid_response(state, new_evidence))

@@ -17,6 +17,10 @@ from devsupport_backend.agent.state import (
     HypothesisStatus,
     ProposedAction,
 )
+from devsupport_backend.agent.structured_output import (
+    StructuredOutputParseError,
+    parse_structured_json,
+)
 
 
 class ResolutionProposalError(RuntimeError):
@@ -68,8 +72,8 @@ def resolution_proposal_node(state: AgentState, llm_client: LLMClient) -> AgentS
 def _parse_output(raw_output: str) -> ResolutionProposalOutput:
     """Reject malformed or schema-invalid output before constructing either state model."""
     try:
-        return ResolutionProposalOutput.model_validate(json.loads(raw_output))
-    except (json.JSONDecodeError, ValidationError) as error:
+        return ResolutionProposalOutput.model_validate(parse_structured_json(raw_output))
+    except (StructuredOutputParseError, ValidationError) as error:
         raise ResolutionProposalError(
             f"resolution proposal output validation failed: {error}"
         ) from error

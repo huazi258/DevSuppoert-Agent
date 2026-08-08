@@ -14,6 +14,10 @@ from devsupport_backend.agent.state import (
     HypothesisContext,
     HypothesisStatus,
 )
+from devsupport_backend.agent.structured_output import (
+    StructuredOutputParseError,
+    parse_structured_json,
+)
 
 
 class HypothesisUpdateError(RuntimeError):
@@ -66,8 +70,8 @@ def hypothesis_update_node(state: AgentState, llm_client: LLMClient) -> AgentSta
 def _parse_output(raw_output: str) -> HypothesisUpdateOutput:
     """Reject malformed or incomplete LLM output before any state can change."""
     try:
-        return HypothesisUpdateOutput.model_validate(json.loads(raw_output))
-    except (json.JSONDecodeError, ValidationError) as error:
+        return HypothesisUpdateOutput.model_validate(parse_structured_json(raw_output))
+    except (StructuredOutputParseError, ValidationError) as error:
         raise HypothesisUpdateError(
             f"hypothesis update output validation failed: {error}"
         ) from error

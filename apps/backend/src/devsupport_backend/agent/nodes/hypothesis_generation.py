@@ -14,6 +14,10 @@ from devsupport_backend.agent.state import (
     HypothesisContext,
     HypothesisStatus,
 )
+from devsupport_backend.agent.structured_output import (
+    StructuredOutputParseError,
+    parse_structured_json,
+)
 
 
 class HypothesisGenerationError(RuntimeError):
@@ -75,9 +79,9 @@ def hypothesis_generation_node(state: AgentState, llm_client: LLMClient) -> Agen
 def _parse_output(raw_output: str) -> HypothesisGenerationOutput:
     """Reject malformed or schema-invalid provider output explicitly."""
     try:
-        payload = json.loads(raw_output)
+        payload = parse_structured_json(raw_output)
         return HypothesisGenerationOutput.model_validate(payload)
-    except (json.JSONDecodeError, ValidationError) as error:
+    except (StructuredOutputParseError, ValidationError) as error:
         raise HypothesisGenerationError(f"hypothesis output validation failed: {error}") from error
 
 

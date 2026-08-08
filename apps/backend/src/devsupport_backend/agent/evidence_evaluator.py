@@ -8,6 +8,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from devsupport_backend.agent.llm import LLMClient, LLMError
 from devsupport_backend.agent.state import AgentState, EvaluationDecision, HypothesisStatus
+from devsupport_backend.agent.structured_output import (
+    StructuredOutputParseError,
+    parse_structured_json,
+)
 
 
 class EvidenceEvaluationError(RuntimeError):
@@ -48,8 +52,8 @@ class LLMEvidenceEvaluator:
 def _parse_output(raw_output: str) -> EvidenceEvaluationOutput:
     """Reject malformed or schema-invalid provider output instead of inventing a decision."""
     try:
-        return EvidenceEvaluationOutput.model_validate(json.loads(raw_output))
-    except (json.JSONDecodeError, ValidationError) as error:
+        return EvidenceEvaluationOutput.model_validate(parse_structured_json(raw_output))
+    except (StructuredOutputParseError, ValidationError) as error:
         raise EvidenceEvaluationError(
             f"evidence evaluator output validation failed: {error}"
         ) from error
