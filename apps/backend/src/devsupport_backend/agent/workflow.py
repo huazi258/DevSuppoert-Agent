@@ -156,11 +156,9 @@ def evidence_evaluation_node(
     evaluator: EvidenceEvaluator,
     limits: InvestigationLoopLimits,
 ) -> AgentState:
-    """Apply the Task 3.8 evaluator contract, reserving real evaluation for Task 3.9."""
+    """Evaluate completed evidence before the planning guard limits any new round."""
     if state["current_stage"] is not AgentStage.EVIDENCE_EVALUATION:
         return state
-    if _limits_reached(state, limits):
-        return {**state, "evaluation_decision": EvaluationDecision.NEEDS_MANUAL_ACTION}
 
     decision = evaluator.evaluate(state)
     if not isinstance(decision, EvaluationDecision):

@@ -301,7 +301,7 @@ def test_limit_stops_future_planning_and_tools_with_manual_action(
 ) -> None:
     evaluator = FakeEvaluator([EvaluationDecision.CONTINUE])
 
-    result, llm_client, _ = _run_workflow(
+    result, llm_client, calls = _run_workflow(
         monkeypatch,
         tool_outputs=[_successful_metrics_output()],
         evaluator=evaluator,
@@ -315,4 +315,30 @@ def test_limit_stops_future_planning_and_tools_with_manual_action(
     assert llm_client.planning_calls == 1
     assert llm_client.update_calls == 1
     assert llm_client.resolution_calls == 0
-    assert evaluator.calls == 0
+    assert evaluator.calls == 1
+    assert calls == (1, 1)
+
+
+def test_final_allowed_round_can_conclude_and_propose_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evaluator = FakeEvaluator([EvaluationDecision.CONCLUDE])
+
+    result, llm_client, calls = _run_workflow(
+        monkeypatch,
+        tool_outputs=[_successful_metrics_output()],
+        evaluator=evaluator,
+        limits=InvestigationLoopLimits(max_rounds=1, max_tool_calls=5),
+    )
+
+    assert result["evaluation_decision"] is EvaluationDecision.CONCLUDE
+    assert result["current_stage"] is AgentStage.CONCLUSION
+    assert result["final_conclusion"] is not None
+    assert result["proposed_action"] is not None
+    assert result["investigation_round"] == 1
+    assert result["tool_call_count"] == 1
+    assert llm_client.planning_calls == 1
+    assert llm_client.update_calls == 1
+    assert llm_client.resolution_calls == 1
+    assert evaluator.calls == 1
+    assert calls == (1, 1)
