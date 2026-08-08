@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from devsupport_backend.database import engine
 from devsupport_backend.models import KnowledgeChunk, KnowledgeDocument
 from devsupport_backend.rag.ingest import collect_documents, ingest_documents
 from devsupport_backend.rag.markdown import KnowledgeDocumentParseError, chunk_markdown
@@ -22,19 +21,6 @@ class FakeEmbeddingClient:
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         self.calls.append(list(texts))
         return [[float(index + 1), 0.5, 0.25] for index, _ in enumerate(texts)]
-
-
-@pytest.fixture
-def database_session() -> Iterator[Session]:
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection, join_transaction_mode="create_savepoint")
-    try:
-        yield session
-    finally:
-        session.close()
-        transaction.rollback()
-        connection.close()
 
 
 @pytest.fixture

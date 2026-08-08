@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from uuid import uuid4
 
 import pytest
 from sqlalchemy.orm import Session
 
-from devsupport_backend.database import engine
 from devsupport_backend.models import KnowledgeChunk, KnowledgeDocument
 from devsupport_backend.rag.retrieval import RAGService, RetrievalError, RetrievalFilters
 
@@ -20,19 +19,6 @@ class QueryEmbeddingClient:
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         assert len(texts) == 1
         return [self.vector]
-
-
-@pytest.fixture
-def database_session() -> Iterator[Session]:
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection, join_transaction_mode="create_savepoint")
-    try:
-        yield session
-    finally:
-        session.close()
-        transaction.rollback()
-        connection.close()
 
 
 def _add_document(
