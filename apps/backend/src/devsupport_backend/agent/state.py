@@ -7,6 +7,7 @@ stored in this state.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from enum import StrEnum
 from typing import Protocol, TypedDict
@@ -16,6 +17,9 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, m
 
 from devsupport_backend.tools.registry import ToolName
 from devsupport_backend.tools.schemas import ToolError, ToolStatus
+
+MAX_EVIDENCE_DATA_SERIALIZED_BYTES = 16_000
+"""Maximum UTF-8 JSON size retained for one concise evidence data payload."""
 
 
 class AgentStage(StrEnum):
@@ -47,6 +51,13 @@ class EvaluationDecision(StrEnum):
     CONTINUE = "CONTINUE"
     CONCLUDE = "CONCLUDE"
     NEEDS_MANUAL_ACTION = "NEEDS_MANUAL_ACTION"
+
+
+class IntakeDecision(StrEnum):
+    """Outcome of Intake, kept separate from later evidence evaluation."""
+
+    READY = "READY"
+    NEEDS_INFORMATION = "NEEDS_INFORMATION"
 
 
 class IncidentStateSource(Protocol):
@@ -101,6 +112,23 @@ class IncidentContext(StateModel):
         return self
 
 
+class IntakeOutcome(StateModel):
+    """Validated Intake result for later nodes to place into AgentState."""
+
+    decision: IntakeDecision
+    missing_information: list[str] = Field(default_factory=list, max_length=10)
+
+    @field_validator("missing_information")
+    @classmethod
+    def validate_missing_information(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip() for value in values]
+        if any(not value for value in normalized):
+            raise ValueError("missing_information must not contain blank values")
+        if any(len(value) > 500 for value in normalized):
+            raise ValueError("each missing_information item must be at most 500 characters")
+        return normalized
+
+
 class HypothesisContext(StateModel):
     """A candidate explanation and the evidence references for and against it."""
 
@@ -122,6 +150,20 @@ class EvidenceContext(StateModel):
     summary: str = Field(min_length=1, max_length=2_000)
     data: dict[str, JsonValue] = Field(default_factory=dict, max_length=50)
     reference: str | None = Field(default=None, min_length=1, max_length=1_000)
+
+    @model_validator(mode="after")
+    def validate_data_size(self) -> "EvidenceContext":
+        serialized_data = json.dumps(
+            self.data,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode()
+        if len(serialized_data) > MAX_EVIDENCE_DATA_SERIALIZED_BYTES:
+            raise ValueError(
+                "evidence data exceeds "
+                f"{MAX_EVIDENCE_DATA_SERIALIZED_BYTES} serialized bytes"
+            )
+        return self
 
 
 class PendingToolCall(StateModel):
@@ -186,6 +228,8 @@ class AgentState(TypedDict):
     tool_history: list[ToolHistoryEntry]
     investigation_round: int
     tool_call_count: int
+    intake_decision: IntakeDecision | None
+    missing_information: list[str]
     evaluation_decision: EvaluationDecision | None
     proposed_action: ProposedAction | None
     final_conclusion: FinalConclusion | None
@@ -213,6 +257,8 @@ def create_initial_agent_state(
         "tool_history": [],
         "investigation_round": 0,
         "tool_call_count": 0,
+        "intake_decision": None,
+        "missing_information": [],
         "evaluation_decision": None,
         "proposed_action": None,
         "final_conclusion": None,
@@ -235,6 +281,10 @@ def agent_state_to_checkpoint_payload(state: AgentState) -> dict[str, object]:
         "tool_history": [item.model_dump(mode="json") for item in state["tool_history"]],
         "investigation_round": state["investigation_round"],
         "tool_call_count": state["tool_call_count"],
+        "intake_decision": (
+            state["intake_decision"].value if state["intake_decision"] is not None else None
+        ),
+        "missing_information": state["missing_information"],
         "evaluation_decision": (
             state["evaluation_decision"].value
             if state["evaluation_decision"] is not None

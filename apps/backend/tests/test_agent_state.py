@@ -10,10 +10,13 @@ import pytest
 from pydantic import ValidationError
 
 from devsupport_backend.agent.state import (
+    MAX_EVIDENCE_DATA_SERIALIZED_BYTES,
     AgentStage,
     EvidenceContext,
     HypothesisContext,
     HypothesisStatus,
+    IntakeDecision,
+    IntakeOutcome,
     PendingToolCall,
     ToolHistoryEntry,
     agent_state_to_checkpoint_payload,
@@ -51,6 +54,8 @@ def test_initial_agent_state_has_neutral_intake_defaults() -> None:
     assert state["tool_history"] == []
     assert state["investigation_round"] == 0
     assert state["tool_call_count"] == 0
+    assert state["intake_decision"] is None
+    assert state["missing_information"] == []
     assert state["evaluation_decision"] is None
     assert state["proposed_action"] is None
     assert state["final_conclusion"] is None
@@ -85,6 +90,33 @@ def test_evidence_has_a_stable_id_and_json_reference_data() -> None:
     assert evidence.model_dump(mode="json")["data"] == {"count": 2, "trace_ids": ["abc123"]}
 
 
+def test_evidence_rejects_oversized_serialized_data() -> None:
+    with pytest.raises(ValidationError, match="evidence data exceeds"):
+        EvidenceContext(
+            evidence_type="raw_log_payload",
+            source="query_logs",
+            summary="This must remain a concise evidence summary.",
+            data={"raw_logs": "x" * MAX_EVIDENCE_DATA_SERIALIZED_BYTES},
+        )
+
+
+def test_intake_outcome_validates_decisions_and_missing_information() -> None:
+    ready = IntakeOutcome(decision="READY")
+    needs_information = IntakeOutcome(
+        decision="NEEDS_INFORMATION",
+        missing_information=["  Exact incident time range  "],
+    )
+
+    assert ready.decision is IntakeDecision.READY
+    assert ready.missing_information == []
+    assert needs_information.decision is IntakeDecision.NEEDS_INFORMATION
+    assert needs_information.missing_information == ["Exact incident time range"]
+    with pytest.raises(ValidationError):
+        IntakeOutcome(decision="CONTINUE")
+    with pytest.raises(ValidationError, match="missing_information must not contain blank values"):
+        IntakeOutcome(decision="NEEDS_INFORMATION", missing_information=["   "])
+
+
 def test_pending_tool_call_accepts_only_registered_tool_names() -> None:
     pending = PendingToolCall(
         investigation_goal="Check current order-service errors.",
@@ -111,6 +143,8 @@ def test_state_checkpoint_payload_is_json_serializable_without_orm_or_session() 
         data={"error_rate": 0.5},
     )
     state["evidence"].append(evidence)
+    state["intake_decision"] = IntakeDecision.NEEDS_INFORMATION
+    state["missing_information"] = ["Exact incident time range"]
     state["tool_history"].append(
         ToolHistoryEntry(
             tool_name="query_metrics",
@@ -125,6 +159,8 @@ def test_state_checkpoint_payload_is_json_serializable_without_orm_or_session() 
 
     assert isinstance(payload["incident"], dict)
     assert json.loads(json.dumps(payload))["evidence"][0]["id"] == str(evidence.id)
+    assert payload["intake_decision"] == "NEEDS_INFORMATION"
+    assert payload["missing_information"] == ["Exact incident time range"]
 
 
 def test_tool_history_requires_a_structured_error_for_failure() -> None:
