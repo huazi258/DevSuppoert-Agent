@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import AliasChoices, Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -51,6 +51,14 @@ class Settings(BaseSettings):
     fault_lab_payment_service_url: str = "http://127.0.0.1:8001"
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="DEVSUPPORT_")
+
+    @field_validator("llm_thinking_mode", mode="before")
+    @classmethod
+    def normalize_blank_llm_thinking_mode(cls, value: object) -> object:
+        """Treat an intentionally blank provider-specific mode as unset."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
 
 settings = Settings()

@@ -44,6 +44,12 @@ def test_llm_thinking_mode_defaults_to_unset(monkeypatch: pytest.MonkeyPatch) ->
     assert _settings(monkeypatch).llm_thinking_mode is None
 
 
+def test_blank_llm_thinking_mode_is_normalized_to_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert _settings(monkeypatch, LLM_THINKING_MODE="").llm_thinking_mode is None
+
+
 def test_llm_thinking_mode_rejects_invalid_values(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(ValidationError):
         _settings(monkeypatch, LLM_THINKING_MODE="automatic")
