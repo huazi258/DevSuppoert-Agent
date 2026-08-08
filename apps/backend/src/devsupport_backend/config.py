@@ -22,6 +22,18 @@ class Settings(BaseSettings):
         default="https://api.openai.com/v1",
         validation_alias=AliasChoices("EMBEDDING_BASE_URL", "DEVSUPPORT_EMBEDDING_BASE_URL"),
     )
+    llm_model: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("LLM_MODEL", "DEVSUPPORT_LLM_MODEL"),
+    )
+    llm_api_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("LLM_API_KEY", "DEVSUPPORT_LLM_API_KEY"),
+    )
+    llm_base_url: str = Field(
+        default="https://api.openai.com/v1",
+        validation_alias=AliasChoices("LLM_BASE_URL", "DEVSUPPORT_LLM_BASE_URL"),
+    )
     fault_lab_order_service_url: str = "http://127.0.0.1:8000"
     fault_lab_payment_service_url: str = "http://127.0.0.1:8001"
 
