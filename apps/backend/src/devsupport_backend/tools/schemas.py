@@ -253,15 +253,14 @@ class QueryTracesOutput(ToolOutput):
 
 
 class GetDeploymentHistoryInput(ToolInput):
-    """Future bounded deployment-history input."""
+    """Read the current and previous deployment facts for one Fault Lab service."""
 
     service: str = Field(min_length=1, max_length=100)
     environment: str = Field(min_length=1, max_length=50)
-    limit: int = Field(default=10, ge=1, le=50)
 
 
 class DeploymentRecord(BaseModel):
-    """One immutable deployment fact from a later deployment adapter."""
+    """The current and immediately previous deployment facts exposed by Fault Lab."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -273,7 +272,7 @@ class DeploymentRecord(BaseModel):
 
 
 class GetDeploymentHistoryOutput(ToolOutput):
-    """Structured summary shape for the later deployment-history adapter."""
+    """A single real deployment snapshot; Fault Lab has no longer history to return."""
 
     deployments: list[DeploymentRecord] = Field(default_factory=list)
 

@@ -70,6 +70,7 @@ def test_registry_lists_only_the_six_fixed_v0_tools() -> None:
     assert tool_registry.get("search_knowledge").implemented
     assert tool_registry.get("query_metrics").implemented
     assert tool_registry.get("query_traces").implemented
+    assert tool_registry.get("get_deployment_history").implemented
     assert not tool_registry.get("rollback_deployment").implemented
     assert all(
         blocked_name not in {definition.name.value for definition in definitions}

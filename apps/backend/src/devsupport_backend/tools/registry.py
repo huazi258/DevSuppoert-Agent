@@ -65,7 +65,7 @@ _DEFINITIONS = (
         ToolName.GET_DEPLOYMENT_HISTORY,
         GetDeploymentHistoryInput,
         GetDeploymentHistoryOutput,
-        implemented=False,
+        implemented=True,
     ),
     ToolDefinition(
         ToolName.ROLLBACK_DEPLOYMENT,
