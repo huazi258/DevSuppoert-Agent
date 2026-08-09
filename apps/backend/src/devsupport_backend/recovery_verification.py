@@ -65,7 +65,7 @@ class RecoveryVerificationService:
                 and action.status == "EXECUTED"
                 and action.executed_at is not None
                 and existing.status in set(VerificationStatus)
-                and self._outcomes_match_action(state, action)
+                and self._complete_audit_chain_matches(state, action, existing)
             ):
                 return VerificationOutcome(
                     verification_id=existing.id,
@@ -322,7 +322,13 @@ class RecoveryVerificationService:
                 status=VerificationStatus.INCONCLUSIVE,
                 summary="Recovery verification binding could not be established.",
             )
-        if action is not None and action.incident_id == incident.id:
+        if (
+            action is not None
+            and action.incident_id == incident.id
+            and action.action_type == ActionType.ROLLBACK_DEPLOYMENT.value
+            and action.status == "EXECUTED"
+            and action.executed_at is not None
+        ):
             now = datetime.now(UTC).isoformat()
             return self._persist(
                 incident,
@@ -338,19 +344,45 @@ class RecoveryVerificationService:
             summary="Recovery verification binding could not be established.",
         )
 
-    def _outcomes_match_action(self, state: AgentState, action: Action) -> bool:
+    def _complete_audit_chain_matches(
+        self, state: AgentState, action: Action, verification: Verification
+    ) -> bool:
+        incident = self._session.get(Incident, state["incident"].id)
         approval_outcome, execution = state.get("approval_outcome"), state.get("execution_outcome")
         if (
-            isinstance(approval_outcome, ApprovalOutcome)
-            and approval_outcome.action_id != action.id
+            incident is None
+            or verification.incident_id != incident.id
+            or verification.action_id != action.id
+            or action.incident_id != incident.id
+            or action.action_type != ActionType.ROLLBACK_DEPLOYMENT.value
+            or action.status != "EXECUTED"
+            or action.executed_at is None
+            or not isinstance(approval_outcome, ApprovalOutcome)
+            or approval_outcome.action_id != action.id
+            or approval_outcome.status is not ApprovalStatus.APPROVED
+            or not isinstance(execution, ActionExecutionOutcome)
+            or execution.status.value != "success"
+            or execution.action_id != action.id
+            or execution.approval_id != approval_outcome.approval_id
         ):
             return False
-        if isinstance(execution, ActionExecutionOutcome) and (
-            execution.action_id != action.id
-            or execution.approval_id != getattr(approval_outcome, "approval_id", None)
+        approval = self._session.get(Approval, approval_outcome.approval_id)
+        if (
+            approval is None
+            or approval.incident_id != incident.id
+            or approval.action_id != action.id
+            or approval.status != ApprovalStatus.APPROVED.value
         ):
             return False
-        return True
+        try:
+            parameters = ActionExecutionParameters.model_validate(action.parameters)
+        except ValueError:
+            return False
+        return (
+            execution.service == parameters.service
+            and execution.environment == parameters.environment
+            and execution.target_version == parameters.target_version
+        )
 
 
 class RecoveryVerificationError(RuntimeError):
