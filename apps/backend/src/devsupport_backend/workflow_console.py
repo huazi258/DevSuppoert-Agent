@@ -1,0 +1,331 @@
+"""Safe application boundary for starting and projecting persisted workflows."""
+
+from __future__ import annotations
+
+from typing import Protocol, cast
+from uuid import UUID
+
+from langgraph.graph import END, START, StateGraph
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from devsupport_backend.action_execution import ActionExecutionParameters
+from devsupport_backend.agent.evidence_evaluator import LLMEvidenceEvaluator
+from devsupport_backend.agent.llm import OpenAICompatibleLLMClient
+from devsupport_backend.agent.nodes.tool_execution import ToolExecutionDependencies
+from devsupport_backend.agent.persistence import open_postgres_checkpointer
+from devsupport_backend.agent.policy import PolicyGateService
+from devsupport_backend.agent.runtime import WorkflowService
+from devsupport_backend.agent.state import AgentState
+from devsupport_backend.agent.workflow import (
+    InvestigationWorkflowDependencies,
+    build_production_investigation_graph,
+)
+from devsupport_backend.approvals import ApprovalDecisionService, ApprovalWaitService
+from devsupport_backend.config import settings
+from devsupport_backend.models import Action, Incident
+from devsupport_backend.rag.embeddings import OpenAICompatibleEmbeddingClient
+from devsupport_backend.rag.retrieval import RAGService
+from devsupport_backend.schemas.workflows import (
+    WorkflowActionParametersResponse,
+    WorkflowActionResponse,
+    WorkflowApprovalResponse,
+    WorkflowEvidenceResponse,
+    WorkflowExecutionResponse,
+    WorkflowFinalConclusionResponse,
+    WorkflowHypothesisResponse,
+    WorkflowPolicyResponse,
+    WorkflowProposedActionResponse,
+    WorkflowReportOutcomeResponse,
+    WorkflowResponse,
+    WorkflowToolErrorResponse,
+    WorkflowToolHistoryResponse,
+    WorkflowVerificationResponse,
+)
+from devsupport_backend.tools.deployments import FaultLabDeploymentAdapter
+from devsupport_backend.tools.logs import FaultLabLogsAdapter
+from devsupport_backend.tools.metrics import FaultLabMetricsAdapter
+from devsupport_backend.tools.traces import FaultLabTracesAdapter
+
+
+class WorkflowConsoleError(RuntimeError):
+    """Base error for safe workflow-console operations."""
+
+
+class WorkflowConflictError(WorkflowConsoleError):
+    """Start would violate the single persisted workflow lifecycle."""
+
+
+class WorkflowNotStartedError(WorkflowConsoleError):
+    """A read requested a workflow checkpoint which does not exist."""
+
+
+class WorkflowStateConflict(WorkflowConsoleError):
+    """Checkpoint facts do not bind to authoritative PostgreSQL facts."""
+
+
+class WorkflowStartError(WorkflowConsoleError):
+    """The production workflow could not complete its start call safely."""
+
+
+class WorkflowRuntime(Protocol):
+    def get_state(self, thread_id: str) -> AgentState | None:
+        """Return the latest state for one existing thread without mutating it."""
+
+    def start(self, incident: Incident) -> AgentState:
+        """Start the official production graph for an already persisted Incident."""
+
+
+class PostgresWorkflowRuntime:
+    """The only production composition for a new persisted investigation."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def get_state(self, thread_id: str) -> AgentState | None:
+        with open_postgres_checkpointer() as checkpointer:
+            graph = StateGraph(AgentState)
+            graph.add_node("checkpoint_reader", lambda state: state)
+            graph.add_edge(START, "checkpoint_reader")
+            graph.add_edge("checkpoint_reader", END)
+            snapshot = graph.compile(checkpointer=checkpointer).get_state(
+                WorkflowService.config_for(thread_id)
+            )
+        return cast(AgentState, snapshot.values) if snapshot.values else None
+
+    def start(self, incident: Incident) -> AgentState:
+        llm_client = OpenAICompatibleLLMClient.from_settings(settings)
+        embedding_client = OpenAICompatibleEmbeddingClient.from_settings(settings)
+        rag_service = RAGService(self._session, embedding_client)
+        dependencies = InvestigationWorkflowDependencies(
+            rag_service=rag_service,
+            llm_client=llm_client,
+            tool_execution=ToolExecutionDependencies(
+                rag_service=rag_service,
+                logs_adapter=FaultLabLogsAdapter.from_settings(),
+                metrics_adapter=FaultLabMetricsAdapter.from_settings(),
+                traces_adapter=FaultLabTracesAdapter.from_settings(),
+                deployment_adapter=FaultLabDeploymentAdapter.from_settings(),
+            ),
+            evaluator=LLMEvidenceEvaluator(llm_client),
+            policy_gate=PolicyGateService(self._session, FaultLabDeploymentAdapter.from_settings()),
+            approval_wait=ApprovalWaitService(self._session),
+            approval_decision=ApprovalDecisionService(self._session),
+        )
+        with open_postgres_checkpointer() as checkpointer:
+            graph = build_production_investigation_graph(
+                dependencies,
+                session=self._session,
+                checkpointer=checkpointer,
+            )
+            return WorkflowService(graph).start(incident)
+
+
+class WorkflowConsoleService:
+    """Own start conflict protection and read-only public workflow projection."""
+
+    def __init__(self, session: Session, runtime: WorkflowRuntime) -> None:
+        self._session = session
+        self._runtime = runtime
+
+    def read(self, incident_id: UUID) -> WorkflowResponse:
+        incident = self._get_incident(incident_id)
+        state = self._read_state(incident)
+        return project_workflow_response(incident, state, self._action_for_state(incident, state))
+
+    def start(self, incident_id: UUID) -> WorkflowResponse:
+        incident = self._session.scalar(
+            select(Incident).where(Incident.id == incident_id).with_for_update()
+        )
+        if incident is None:
+            raise LookupError("Incident not found")
+        if (
+            incident.status != "OPEN"
+            or not incident.thread_id
+            or not incident.thread_id.strip()
+            or self._runtime.get_state(incident.thread_id) is not None
+        ):
+            raise WorkflowConflictError("Workflow cannot be started for this Incident")
+        incident.status = "INVESTIGATING"
+        self._session.commit()
+        try:
+            state = self._runtime.start(incident)
+        except Exception as error:
+            if self._runtime.get_state(incident.thread_id) is None:
+                self._session.refresh(incident)
+                incident.status = "OPEN"
+                self._session.commit()
+            raise WorkflowStartError("Workflow start failed") from error
+        self._session.refresh(incident)
+        return project_workflow_response(incident, state, self._action_for_state(incident, state))
+
+    def _get_incident(self, incident_id: UUID) -> Incident:
+        incident = self._session.get(Incident, incident_id)
+        if incident is None:
+            raise LookupError("Incident not found")
+        if not incident.thread_id or not incident.thread_id.strip():
+            raise WorkflowConflictError("Incident has no stable workflow thread")
+        return incident
+
+    def _read_state(self, incident: Incident) -> AgentState:
+        state = self._runtime.get_state(incident.thread_id)
+        if state is None:
+            raise WorkflowNotStartedError("Workflow not started")
+        return state
+
+    def _action_for_state(self, incident: Incident, state: AgentState) -> Action | None:
+        policy = state["policy_outcome"]
+        if policy is None:
+            return None
+        if policy.action_id is None:
+            return None
+        return self._session.get(Action, policy.action_id)
+
+
+def project_workflow_response(
+    incident: Incident, state: AgentState, action: Action | None
+) -> WorkflowResponse:
+    """Project only approved public facts after binding all authoritative identities."""
+    _validate_incident_binding(incident, state)
+    policy = state["policy_outcome"]
+    if policy is None:
+        if action is not None:
+            raise WorkflowStateConflict("Action exists without a Policy outcome")
+    elif policy.action_id is None:
+        if action is not None:
+            raise WorkflowStateConflict("Policy has no Action binding")
+    elif action is None or action.id != policy.action_id or action.incident_id != incident.id:
+        raise WorkflowStateConflict("Policy Action binding mismatch")
+    return WorkflowResponse(
+        incident_id=incident.id,
+        incident_status=incident.status,
+        current_stage=state["current_stage"],
+        hypotheses=[
+            WorkflowHypothesisResponse(
+                id=item.id,
+                summary=item.summary,
+                status=item.status.value,
+                confidence=item.confidence,
+                supporting_evidence_ids=item.supporting_evidence_ids,
+                contradicting_evidence_ids=item.contradicting_evidence_ids,
+                next_check=item.next_check,
+            )
+            for item in state["hypotheses"]
+        ],
+        evidence=[
+            WorkflowEvidenceResponse(
+                id=item.id,
+                evidence_type=item.evidence_type,
+                source=item.source,
+                summary=item.summary,
+                reference=item.reference,
+            )
+            for item in state["evidence"]
+        ],
+        tool_history=[
+            WorkflowToolHistoryResponse(
+                tool_name=item.tool_name.value,
+                tool_arguments=item.tool_arguments,
+                status=item.status.value,
+                duration_ms=item.duration_ms,
+                evidence_ids=item.evidence_ids,
+                error=(
+                    WorkflowToolErrorResponse(
+                        code=item.error.code,
+                        message=item.error.message,
+                        retryable=item.error.retryable,
+                    )
+                    if item.error
+                    else None
+                ),
+            )
+            for item in state["tool_history"]
+        ],
+        current_goal=state["current_goal"],
+        final_conclusion=(
+            WorkflowFinalConclusionResponse(**state["final_conclusion"].model_dump())
+            if state["final_conclusion"]
+            else None
+        ),
+        proposed_action=(
+            WorkflowProposedActionResponse(
+                **state["proposed_action"].model_dump(exclude={"parameters"})
+            )
+            if state["proposed_action"]
+            else None
+        ),
+        policy_outcome=(
+            WorkflowPolicyResponse(
+                decision=policy.decision.value,
+                reason_code=policy.reason_code.value,
+                reason=policy.reason,
+                action_id=policy.action_id,
+            )
+            if policy
+            else None
+        ),
+        action=_action_response(action),
+        approval_outcome=(
+            WorkflowApprovalResponse(
+                approval_id=state["approval_outcome"].approval_id,
+                action_id=state["approval_outcome"].action_id,
+                status=state["approval_outcome"].status.value,
+            )
+            if state["approval_outcome"]
+            else None
+        ),
+        execution_outcome=(
+            WorkflowExecutionResponse(
+                action_id=state["execution_outcome"].action_id,
+                approval_id=state["execution_outcome"].approval_id,
+                status=state["execution_outcome"].status.value,
+                service=state["execution_outcome"].service,
+                environment=state["execution_outcome"].environment,
+                target_version=state["execution_outcome"].target_version,
+                executed=state["execution_outcome"].executed,
+            )
+            if state["execution_outcome"]
+            else None
+        ),
+        verification_outcome=(
+            WorkflowVerificationResponse(
+                verification_id=state["verification_outcome"].verification_id,
+                action_id=state["verification_outcome"].action_id,
+                status=state["verification_outcome"].status.value,
+                summary=state["verification_outcome"].summary,
+            )
+            if state["verification_outcome"]
+            else None
+        ),
+        report_outcome=(
+            WorkflowReportOutcomeResponse(**state["report_outcome"].model_dump())
+            if state["report_outcome"]
+            else None
+        ),
+    )
+
+
+def _validate_incident_binding(incident: Incident, state: AgentState) -> None:
+    checkpoint = state["incident"]
+    if (
+        checkpoint.id != incident.id
+        or checkpoint.service != incident.service
+        or checkpoint.environment != incident.environment
+        or checkpoint.description != incident.description
+        or checkpoint.time_range_start != incident.time_range_start
+        or checkpoint.time_range_end != incident.time_range_end
+    ):
+        raise WorkflowStateConflict("Checkpoint Incident binding mismatch")
+
+
+def _action_response(action: Action | None) -> WorkflowActionResponse | None:
+    if action is None:
+        return None
+    parameters = ActionExecutionParameters.model_validate(action.parameters)
+    return WorkflowActionResponse(
+        action_id=action.id,
+        action_type=action.action_type,
+        status=action.status,
+        parameters=WorkflowActionParametersResponse(**parameters.model_dump()),
+        executed_at=action.executed_at,
+    )

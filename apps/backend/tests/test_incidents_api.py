@@ -4,12 +4,47 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from devsupport_backend.agent.state import AgentStage, EvidenceContext, create_initial_agent_state
 from devsupport_backend.database import engine, get_session
 from devsupport_backend.main import app
-from devsupport_backend.models import Incident, Report
+from devsupport_backend.models import Action, Incident, Report
+from devsupport_backend.routers.incidents import get_workflow_runtime
+
+
+class FakeWorkflowRuntime:
+    def __init__(self, *, start_error: Exception | None = None) -> None:
+        self.states: dict[str, object] = {}
+        self.start_error = start_error
+        self.start_calls = 0
+        self.started_threads: list[str] = []
+
+    def get_state(self, thread_id: str):
+        return self.states.get(thread_id)
+
+    def start(self, incident: Incident):
+        self.start_calls += 1
+        self.started_threads.append(incident.thread_id)
+        if self.start_error:
+            raise self.start_error
+        state = create_initial_agent_state(incident)
+        state.update(
+            {
+                "current_stage": AgentStage.RETRIEVAL,
+                "evidence": [
+                    EvidenceContext(
+                        evidence_type="metric_snapshot",
+                        source="query_metrics",
+                        summary="A compact public evidence summary.",
+                        data={"internal": "not-for-web"},
+                    )
+                ],
+            }
+        )
+        self.states[incident.thread_id] = state
+        return state
 
 
 @pytest.fixture
@@ -54,6 +89,11 @@ def create_incident(api_client: TestClient, payload: dict[str, str]) -> dict[str
     return response.json()
 
 
+def workflow_client(api_client: TestClient, runtime: FakeWorkflowRuntime) -> TestClient:
+    app.dependency_overrides[get_workflow_runtime] = lambda: runtime
+    return api_client
+
+
 def test_create_incident_persists_open_record(
     api_client: TestClient, database_session: Session, incident_payload: dict[str, str]
 ) -> None:
@@ -87,6 +127,123 @@ def test_get_missing_incident_returns_not_found(api_client: TestClient) -> None:
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Incident not found"}
+
+
+def test_workflow_api_start_and_read_use_the_persisted_thread(
+    api_client: TestClient, database_session: Session, incident_payload: dict[str, str]
+) -> None:
+    runtime = FakeWorkflowRuntime()
+    client = workflow_client(api_client, runtime)
+    created = create_incident(client, incident_payload)
+
+    started = client.post(f"/incidents/{created['id']}/workflow")
+    read = client.get(f"/incidents/{created['id']}/workflow")
+
+    incident = database_session.get(Incident, UUID(created["id"]))
+    assert started.status_code == 200
+    assert read.status_code == 200
+    assert incident is not None and incident.status == "INVESTIGATING"
+    assert runtime.started_threads == [created["thread_id"]]
+    assert read.json()["incident_status"] == "INVESTIGATING"
+    assert read.json()["evidence"][0].get("data") is None
+    assert "data" not in read.json()["evidence"][0]
+
+
+def test_workflow_api_unknown_and_not_started_responses(
+    api_client: TestClient, incident_payload: dict[str, str]
+) -> None:
+    runtime = FakeWorkflowRuntime()
+    client = workflow_client(api_client, runtime)
+    created = create_incident(client, incident_payload)
+
+    unknown_post = client.post(f"/incidents/{uuid4()}/workflow")
+    unknown_get = client.get(f"/incidents/{uuid4()}/workflow")
+    before_start = client.get(f"/incidents/{created['id']}/workflow")
+
+    assert unknown_post.json() == {"detail": "Incident not found"}
+    assert unknown_get.json() == {"detail": "Incident not found"}
+    assert before_start.json() == {"detail": "Workflow not started"}
+    assert unknown_post.status_code == unknown_get.status_code == before_start.status_code == 404
+
+
+def test_workflow_api_duplicate_and_non_open_start_are_conflicts(
+    api_client: TestClient, database_session: Session, incident_payload: dict[str, str]
+) -> None:
+    runtime = FakeWorkflowRuntime()
+    client = workflow_client(api_client, runtime)
+    created = create_incident(client, incident_payload)
+    incident = database_session.get(Incident, UUID(created["id"]))
+    assert incident is not None
+    runtime.states[incident.thread_id] = create_initial_agent_state(incident)
+
+    duplicate = client.post(f"/incidents/{incident.id}/workflow")
+    incident.status = "WAITING_APPROVAL"
+    database_session.commit()
+    waiting = client.post(f"/incidents/{incident.id}/workflow")
+    incident.status = "RESOLVED"
+    database_session.commit()
+    resolved = client.post(f"/incidents/{incident.id}/workflow")
+
+    assert duplicate.status_code == waiting.status_code == resolved.status_code == 409
+    assert runtime.start_calls == 0
+
+
+def test_workflow_get_is_read_only(
+    api_client: TestClient, database_session: Session, incident_payload: dict[str, str]
+) -> None:
+    runtime = FakeWorkflowRuntime()
+    client = workflow_client(api_client, runtime)
+    created = create_incident(client, incident_payload)
+    incident = database_session.get(Incident, UUID(created["id"]))
+    assert incident is not None
+    runtime.states[incident.thread_id] = create_initial_agent_state(incident)
+    before_updated = incident.updated_at
+    reports_before = database_session.scalar(select(func.count()).select_from(Report))
+    actions_before = database_session.scalar(select(func.count()).select_from(Action))
+
+    response = client.get(f"/incidents/{incident.id}/workflow")
+
+    database_session.refresh(incident)
+    assert response.status_code == 200
+    assert incident.updated_at == before_updated
+    assert database_session.scalar(select(func.count()).select_from(Report)) == reports_before
+    assert database_session.scalar(select(func.count()).select_from(Action)) == actions_before
+    assert runtime.start_calls == 0
+
+
+def test_workflow_start_failure_restores_open(
+    api_client: TestClient, database_session: Session, incident_payload: dict[str, str]
+) -> None:
+    runtime = FakeWorkflowRuntime(start_error=RuntimeError("provider unavailable"))
+    client = workflow_client(api_client, runtime)
+    created = create_incident(client, incident_payload)
+
+    response = client.post(f"/incidents/{created['id']}/workflow")
+
+    incident = database_session.get(Incident, UUID(created["id"]))
+    assert response.status_code == 503
+    assert incident is not None and incident.status == "OPEN"
+
+
+@pytest.mark.parametrize("origin", ["http://localhost:3000", "http://127.0.0.1:3000"])
+def test_workflow_cors_allows_only_local_nextjs_origins(origin: str) -> None:
+    allowed = TestClient(app).options(
+        "/incidents",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+    rejected = TestClient(app).options(
+        "/incidents",
+        headers={
+            "Origin": "http://example.invalid",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    assert allowed.headers["access-control-allow-origin"] == origin
+    assert "access-control-allow-origin" not in rejected.headers
 
 
 def test_get_final_report_is_read_only_and_distinguishes_missing_records(
