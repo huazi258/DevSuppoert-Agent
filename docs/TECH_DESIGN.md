@@ -345,7 +345,7 @@ POST /incidents
 启动 LangGraph Thread
 ```
 
-Incident ID 与 Agent Thread 建议建立一一关联：
+Incident ID 与 Agent Thread 必须建立固定一一关联：
 
 ```text
 incident_id
@@ -353,7 +353,7 @@ incident_id
 thread_id
 ```
 
-以便后续恢复。
+创建 Incident 时由 Backend 生成并持久化 `thread_id`；该 Incident 的启动、暂停后恢复和状态查询都使用同一个 `thread_id`。不得在 Approval 后新建 Thread 或重新发起调查来模拟恢复。
 
 ---
 
@@ -421,20 +421,23 @@ evaluate_evidence
              ↓
       propose_resolution
              ↓
-      risk_gate
-        ├── no action → report
-        └── side effect
+      policy_gate
+        ├── no action / DENIED → report
+        └── rollback + APPROVAL_REQUIRED
                  ↓
               approval
                  ↓
               execute
                  ↓
               verify
-             ┌───┴────┐
-             ↓        ↓
-          success    failure
-             ↓        ↓
-           report   investigation
+             ┌────┴─────┐
+             ↓          ↓
+           PASS     FAIL / INCONCLUSIVE
+             ↓          ↓
+         RESOLVED   NEEDS_MANUAL_ACTION
+             └────┬─────┘
+                  ↓
+                report
 ```
 
 ---
@@ -616,25 +619,36 @@ supporting_evidence_ids
 
 ---
 
-## 9.9 Risk Gate
+## 9.9 Policy Gate
 
-确定推荐操作：
+Policy Gate 是代码执行的安全边界，不是 Prompt 约束。它接收 LLM 的高层 `ProposedAction`、Incident、已验证 Evidence 与当前 Deployment State，并确定：
 
 ```text
 是否有副作用
 是否允许环境
 是否需要审批
+可执行 Action 的实际参数
 ```
 
-例如：
+LLM 的 `ProposedAction` 仅是 high-level recommendation，不授予执行权限，也不得包含或授权 `service`、`target_version`、`current_version` 等执行参数。Policy Gate 必须依据真实 Evidence 和当前 Deployment State 生成并校验这些参数；缺少、矛盾或无法验证的事实必须 DENIED，不能由 LLM 凭空补齐。
+
+V0 固定规则：
 
 ```text
-rollback + staging
+rollback + local + supported service + verified deployment facts
 → WAITING_APPROVAL
 
 rollback + production
 → DENIED
+
+rollback + unsupported environment
+→ DENIED
+
+任何 rollback
+→ APPROVAL_REQUIRED
 ```
+
+当前 Fault Lab 只支持 `local`，因此只有 `local` 可以进入可执行路径；`production` 和所有未显式支持的 environment 均默认拒绝。
 
 ---
 
@@ -652,7 +666,7 @@ Proposed Action
 Current State
 ```
 
-人工审批后继续。
+人工审批后使用已持久化的同一 `thread_id` 恢复；不得重启调查来构造 resume。
 
 ---
 
@@ -664,7 +678,9 @@ V0 只允许：
 rollback_deployment
 ```
 
-Execution 不得由模型直接拼接 Shell。
+`rollback_deployment` 是独立的 remediation execution path，不属于 Day 3 read-only Investigation Planner / Tool Executor。它只接收 Policy Gate 根据真实 Evidence、Deployment State 和 Approval Record 生成的可执行 Action。
+
+Execution 不得由模型直接拼接 Shell，也不得复用 Fault Lab reset。Rollback 不得清理历史 logs、traces 或 metrics，必须真实改变目标服务的运行状态，使 Scenario A 的请求恢复。
 
 必须走受控 Tool Adapter。
 
@@ -680,14 +696,19 @@ Execution 不得由模型直接拼接 Shell。
 
 而是重新查询运行环境。
 
-包括：
+Verification 必须重新采集 action 后的新 Evidence，包括：
 
 ```text
+deployment state
 health
 core API
-error signal
-critical logs
+new error signal / critical logs
+metrics delta 或 post-action signal
 ```
+
+Metrics 不要求累计 `error_count` 清零；应判断 action 后新增请求的错误信号和趋势。Rollback Tool 的 success 只表示操作调用成功，不表示 Incident 已恢复。
+
+只有 Verification `PASS` 可以进入 `RESOLVED`。V0 中 `FAIL` 或 `INCONCLUSIVE` 一律进入 `NEEDS_MANUAL_ACTION`，不自动连续执行第二次 remediation。
 
 ---
 
@@ -785,7 +806,7 @@ PostgreSQL Domain Tables
 
 LangGraph 使用持久化 Checkpointer。
 
-V0 优先使用 PostgreSQL 作为持久化后端。
+V0 使用 PostgreSQL 作为持久化后端。
 
 每个 Incident 对应固定：
 
@@ -793,17 +814,17 @@ V0 优先使用 PostgreSQL 作为持久化后端。
 thread_id
 ```
 
-使工作流可以：
+使工作流可以按相同 Thread：
 
 ```text
 运行
 → interrupt
 → 进程结束
-→ 后续重新启动
+→ 服务进程重启或后续请求
 → 根据 thread_id Resume
 ```
 
-这也是 Human-in-the-loop 能真正成立的基础。
+Workflow 必须可启动、暂停和按该固定 `thread_id` 恢复，并保留暂停前的 Hypotheses、Evidence、Tool History 和 Policy / Approval 上下文。不得重新启动调查来模拟 resume；这也是 Human-in-the-loop 能真正成立的基础。
 
 ---
 
@@ -1135,6 +1156,8 @@ version = old_version
 
 然后宣称回滚成功。
 
+`rollback_deployment` 不得调用 Fault Lab reset，且不得清理已有 logs、traces 或 metrics。Reset 只服务于可重复的 Fixture / Eval 准备，不是 remediation action。
+
 ---
 
 # 24. Logs / Metrics / Trace
@@ -1225,12 +1248,14 @@ Human Approval
 代码层固定校验：
 
 ```text
-environment != production
-action in allowed_actions
+action == rollback_deployment
+environment == local
 service in allowed_services
+真实 Evidence 与当前 Deployment State 能确定目标 service、current_version 与 target_version
+Approval Required
 ```
 
-不满足直接拒绝。
+`production` 必须 DENIED；任何不受当前 Fault Lab 支持的 environment 也必须 DENIED，不能因为“非 production”而默认放行。Policy Gate 而非 LLM 根据已验证事实生成可执行 Action 参数。
 
 ---
 
@@ -1291,6 +1316,8 @@ INCONCLUSIVE
 ```text
 RESOLVED
 ```
+
+Verification 只使用 action 后重新采集的 Evidence：Deployment 已到达批准的 target、health 正常、core request 成功，以及没有新的核心错误信号。Metrics 以 delta / post-action signal 判断，不要求累计 error_count 清零。`FAIL` 和 `INCONCLUSIVE` 都转为 `NEEDS_MANUAL_ACTION`，V0 不自动尝试下一次 remediation。
 
 ---
 
@@ -1596,7 +1623,7 @@ Codex 实现时必须遵守：
 ### Side Effects
 
 * 只允许 rollback；
-* 只允许 local / staging；
+* 当前 Fault Lab 只允许 local；
 * 必须 Policy Gate；
 * 必须 Human Approval。
 

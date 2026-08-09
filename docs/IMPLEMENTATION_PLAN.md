@@ -1157,7 +1157,36 @@ Final Conclusion
 
 ---
 
-# 41. Task 4.1 — Policy Gate
+# 41. Task 4.0 — Persistent Workflow Foundation
+
+这是 Day 4 其余任务的前置条件，必须先完成并验收。
+
+LangGraph 必须使用持久化 Checkpointer；V0 使用 PostgreSQL。每个 Incident 创建时必须固定并持久化一个 `thread_id`，Workflow 启动、暂停、查询和恢复都使用该同一 `thread_id`。
+
+必须验证：
+
+```text
+start workflow
+↓
+interrupt / pause
+↓
+按相同 thread_id resume
+```
+
+恢复后必须保留已有的：
+
+```text
+Hypotheses
+Evidence
+Tool History
+Policy / Approval Context
+```
+
+Human Approval 依赖这一基础。不得通过重新启动调查、创建新 Thread 或重跑 Day 3 investigation 来模拟 resume。
+
+---
+
+# 42. Task 4.1 — Policy Gate
 
 在执行 Action 前检查：
 
@@ -1167,20 +1196,25 @@ action
 service
 ```
 
+Policy 必须由代码执行，不能只靠 Prompt。LLM 的 `ProposedAction` 仅是 high-level recommendation，不授予执行权限，也不能生成或授权 `service`、`target_version`、`current_version` 等执行参数。
+
+Policy Gate 必须依据真实 Evidence 和当前 Deployment State 生成并校验可执行 Action 参数；事实缺失、矛盾或无法验证时必须 DENIED。
+
 固定规则：
 
 ```text
 production → DENIED
-rollback → APPROVAL_REQUIRED
+unsupported environment → DENIED
+local + rollback + supported service + verified deployment facts → APPROVAL_REQUIRED
 ```
 
-Policy 必须写在代码中。
+当前 Fault Lab 实际只支持 `local`，因此只有 `local` 可进入可执行路径；不得因为 environment 非 production 而默认放行。`rollback_deployment` 必须始终 approval required。
 
-不能只靠 Prompt。
+Policy Gate 之外的 Action 不得执行。
 
 ---
 
-# 42. Task 4.2 — Human Approval
+# 43. Task 4.2 — Human Approval
 
 实现 LangGraph Interrupt。
 
@@ -1209,12 +1243,12 @@ REJECT
 
 ---
 
-# 43. Task 4.3 — Workflow Resume
+# 44. Task 4.3 — Workflow Resume
 
 批准后：
 
 ```text
-恢复相同 thread
+使用 Task 4.0 持久化的相同 thread_id 恢复相同 thread
 ```
 
 不得：
@@ -1233,9 +1267,11 @@ Tool History
 
 ---
 
-# 44. Task 4.4 — rollback_deployment
+# 45. Task 4.4 — rollback_deployment
 
-执行真正的 Fault Lab 状态变化。
+`rollback_deployment` 是独立 remediation execution path，不加入或复用 Day 3 的 read-only Investigation Planner / Tool Executor。它只接收 Policy Gate 根据真实 Evidence、Deployment State 和 Approval Record 生成的 Action 参数。
+
+执行真正的 Fault Lab 运行状态变化。
 
 Scenario A：
 
@@ -1253,22 +1289,25 @@ POST /orders
 
 真实恢复。
 
-不能只修改数据库版本号。
+不能只修改数据库版本号，也不得复用 Fault Lab reset。Rollback 不得清理历史 logs、traces 或 metrics。
 
 ---
 
-# 45. Task 4.5 — Recovery Verification
+# 46. Task 4.5 — Recovery Verification
 
 执行 Rollback 后：
 
-重新验证：
+使用 action 后重新采集的新 Evidence 验证：
 
 ```text
+deployment state
 health
 core request
-error signal
-new critical errors
+new error signal / critical logs
+metrics delta / post-action signal
 ```
+
+Metrics 不要求累计 `error_count` 清零；判断的是 action 后新增请求的错误信号和趋势。Tool success != Incident resolved。
 
 结果：
 
@@ -1294,21 +1333,14 @@ RESOLVED
 RESOLVED
 ```
 
-应返回：
-
-```text
-INVESTIGATING
-```
-
-或：
-
-```text
 NEEDS_MANUAL_ACTION
 ```
 
+V0 中 FAIL / INCONCLUSIVE 不自动连续执行第二次 remediation。
+
 ---
 
-# 46. Task 4.6 — Final Report
+# 47. Task 4.6 — Final Report
 
 生成：
 
@@ -1329,7 +1361,7 @@ Final Status
 
 ---
 
-# 47. Task 4.7 — Web Console
+# 48. Task 4.7 — Web Console
 
 V0 Web 优先：
 
@@ -1373,7 +1405,7 @@ Reject
 
 ---
 
-# 48. 前端更新方式
+# 49. 前端更新方式
 
 优先：
 
@@ -1389,7 +1421,7 @@ Reject
 
 ---
 
-# 49. Day 4 完整验收 Demo
+# 50. Day 4 完整验收 Demo
 
 必须稳定运行：
 
@@ -1431,9 +1463,19 @@ Reject
 
 > 不进入 UI 优化。
 
+最小 E2E 验收还必须覆盖：
+
+```text
+Scenario A: Approve → same thread resume → rollback → verification PASS → RESOLVED
+Approval Reject → no rollback
+production / unsupported environment → Policy DENIED
+Scenario B → 不得错误 rollback
+rollback success + verification FAIL / INCONCLUSIVE → NEEDS_MANUAL_ACTION，且不得 RESOLVED
+```
+
 ---
 
-# 50. Day 5 — Eval、Hardening 与项目包装
+# 51. Day 5 — Eval、Hardening 与项目包装
 
 ## 目标
 
@@ -1454,7 +1496,7 @@ Reject
 
 ---
 
-# 51. Task 5.1 — Eval Fixture Format
+# 52. Task 5.1 — Eval Fixture Format
 
 每条 Fixture 至少定义：
 
@@ -1473,7 +1515,7 @@ expected_final_status
 
 ---
 
-# 52. Task 5.2 — 第一批 Eval
+# 53. Task 5.2 — 第一批 Eval
 
 目标：
 
@@ -1513,7 +1555,7 @@ expected_final_status
 
 ---
 
-# 53. Task 5.3 — Eval Runner
+# 54. Task 5.3 — Eval Runner
 
 自动执行：
 
@@ -1537,7 +1579,7 @@ Score
 
 ---
 
-# 54. Task 5.4 — 指标
+# 55. Task 5.4 — 指标
 
 V0 至少输出：
 
@@ -1577,7 +1619,7 @@ LLM Call Count
 
 ---
 
-# 55. Task 5.5 — 对照实验
+# 56. Task 5.5 — 对照实验
 
 优先完成：
 
@@ -1603,7 +1645,7 @@ RAG Only
 
 ---
 
-# 56. Task 5.6 — Integration Tests
+# 57. Task 5.6 — Integration Tests
 
 重点测试：
 
@@ -1622,7 +1664,7 @@ Eval Runner
 
 ---
 
-# 57. Task 5.7 — Failure Hardening
+# 58. Task 5.7 — Failure Hardening
 
 重点处理最容易影响 Demo 的问题：
 
@@ -1640,7 +1682,7 @@ Eval Runner
 
 ---
 
-# 58. Task 5.8 — README
+# 59. Task 5.8 — README
 
 README 必须包含：
 
@@ -1664,7 +1706,7 @@ Roadmap
 
 ---
 
-# 59. Task 5.9 — 项目图
+# 60. Task 5.9 — 项目图
 
 至少准备两张：
 
@@ -1692,7 +1734,7 @@ Incident
 
 ---
 
-# 60. Task 5.10 — 简历数据
+# 61. Task 5.10 — 简历数据
 
 只有 Eval 跑完以后才填写：
 
@@ -1706,7 +1748,7 @@ Tool Selection Accuracy
 
 ---
 
-# 61. V0 Release Gate
+# 62. V0 Release Gate
 
 V0 Release 前必须满足：
 
@@ -1750,7 +1792,7 @@ V0 Release 前必须满足：
 
 ---
 
-# 62. Git 提交策略
+# 63. Git 提交策略
 
 每一个阶段形成独立可审查提交。
 
@@ -1796,7 +1838,7 @@ git commit -m "finish project"
 
 ---
 
-# 63. Codex 每个任务的标准工作模式
+# 64. Codex 每个任务的标准工作模式
 
 每次只交给 Codex 一个明确阶段。
 
@@ -1837,7 +1879,7 @@ docs/IMPLEMENTATION_PLAN.md
 
 ---
 
-# 64. Codex 完成后的标准回报
+# 65. Codex 完成后的标准回报
 
 每个阶段要求 Codex 返回：
 
@@ -1868,7 +1910,7 @@ Ready for Review
 
 ---
 
-# 65. 不允许的 Vibe Coding 模式
+# 66. 不允许的 Vibe Coding 模式
 
 禁止：
 
@@ -1895,7 +1937,7 @@ Ready for Review
 
 ---
 
-# 66. 时间预算
+# 67. 时间预算
 
 建议：
 
@@ -1910,7 +1952,7 @@ Ready for Review
 
 ---
 
-# 67. 时间不足时的降级顺序
+# 68. 时间不足时的降级顺序
 
 如果开发出现延期，按以下顺序降级。
 
@@ -1950,7 +1992,7 @@ Recovery Verification
 
 ---
 
-# 68. Definition of Done
+# 69. Definition of Done
 
 DevSupport Agent V0 的真正 Definition of Done：
 
