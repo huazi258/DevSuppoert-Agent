@@ -20,6 +20,10 @@ from devsupport_backend.agent.nodes.tool_execution import (
     tool_execution_node,
 )
 from devsupport_backend.agent.policy import PolicyGate, policy_gate_node
+from devsupport_backend.agent.post_approval import (
+    ControlledActionExecution,
+    add_post_approval_continuation,
+)
 from devsupport_backend.agent.resolution_proposal import resolution_proposal_node
 from devsupport_backend.agent.state import (
     AgentStage,
@@ -77,6 +81,7 @@ class InvestigationWorkflowDependencies:
     policy_gate: PolicyGate
     approval_wait: ApprovalWait
     approval_decision: ApprovalDecisionService
+    action_execution: ControlledActionExecution | None = None
 
 
 def build_investigation_graph(
@@ -135,6 +140,8 @@ def build_investigation_graph(
         "approval_decision",
         lambda state: approval_decision_node(state, dependencies.approval_decision),
     )
+    if dependencies.action_execution is not None:
+        add_post_approval_continuation(graph, action_execution=dependencies.action_execution)
 
     graph.add_edge(START, "intake")
     graph.add_conditional_edges(
@@ -189,7 +196,8 @@ def build_investigation_graph(
     )
     graph.add_edge("approval_wait", "approval_interrupt")
     graph.add_edge("approval_interrupt", "approval_decision")
-    graph.add_edge("approval_decision", END)
+    if dependencies.action_execution is None:
+        graph.add_edge("approval_decision", END)
     return graph.compile(checkpointer=checkpointer)
 
 

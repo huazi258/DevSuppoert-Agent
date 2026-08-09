@@ -12,7 +12,7 @@ from uuid import uuid4
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query
 from opentelemetry import trace
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response
@@ -20,8 +20,10 @@ from starlette.responses import Response
 from order_service.config import settings
 from order_service.deployment_state import (
     FAULTY_VERSION,
+    RollbackUnavailableError,
     get_deployment_state,
     reset_deployment_state,
+    rollback_to_previous_version,
 )
 from order_service.log_buffer import LogBuffer
 from order_service.runtime_state import (
@@ -237,6 +239,34 @@ def internal_deployment() -> dict[str, str | None]:
         "current_version": deployment.current_version,
         "previous_version": deployment.previous_version,
         "deployed_at": deployment.deployed_at,
+    }
+
+
+class RollbackDeploymentRequest(BaseModel):
+    """The only control-plane input accepted by the local rollback endpoint."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    target_version: str = Field(min_length=1, max_length=100)
+
+
+@app.post("/internal/deployment/rollback")
+def internal_deployment_rollback(
+    request: RollbackDeploymentRequest,
+) -> dict[str, str | bool | None]:
+    """Perform the one supported rollback without resetting Fault Lab evidence."""
+    try:
+        result = rollback_to_previous_version(request.target_version)
+    except RollbackUnavailableError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    deployment = result.deployment
+    return {
+        "service": deployment.service,
+        "current_version": deployment.current_version,
+        "previous_version": deployment.previous_version,
+        "deployed_at": deployment.deployed_at,
+        "target_version": request.target_version,
+        "executed": result.executed,
     }
 
 

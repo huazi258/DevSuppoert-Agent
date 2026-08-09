@@ -10,11 +10,12 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from devsupport_backend.config import Settings, settings
-from devsupport_backend.tools.schemas import GetDeploymentHistoryInput
+from devsupport_backend.tools.schemas import GetDeploymentHistoryInput, RollbackDeploymentInput
 
 SUPPORTED_ENVIRONMENT = "local"
 ServiceName = Literal["order-service", "payment-service"]
 SUPPORTED_SERVICES = frozenset(("order-service", "payment-service"))
+ROLLBACK_SUPPORTED_SERVICES = frozenset(("order-service",))
 
 
 class DeploymentAdapterError(RuntimeError):
@@ -45,6 +46,23 @@ class DeploymentQueryResult:
     current_version: str
     previous_version: str | None
     deployed_at: datetime | None
+
+
+class FaultLabRollbackResponse(FaultLabDeploymentResponse):
+    """Validated response from the one local order-service rollback endpoint."""
+
+    target_version: str = Field(min_length=1, max_length=100)
+    executed: bool
+
+
+@dataclass(frozen=True)
+class RollbackResult:
+    """Controlled rollback result from a fixed Fault Lab endpoint."""
+
+    service: str
+    environment: str
+    target_version: str
+    executed: bool
 
 
 class FaultLabDeploymentAdapter:
@@ -113,4 +131,60 @@ class FaultLabDeploymentAdapter:
             current_version=deployment.current_version,
             previous_version=deployment.previous_version,
             deployed_at=deployment.deployed_at,
+        )
+
+
+class FaultLabRollbackAdapter:
+    """Execute only the order-service's fixed local rollback operation."""
+
+    def __init__(self, *, order_service_url: str, http_client: httpx.Client | None = None) -> None:
+        self._order_service_url = order_service_url.rstrip("/")
+        self._http_client = http_client or httpx.Client(timeout=5.0)
+
+    @classmethod
+    def from_settings(cls, config: Settings = settings) -> "FaultLabRollbackAdapter":
+        return cls(order_service_url=config.fault_lab_order_service_url)
+
+    def execute(self, tool_input: RollbackDeploymentInput) -> RollbackResult:
+        """POST the server-approved target version to the only supported endpoint."""
+        if tool_input.environment != SUPPORTED_ENVIRONMENT:
+            raise DeploymentAdapterError(
+                "unsupported_environment", "Rollback is only available locally."
+            )
+        if tool_input.service != "order-service":
+            raise DeploymentAdapterError(
+                "unsupported_service", "Only order-service has a local rollback."
+            )
+        try:
+            response = self._http_client.post(
+                f"{self._order_service_url}/internal/deployment/rollback",
+                json={"target_version": tool_input.target_version},
+            )
+            response.raise_for_status()
+            rollback = FaultLabRollbackResponse.model_validate(response.json())
+        except httpx.HTTPError as error:
+            raise DeploymentAdapterError(
+                "rollback_request_failed",
+                f"Fault Lab rollback request failed: {type(error).__name__}",
+                retryable=True,
+            ) from error
+        except (ValidationError, ValueError) as error:
+            raise DeploymentAdapterError(
+                "invalid_rollback_response",
+                f"Fault Lab rollback endpoint returned invalid structured data: {error}",
+            ) from error
+        if (
+            rollback.service != tool_input.service
+            or rollback.target_version != tool_input.target_version
+            or rollback.current_version != tool_input.target_version
+        ):
+            raise DeploymentAdapterError(
+                "rollback_response_mismatch",
+                "Fault Lab rollback response does not match the approved Action.",
+            )
+        return RollbackResult(
+            service=tool_input.service,
+            environment=tool_input.environment,
+            target_version=tool_input.target_version,
+            executed=rollback.executed,
         )

@@ -71,7 +71,7 @@ _DEFINITIONS = (
         ToolName.ROLLBACK_DEPLOYMENT,
         RollbackDeploymentInput,
         RollbackDeploymentOutput,
-        implemented=False,
+        implemented=True,
     ),
 )
 

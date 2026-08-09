@@ -14,6 +14,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from devsupport_backend.agent.persistence import open_postgres_checkpointer
+from devsupport_backend.agent.post_approval import (
+    ControlledActionExecution,
+    add_post_approval_continuation,
+)
 from devsupport_backend.agent.runtime import WorkflowService
 from devsupport_backend.agent.state import (
     ActionType,
@@ -27,6 +31,7 @@ from devsupport_backend.agent.state import (
 from devsupport_backend.database import SessionLocal
 from devsupport_backend.models import Action, Approval, Incident
 from devsupport_backend.schemas.approvals import ApprovalDecision
+from devsupport_backend.tools.deployments import FaultLabDeploymentAdapter, FaultLabRollbackAdapter
 
 PENDING_APPROVAL = "PENDING_APPROVAL"
 WAITING_APPROVAL = "WAITING_APPROVAL"
@@ -219,7 +224,6 @@ class ApprovalService:
             approval.incident_id != incident.id
             or action.incident_id != incident.id
             or action.action_type != ActionType.ROLLBACK_DEPLOYMENT.value
-            or action.executed_at is not None
             or approval.status not in {ApprovalStatus.APPROVED.value, ApprovalStatus.REJECTED.value}
         ):
             raise ApprovalValidationError("Existing Approval is not bound to this pending Action")
@@ -228,7 +232,12 @@ class ApprovalService:
             if approval.status == ApprovalStatus.APPROVED.value
             else ApprovalStatus.REJECTED.value
         )
-        if action.status not in {PENDING_APPROVAL, expected_action_status}:
+        allowed_statuses = {PENDING_APPROVAL, expected_action_status}
+        if approval.status == ApprovalStatus.APPROVED.value and action.executed_at is not None:
+            allowed_statuses.add("EXECUTED")
+        if approval.status == ApprovalStatus.APPROVED.value and action.status == "FAILED":
+            allowed_statuses.add("FAILED")
+        if action.status not in allowed_statuses:
             raise ApprovalValidationError("Existing Approval Action is in an inconsistent status")
         return action
 
@@ -262,6 +271,7 @@ class ApprovalService:
             return True
         if state["current_stage"] not in {
             AgentStage.ACTION_EXECUTION,
+            AgentStage.RECOVERY_VERIFICATION,
             AgentStage.NEEDS_MANUAL_ACTION,
         }:
             raise ApprovalValidationError(
@@ -384,6 +394,7 @@ def build_approval_resume_graph(
     *,
     approval_wait: ApprovalWait,
     approval_decision: ApprovalDecisionService,
+    action_execution: ControlledActionExecution | None = None,
     checkpointer: BaseCheckpointSaver,
 ):
     """Compile the persisted continuation for the original approval-interrupted workflow."""
@@ -398,7 +409,10 @@ def build_approval_resume_graph(
     )
     graph.add_edge(START, "approval_interrupt")
     graph.add_edge("approval_interrupt", "approval_decision")
-    graph.add_edge("approval_decision", END)
+    if action_execution is None:
+        graph.add_edge("approval_decision", END)
+    else:
+        add_post_approval_continuation(graph, action_execution=action_execution)
     return graph.compile(checkpointer=checkpointer)
 
 
@@ -411,6 +425,7 @@ class PostgresApprovalWorkflowCoordinator:
                 graph = build_approval_resume_graph(
                     approval_wait=ApprovalWaitService(session),
                     approval_decision=ApprovalDecisionService(session),
+                    action_execution=_action_execution_service(session),
                     checkpointer=checkpointer,
                 )
                 return WorkflowService(graph).resume(
@@ -422,3 +437,14 @@ class PostgresApprovalWorkflowCoordinator:
             raise ApprovalResumeError(
                 "Workflow resume did not complete; retry the same decision"
             ) from error
+
+
+def _action_execution_service(session: Session):
+    """Construct the one production side-effect boundary for a resumed Action."""
+    from devsupport_backend.action_execution import ActionExecutionService
+
+    return ActionExecutionService(
+        session,
+        FaultLabDeploymentAdapter.from_settings(),
+        FaultLabRollbackAdapter.from_settings(),
+    )

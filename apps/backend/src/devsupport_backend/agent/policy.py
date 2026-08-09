@@ -19,8 +19,8 @@ from devsupport_backend.agent.state import (
 )
 from devsupport_backend.models import Action
 from devsupport_backend.tools.deployments import (
+    ROLLBACK_SUPPORTED_SERVICES,
     SUPPORTED_ENVIRONMENT,
-    SUPPORTED_SERVICES,
     DeploymentAdapterError,
     DeploymentQueryResult,
     FaultLabDeploymentAdapter,
@@ -79,7 +79,7 @@ class PolicyGateService:
                 PolicyReasonCode.UNSUPPORTED_ENVIRONMENT,
                 f"Rollback is only supported for environment: {SUPPORTED_ENVIRONMENT}.",
             )
-        if incident.service not in SUPPORTED_SERVICES:
+        if incident.service not in ROLLBACK_SUPPORTED_SERVICES:
             return _denied(
                 PolicyReasonCode.UNSUPPORTED_SERVICE,
                 "The incident service is not supported by the local Fault Lab rollback policy.",

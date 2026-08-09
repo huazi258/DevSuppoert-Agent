@@ -357,9 +357,21 @@ class CountingCoordinator:
     def __init__(self) -> None:
         self.calls = 0
         self._delegate = PostgresApprovalWorkflowCoordinator()
+        self._context: ResumeContext | None = None
+
+    def bind(self, context: ResumeContext) -> None:
+        """Keep this Task 4.3 API idempotency test independent of a live rollback target."""
+        self._context = context
 
     def resume(self, thread_id: str) -> AgentState:
         self.calls += 1
+        return self._resume(thread_id)
+
+    def _resume(self, thread_id: str) -> AgentState:
+        if self._context is not None:
+            with open_postgres_checkpointer() as checkpointer:
+                graph = _interrupt_graph(self._context, checkpointer=checkpointer)
+                return WorkflowService(graph).resume(thread_id, {"event": "approval_recorded"})
         return self._delegate.resume(thread_id)
 
 
@@ -370,7 +382,7 @@ class FlakyCoordinator(CountingCoordinator):
         self.calls += 1
         if self.calls == 1:
             raise ApprovalResumeError("simulated transient resume failure")
-        return self._delegate.resume(thread_id)
+        return self._resume(thread_id)
 
 
 def _api_resume_context(
@@ -379,6 +391,7 @@ def _api_resume_context(
     config = WorkflowService.config_for(context.incident.thread_id)
     with open_postgres_checkpointer() as checkpointer:
         _interrupt_graph(context, checkpointer=checkpointer).invoke(context.state, config)
+    coordinator.bind(context)
     app.dependency_overrides[get_approval_workflow_coordinator] = lambda: coordinator
     client = TestClient(app)
     return client, f"/incidents/{context.incident.id}/approval"

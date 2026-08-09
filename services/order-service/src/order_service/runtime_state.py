@@ -59,6 +59,18 @@ def inject_missing_config() -> None:
         )
 
 
+def restore_required_runtime_configuration() -> None:
+    """Restore only the runtime setting coupled to the previous deployment.
+
+    This is deliberately not the Fault Lab reset: accumulated metrics remain
+    available as investigation and recovery evidence.
+    """
+    with _state_lock:
+        state = _load_state_unlocked()
+        state.payment_timeout_configured = True
+        _save_state_unlocked(state)
+
+
 def reset_runtime_state() -> None:
     """Return the fault lab to the default healthy state and clear metrics."""
     with _state_lock:

@@ -117,6 +117,53 @@ def test_deployment_reports_clean_order_service_baseline() -> None:
     }
 
 
+def test_rollback_only_allows_previous_version_and_preserves_fault_evidence() -> None:
+    def payment_handler(request: httpx.Request) -> httpx.Response:
+        payment = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "payment_id": "payment-recovered",
+                "order_id": payment["order_id"],
+                "status": "approved",
+            },
+            request=request,
+        )
+
+    mock_payment_service(payment_handler)
+    inject_missing_config_fault()
+
+    failed_response = client.post("/orders", json={"amount": 99.9})
+    metrics_before = client.get("/internal/metrics").json()
+    rollback_response = client.post(
+        "/internal/deployment/rollback", json={"target_version": "v1.0.0"}
+    )
+    recovered_response = client.post("/orders", json={"amount": 99.9})
+    deployment = client.get("/internal/deployment").json()
+    metrics_after = client.get("/internal/metrics").json()
+
+    assert failed_response.status_code == 500
+    assert rollback_response.status_code == 200
+    assert rollback_response.json()["executed"] is True
+    assert deployment["current_version"] == "v1.0.0"
+    assert deployment["previous_version"] == "v1.1.0"
+    assert deployment["deployed_at"] is not None
+    assert recovered_response.status_code == 200
+    assert metrics_after["error_count"] == metrics_before["error_count"]
+    assert metrics_after["request_count"] > metrics_before["request_count"]
+
+
+def test_rollback_rejects_versions_other_than_current_previous_deployment() -> None:
+    inject_missing_config_fault()
+
+    response = client.post("/internal/deployment/rollback", json={"target_version": "v9.9.9"})
+    deployment = client.get("/internal/deployment").json()
+
+    assert response.status_code == 409
+    assert deployment["current_version"] == "v1.1.0"
+    assert deployment["previous_version"] == "v1.0.0"
+
+
 def test_lifespan_makes_a_shared_payment_client_available() -> None:
     with TestClient(app) as lifespan_client:
         payment_client = lifespan_client.app.state.payment_client

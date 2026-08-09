@@ -38,6 +38,7 @@ class AgentStage(StrEnum):
     WAITING_APPROVAL = "waiting_approval"
     APPROVAL_DECISION = "approval_decision"
     ACTION_EXECUTION = "action_execution"
+    RECOVERY_VERIFICATION = "recovery_verification"
     NEEDS_MANUAL_ACTION = "needs_manual_action"
 
 
@@ -286,6 +287,19 @@ class ApprovalOutcome(StateModel):
     status: ApprovalStatus
 
 
+class ActionExecutionOutcome(StateModel):
+    """Checkpoint-safe result of the one controlled remediation execution path."""
+
+    action_id: UUID
+    approval_id: UUID
+    tool_name: ToolName = ToolName.ROLLBACK_DEPLOYMENT
+    status: ToolStatus
+    service: str = Field(min_length=1, max_length=100)
+    environment: str = Field(min_length=1, max_length=50)
+    target_version: str = Field(min_length=1, max_length=100)
+    executed: bool
+
+
 class AgentState(TypedDict):
     """Full runtime state carried by future workflow nodes and checkpointed safely."""
 
@@ -305,6 +319,7 @@ class AgentState(TypedDict):
     final_conclusion: FinalConclusion | None
     policy_outcome: PolicyOutcome | None
     approval_outcome: ApprovalOutcome | None
+    execution_outcome: ActionExecutionOutcome | None
 
 
 def create_initial_agent_state(
@@ -336,6 +351,7 @@ def create_initial_agent_state(
         "final_conclusion": None,
         "policy_outcome": None,
         "approval_outcome": None,
+        "execution_outcome": None,
     }
 
 
@@ -382,6 +398,11 @@ def agent_state_to_checkpoint_payload(state: AgentState) -> dict[str, object]:
         "approval_outcome": (
             state["approval_outcome"].model_dump(mode="json")
             if state["approval_outcome"] is not None
+            else None
+        ),
+        "execution_outcome": (
+            state["execution_outcome"].model_dump(mode="json")
+            if state["execution_outcome"] is not None
             else None
         ),
     }
