@@ -7,12 +7,30 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from devsupport_backend.approvals import (
+    ApprovalDecisionConflict,
+    ApprovalService,
+    ApprovalValidationError,
+    PostgresWorkflowStateReader,
+    WorkflowStateReader,
+)
 from devsupport_backend.database import get_session
 from devsupport_backend.models import Incident
+from devsupport_backend.schemas.approvals import ApprovalCreate, ApprovalResponse
 from devsupport_backend.schemas.incidents import IncidentCreate, IncidentResponse
 
 router = APIRouter(prefix="/incidents", tags=["incidents"])
 SessionDependency = Annotated[Session, Depends(get_session)]
+
+
+def get_workflow_state_reader() -> WorkflowStateReader:
+    """Build the read-only persisted-checkpoint boundary for Approval validation."""
+    return PostgresWorkflowStateReader()
+
+
+WorkflowStateReaderDependency = Annotated[
+    WorkflowStateReader, Depends(get_workflow_state_reader)
+]
 
 
 @router.post("", response_model=IncidentResponse, status_code=status.HTTP_201_CREATED)
@@ -46,3 +64,21 @@ def get_incident(incident_id: UUID, session: SessionDependency) -> Incident:
 def list_incidents(session: SessionDependency) -> list[Incident]:
     """Return all incidents newest first without adding search or pagination yet."""
     return list(session.scalars(select(Incident).order_by(Incident.created_at.desc())))
+
+
+@router.post("/{incident_id}/approval", response_model=ApprovalResponse)
+def record_approval(
+    incident_id: UUID,
+    payload: ApprovalCreate,
+    session: SessionDependency,
+    workflow_state_reader: WorkflowStateReaderDependency,
+):
+    """Persist one human decision for the exact Action held by the interrupted workflow."""
+    try:
+        return ApprovalService(session, workflow_state_reader).record_decision(
+            incident_id, payload.decision
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except (ApprovalValidationError, ApprovalDecisionConflict) as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error

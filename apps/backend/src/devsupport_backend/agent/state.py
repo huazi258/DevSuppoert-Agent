@@ -35,6 +35,7 @@ class AgentStage(StrEnum):
     RESOLUTION_PROPOSAL = "resolution_proposal"
     CONCLUSION = "conclusion"
     POLICY_GATE = "policy_gate"
+    WAITING_APPROVAL = "waiting_approval"
 
 
 class HypothesisStatus(StrEnum):
@@ -256,6 +257,15 @@ class PolicyOutcome(StateModel):
     reason_code: PolicyReasonCode
     reason: str = Field(min_length=1, max_length=2_000)
     action_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_action_binding(self) -> "PolicyOutcome":
+        """Keep approval-required outcomes bound to one concrete Action only."""
+        if self.decision is PolicyDecision.APPROVAL_REQUIRED and self.action_id is None:
+            raise ValueError("APPROVAL_REQUIRED policy outcomes must include an action_id")
+        if self.decision is PolicyDecision.DENIED and self.action_id is not None:
+            raise ValueError("DENIED policy outcomes must not include an action_id")
+        return self
 
 
 class AgentState(TypedDict):

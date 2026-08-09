@@ -21,7 +21,13 @@ from devsupport_backend.agent.nodes.tool_execution import (
 )
 from devsupport_backend.agent.policy import PolicyGate, policy_gate_node
 from devsupport_backend.agent.resolution_proposal import resolution_proposal_node
-from devsupport_backend.agent.state import AgentStage, AgentState, EvaluationDecision
+from devsupport_backend.agent.state import (
+    AgentStage,
+    AgentState,
+    EvaluationDecision,
+    PolicyDecision,
+)
+from devsupport_backend.approvals import ApprovalWait, approval_interrupt_node, approval_wait_node
 from devsupport_backend.rag.retrieval import RAGService
 
 DEFAULT_MAX_INVESTIGATION_ROUNDS = 3
@@ -63,6 +69,7 @@ class InvestigationWorkflowDependencies:
     tool_execution: ToolExecutionDependencies
     evaluator: EvidenceEvaluator
     policy_gate: PolicyGate
+    approval_wait: ApprovalWait
 
 
 def build_investigation_graph(
@@ -108,6 +115,14 @@ def build_investigation_graph(
     graph.add_node(
         "policy_gate",
         lambda state: policy_gate_node(state, dependencies.policy_gate),
+    )
+    graph.add_node(
+        "approval_wait",
+        lambda state: approval_wait_node(state, dependencies.approval_wait),
+    )
+    graph.add_node(
+        "approval_interrupt",
+        lambda state: approval_interrupt_node(state, dependencies.approval_wait),
     )
 
     graph.add_edge(START, "intake")
@@ -156,7 +171,13 @@ def build_investigation_graph(
         },
     )
     graph.add_edge("resolution_proposal", "policy_gate")
-    graph.add_edge("policy_gate", END)
+    graph.add_conditional_edges(
+        "policy_gate",
+        _route_after_policy_gate,
+        {"approval_wait": "approval_wait", "end": END},
+    )
+    graph.add_edge("approval_wait", "approval_interrupt")
+    graph.add_edge("approval_interrupt", END)
     return graph.compile(checkpointer=checkpointer)
 
 
@@ -269,4 +290,11 @@ def _route_after_evidence_evaluation(state: AgentState) -> str:
         return "planning_guard"
     if state["evaluation_decision"] is EvaluationDecision.CONCLUDE:
         return "resolution_proposal"
+    return "end"
+
+
+def _route_after_policy_gate(state: AgentState) -> str:
+    outcome = state["policy_outcome"]
+    if outcome is not None and outcome.decision is PolicyDecision.APPROVAL_REQUIRED:
+        return "approval_wait"
     return "end"

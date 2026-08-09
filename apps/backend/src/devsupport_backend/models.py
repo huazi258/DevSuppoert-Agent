@@ -112,14 +112,15 @@ class ToolCall(TimestampMixin, IncidentRecordMixin, Base):
 
 class Approval(TimestampMixin, IncidentRecordMixin, Base):
     __tablename__ = "approvals"
+    __table_args__ = (UniqueConstraint("action_id", name="uq_approvals_action_id"),)
 
-    action_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("actions.id", ondelete="SET NULL"), nullable=True, index=True
+    action_id: Mapped[UUID] = mapped_column(
+        ForeignKey("actions.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     status: Mapped[str] = mapped_column(String(50), nullable=False)
 
     incident: Mapped[Incident] = relationship(back_populates="approvals")
-    action: Mapped[Action | None] = relationship(back_populates="approvals")
+    action: Mapped[Action] = relationship(back_populates="approvals")
 
 
 class Action(TimestampMixin, IncidentRecordMixin, Base):

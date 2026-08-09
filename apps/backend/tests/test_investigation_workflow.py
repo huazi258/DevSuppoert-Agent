@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
@@ -137,19 +137,58 @@ class FakeEvaluator:
 class FakePolicyGate:
     """Keep graph wiring tests independent from database-backed Task 4.1 policy tests."""
 
-    def __init__(self) -> None:
+    def __init__(self, outcome: PolicyOutcome | None = None) -> None:
         self.calls = 0
+        self._outcome = outcome
 
     def evaluate(self, state: AgentState) -> PolicyOutcome:
         self.calls += 1
         assert state["current_stage"] is AgentStage.CONCLUSION
         assert state["final_conclusion"] is not None
         assert state["proposed_action"] is not None
-        return PolicyOutcome(
+        return self._outcome or PolicyOutcome(
             decision=PolicyDecision.DENIED,
             reason_code=PolicyReasonCode.MANUAL_ACTION,
             reason="The graph wiring test uses a non-executable manual action.",
         )
+
+
+class FakeApprovalWait:
+    """Keep Day 3 graph tests on the DENIED path without database writes or interrupts."""
+
+    def enter_waiting_approval(self, state: AgentState) -> None:
+        raise AssertionError(f"approval wait must not run for DENIED policy: {state}")
+
+    def interrupt_payload(self, state: AgentState) -> dict[str, str]:
+        raise AssertionError(f"approval interrupt must not run for DENIED policy: {state}")
+
+
+class RecordingApprovalWait:
+    """Controlled interrupt payload for formal graph approval-wait wiring coverage."""
+
+    def __init__(self, action_id: UUID) -> None:
+        self._action_id = action_id
+        self.entered = 0
+        self.payloads = 0
+
+    def enter_waiting_approval(self, state: AgentState) -> None:
+        self.entered += 1
+        assert state["policy_outcome"] is not None
+        assert state["policy_outcome"].action_id == self._action_id
+
+    def interrupt_payload(self, state: AgentState) -> dict[str, str]:
+        self.payloads += 1
+        assert state["current_stage"] is AgentStage.WAITING_APPROVAL
+        return {
+            "incident_id": str(state["incident"].id),
+            "action_id": str(self._action_id),
+            "action_type": "rollback_deployment",
+            "service": "order-service",
+            "environment": "local",
+            "current_version": "v1.1.0",
+            "target_version": "v1.0.0",
+            "reason": "Verified Action requires human approval.",
+        }
 
 
 def _build_initial_state() -> AgentState:
@@ -209,6 +248,9 @@ def _failed_metrics_output() -> QueryMetricsOutput:
 def _workflow_dependencies(
     llm_client: WorkflowFakeLLM,
     evaluator: FakeEvaluator,
+    *,
+    policy_gate: FakePolicyGate | None = None,
+    approval_wait: FakeApprovalWait | RecordingApprovalWait | None = None,
 ) -> InvestigationWorkflowDependencies:
     tool_execution = ToolExecutionDependencies(  # type: ignore[arg-type]
         rag_service=object(),
@@ -222,7 +264,8 @@ def _workflow_dependencies(
         llm_client=llm_client,
         tool_execution=tool_execution,
         evaluator=evaluator,
-        policy_gate=FakePolicyGate(),
+        policy_gate=policy_gate or FakePolicyGate(),
+        approval_wait=approval_wait or FakeApprovalWait(),
     )
 
 
@@ -264,6 +307,7 @@ def test_graph_compiles() -> None:
     assert "evidence_evaluation" in graph.get_graph().nodes
     assert "tool_execution" in graph.get_graph().nodes
     assert "policy_gate" in graph.get_graph().nodes
+    assert "approval_wait" in graph.get_graph().nodes
 
 
 def test_graph_compiles_with_an_injected_checkpointer() -> None:
@@ -275,6 +319,44 @@ def test_graph_compiles_with_an_injected_checkpointer() -> None:
     )
 
     assert "evidence_evaluation" in graph.get_graph().nodes
+
+
+def test_approval_required_routes_to_a_real_langgraph_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    action_id = uuid4()
+    approval_wait = RecordingApprovalWait(action_id)
+    policy_gate = FakePolicyGate(
+        PolicyOutcome(
+            decision=PolicyDecision.APPROVAL_REQUIRED,
+            reason_code=PolicyReasonCode.APPROVAL_REQUIRED,
+            reason="Verified Action requires human approval.",
+            action_id=action_id,
+        )
+    )
+    monkeypatch.setattr(workflow_module, "retrieval_node", _fake_retrieval)
+    monkeypatch.setattr(execution_module, "query_metrics", lambda *_: _successful_metrics_output())
+    graph = build_investigation_graph(
+        _workflow_dependencies(
+            WorkflowFakeLLM(),
+            FakeEvaluator([EvaluationDecision.CONCLUDE]),
+            policy_gate=policy_gate,
+            approval_wait=approval_wait,
+        ),
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": str(uuid4())}}
+
+    interrupted = graph.invoke(_build_initial_state(), config)
+    paused = graph.get_state(config).values
+
+    assert "__interrupt__" in interrupted
+    assert interrupted["__interrupt__"][0].value["action_id"] == str(action_id)
+    assert paused["current_stage"] is AgentStage.WAITING_APPROVAL
+    assert paused["policy_outcome"] is not None
+    assert paused["policy_outcome"].action_id == action_id
+    assert approval_wait.entered == 1
+    assert approval_wait.payloads == 1
 
 
 def test_continue_forms_a_second_plan_then_conclude_without_repeating_initial_nodes(
