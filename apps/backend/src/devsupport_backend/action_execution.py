@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
@@ -171,6 +170,7 @@ class ActionExecutionService:
         action_id = policy.action_id if isinstance(policy, PolicyOutcome) else None
         approval_id = approval_outcome.approval_id if approval_outcome is not None else None
         action = self._session.get(Action, action_id) if action_id is not None else None
+        approval = self._session.get(Approval, approval_id) if approval_id is not None else None
         incident = self._session.get(Incident, state["incident"].id)
         if action is not None and action.executed_at is None:
             action.status = "FAILED"
@@ -183,13 +183,24 @@ class ActionExecutionService:
             )
         except ValueError:
             parameters = None
+        valid_action = (
+            action if action is not None and action.incident_id == state["incident"].id else None
+        )
+        valid_approval = (
+            approval
+            if valid_action is not None
+            and approval is not None
+            and approval.incident_id == valid_action.incident_id
+            and approval.action_id == valid_action.id
+            else None
+        )
         return ActionExecutionOutcome(
-            action_id=action_id or UUID(int=0),
-            approval_id=approval_id or UUID(int=0),
+            action_id=valid_action.id if valid_action is not None else None,
+            approval_id=valid_approval.id if valid_approval is not None else None,
             status=ToolStatus.FAILURE,
-            service=parameters.service if parameters else state["incident"].service,
-            environment=parameters.environment if parameters else state["incident"].environment,
-            target_version=parameters.target_version if parameters else "unavailable",
+            service=parameters.service if parameters else None,
+            environment=parameters.environment if parameters else None,
+            target_version=parameters.target_version if parameters else None,
             executed=False,
         )
 

@@ -131,26 +131,57 @@ def test_rollback_only_allows_previous_version_and_preserves_fault_evidence() ->
         )
 
     mock_payment_service(payment_handler)
+    started_at = datetime.now(UTC)
     inject_missing_config_fault()
 
     failed_response = client.post("/orders", json={"amount": 99.9})
+    failed_request_id = failed_response.headers[REQUEST_ID_HEADER]
     metrics_before = client.get("/internal/metrics").json()
+    log_params = {
+        "time_range_start": (started_at - timedelta(seconds=1)).isoformat(),
+        "time_range_end": (datetime.now(UTC) + timedelta(seconds=1)).isoformat(),
+        "level": "error",
+        "query": "MissingRequiredConfiguration",
+        "limit": 20,
+    }
+    before_logs = client.get("/internal/logs", params=log_params).json()
+    matching_log = next(
+        event for event in before_logs["events"] if event["request_id"] == failed_request_id
+    )
+    failed_trace_id = matching_log["trace_id"]
+    trace_params = {
+        "time_range_start": log_params["time_range_start"],
+        "time_range_end": log_params["time_range_end"],
+        "trace_id": failed_trace_id,
+        "limit": 100,
+    }
+    before_traces = client.get("/internal/traces", params=trace_params).json()
     rollback_response = client.post(
         "/internal/deployment/rollback", json={"target_version": "v1.0.0"}
     )
     recovered_response = client.post("/orders", json={"amount": 99.9})
     deployment = client.get("/internal/deployment").json()
     metrics_after = client.get("/internal/metrics").json()
+    after_logs = client.get("/internal/logs", params=log_params).json()
+    after_traces = client.get("/internal/traces", params=trace_params).json()
 
     assert failed_response.status_code == 500
+    assert before_logs["match_count"] >= 1
+    assert matching_log["error_type"] == "MissingRequiredConfiguration"
+    assert before_traces["match_count"] >= 1
+    assert before_traces["spans"]
     assert rollback_response.status_code == 200
     assert rollback_response.json()["executed"] is True
     assert deployment["current_version"] == "v1.0.0"
     assert deployment["previous_version"] == "v1.1.0"
     assert deployment["deployed_at"] is not None
     assert recovered_response.status_code == 200
+    assert any(event["request_id"] == failed_request_id for event in after_logs["events"])
+    assert after_traces["match_count"] >= before_traces["match_count"]
+    assert after_traces["spans"]
     assert metrics_after["error_count"] == metrics_before["error_count"]
     assert metrics_after["request_count"] > metrics_before["request_count"]
+    assert metrics_after["success_count"] > metrics_before["success_count"]
 
 
 def test_rollback_rejects_versions_other_than_current_previous_deployment() -> None:

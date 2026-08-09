@@ -290,14 +290,33 @@ class ApprovalOutcome(StateModel):
 class ActionExecutionOutcome(StateModel):
     """Checkpoint-safe result of the one controlled remediation execution path."""
 
-    action_id: UUID
-    approval_id: UUID
+    action_id: UUID | None = None
+    approval_id: UUID | None = None
     tool_name: ToolName = ToolName.ROLLBACK_DEPLOYMENT
     status: ToolStatus
-    service: str = Field(min_length=1, max_length=100)
-    environment: str = Field(min_length=1, max_length=50)
-    target_version: str = Field(min_length=1, max_length=100)
+    service: str | None = Field(default=None, min_length=1, max_length=100)
+    environment: str | None = Field(default=None, min_length=1, max_length=50)
+    target_version: str | None = Field(default=None, min_length=1, max_length=100)
     executed: bool
+
+    @model_validator(mode="after")
+    def validate_execution_facts(self) -> "ActionExecutionOutcome":
+        """Never invent audit facts when a fail-closed attempt lacks them."""
+        if self.status is ToolStatus.SUCCESS:
+            if any(
+                value is None
+                for value in (
+                    self.action_id,
+                    self.approval_id,
+                    self.service,
+                    self.environment,
+                    self.target_version,
+                )
+            ):
+                raise ValueError("successful execution outcomes require complete Action facts")
+        elif self.executed:
+            raise ValueError("failed execution outcomes must not report execution")
+        return self
 
 
 class AgentState(TypedDict):

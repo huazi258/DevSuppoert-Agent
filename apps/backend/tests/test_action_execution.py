@@ -120,7 +120,9 @@ def test_approved_action_executes_only_after_live_deployment_matches(
     assert incident.status == "VERIFYING"
     assert updated["current_stage"] is AgentStage.RECOVERY_VERIFICATION
     assert updated["execution_outcome"] is not None
+    assert updated["execution_outcome"].action_id == action.id
     assert updated["execution_outcome"].approval_id == approval.id
+    assert updated["execution_outcome"].target_version == "v1.0.0"
     assert updated["execution_outcome"].status is ToolStatus.SUCCESS
 
 
@@ -144,6 +146,57 @@ def test_stale_live_deployment_fails_closed_without_a_rollback_call(
     assert action.executed_at is None
     assert incident.status == "NEEDS_MANUAL_ACTION"
     assert updated["current_stage"] is AgentStage.NEEDS_MANUAL_ACTION
+
+
+def test_binding_failure_does_not_invent_action_or_approval_ids(database_session: Session) -> None:
+    incident, _, _, state = _approved_state(database_session)
+    state["policy_outcome"] = None
+    rollback = RollbackAdapter()
+    service = ActionExecutionService(
+        database_session,
+        DeploymentAdapter(DeploymentQueryResult("order-service", "v1.1.0", "v1.0.0", None)),
+        rollback,
+    )
+
+    updated = controlled_action_execution_node(state, service)
+
+    database_session.refresh(incident)
+    outcome = updated["execution_outcome"]
+    assert rollback.calls == 0
+    assert outcome is not None
+    assert outcome.status is ToolStatus.FAILURE
+    assert outcome.action_id is None
+    assert outcome.approval_id is None
+    assert outcome.service is None
+    assert outcome.environment is None
+    assert outcome.target_version is None
+    assert outcome.executed is False
+    assert incident.status == "NEEDS_MANUAL_ACTION"
+
+
+def test_invalid_action_parameters_do_not_invent_a_target_version(
+    database_session: Session,
+) -> None:
+    _, action, approval, state = _approved_state(database_session)
+    action.parameters = {"service": "order-service"}
+    database_session.commit()
+    rollback = RollbackAdapter()
+    service = ActionExecutionService(
+        database_session,
+        DeploymentAdapter(DeploymentQueryResult("order-service", "v1.1.0", "v1.0.0", None)),
+        rollback,
+    )
+
+    updated = controlled_action_execution_node(state, service)
+
+    outcome = updated["execution_outcome"]
+    assert rollback.calls == 0
+    assert outcome is not None
+    assert outcome.status is ToolStatus.FAILURE
+    assert outcome.action_id == action.id
+    assert outcome.approval_id == approval.id
+    assert outcome.target_version is None
+    assert outcome.executed is False
 
 
 def test_crash_retry_reconciles_existing_live_rollback_without_second_call(
