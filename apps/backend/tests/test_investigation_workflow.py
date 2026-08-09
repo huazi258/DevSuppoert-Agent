@@ -8,10 +8,13 @@ from uuid import UUID, uuid4
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 import devsupport_backend.agent.nodes.tool_execution as execution_module
 import devsupport_backend.agent.workflow as workflow_module
 from devsupport_backend.agent.nodes.tool_execution import ToolExecutionDependencies
+from devsupport_backend.agent.runtime import WorkflowService
 from devsupport_backend.agent.state import (
     AgentStage,
     AgentState,
@@ -20,14 +23,16 @@ from devsupport_backend.agent.state import (
     PolicyDecision,
     PolicyOutcome,
     PolicyReasonCode,
+    ReportOutcome,
     create_initial_agent_state,
 )
 from devsupport_backend.agent.workflow import (
     InvestigationLoopLimits,
     InvestigationWorkflowDependencies,
     build_investigation_graph,
+    build_production_investigation_graph,
 )
-from devsupport_backend.models import Incident
+from devsupport_backend.models import Incident, Report
 from devsupport_backend.tools.schemas import (
     MetricSnapshot,
     QueryMetricsOutput,
@@ -170,6 +175,28 @@ class FakeApprovalDecision:
         raise AssertionError(f"approval decision must not run before resume: {state}")
 
 
+class RecordingManualTerminalizer:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def mark_needs_manual_action(self, state: AgentState) -> AgentState:
+        self.calls += 1
+        return {**state, "current_stage": AgentStage.NEEDS_MANUAL_ACTION}
+
+
+class RecordingFinalReport:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def generate(self, state: AgentState) -> ReportOutcome:
+        self.calls += 1
+        return ReportOutcome(
+            report_id=uuid4(),
+            incident_id=state["incident"].id,
+            final_status="NEEDS_MANUAL_ACTION",
+        )
+
+
 class RecordingApprovalWait:
     """Controlled interrupt payload for formal graph approval-wait wiring coverage."""
 
@@ -258,6 +285,8 @@ def _workflow_dependencies(
     *,
     policy_gate: FakePolicyGate | None = None,
     approval_wait: FakeApprovalWait | RecordingApprovalWait | None = None,
+    final_report: RecordingFinalReport | None = None,
+    manual_terminalizer: RecordingManualTerminalizer | None = None,
 ) -> InvestigationWorkflowDependencies:
     tool_execution = ToolExecutionDependencies(  # type: ignore[arg-type]
         rag_service=object(),
@@ -274,6 +303,8 @@ def _workflow_dependencies(
         policy_gate=policy_gate or FakePolicyGate(),
         approval_wait=approval_wait or FakeApprovalWait(),
         approval_decision=FakeApprovalDecision(),
+        final_report=final_report,
+        manual_terminalizer=manual_terminalizer,
     )
 
 
@@ -283,6 +314,9 @@ def _run_workflow(
     tool_outputs: list[QueryMetricsOutput],
     evaluator: FakeEvaluator,
     limits: InvestigationLoopLimits | None = None,
+    policy_gate: FakePolicyGate | None = None,
+    final_report: RecordingFinalReport | None = None,
+    manual_terminalizer: RecordingManualTerminalizer | None = None,
 ) -> tuple[dict[str, object], WorkflowFakeLLM, tuple[int, int]]:
     retrieval_calls = 0
     tool_calls = 0
@@ -301,7 +335,13 @@ def _run_workflow(
     monkeypatch.setattr(execution_module, "query_metrics", fake_query_metrics)
     llm_client = WorkflowFakeLLM()
     graph = build_investigation_graph(
-        _workflow_dependencies(llm_client, evaluator),
+        _workflow_dependencies(
+            llm_client,
+            evaluator,
+            policy_gate=policy_gate,
+            final_report=final_report,
+            manual_terminalizer=manual_terminalizer,
+        ),
         limits=limits,
     )
     return graph.invoke(_build_initial_state()), llm_client, (retrieval_calls, tool_calls)
@@ -444,6 +484,89 @@ def test_limit_stops_future_planning_and_tools_with_manual_action(
     assert llm_client.resolution_calls == 0
     assert evaluator.calls == 1
     assert calls == (1, 1)
+
+
+@pytest.mark.parametrize(
+    ("evaluator", "limits", "policy_gate"),
+    [
+        (FakeEvaluator([EvaluationDecision.NEEDS_MANUAL_ACTION]), None, None),
+        (
+            FakeEvaluator([EvaluationDecision.CONTINUE]),
+            InvestigationLoopLimits(max_rounds=1, max_tool_calls=5),
+            None,
+        ),
+        (
+            FakeEvaluator([EvaluationDecision.CONCLUDE]),
+            None,
+            FakePolicyGate(
+                PolicyOutcome(
+                    decision=PolicyDecision.DENIED,
+                    reason_code=PolicyReasonCode.MANUAL_ACTION,
+                    reason="No executable action is allowed.",
+                )
+            ),
+        ),
+    ],
+    ids=["evidence_manual", "planning_limit", "policy_denied"],
+)
+def test_formal_terminal_paths_persist_manual_stage_then_generate_report(
+    monkeypatch: pytest.MonkeyPatch,
+    evaluator: FakeEvaluator,
+    limits: InvestigationLoopLimits | None,
+    policy_gate: FakePolicyGate | None,
+) -> None:
+    terminalizer = RecordingManualTerminalizer()
+    report = RecordingFinalReport()
+    result, _, _ = _run_workflow(
+        monkeypatch,
+        tool_outputs=[_successful_metrics_output()],
+        evaluator=evaluator,
+        limits=limits,
+        policy_gate=policy_gate,
+        final_report=report,
+        manual_terminalizer=terminalizer,
+    )
+
+    assert result["current_stage"] is AgentStage.NEEDS_MANUAL_ACTION
+    assert result["report_outcome"] is not None
+    assert terminalizer.calls == 1
+    assert report.calls == 1
+
+
+def test_production_formal_factory_uses_terminalization_and_report_services(
+    monkeypatch: pytest.MonkeyPatch, database_session: Session
+) -> None:
+    now = datetime.now(UTC)
+    incident = Incident(
+        service="catalog-service",
+        environment="staging",
+        description="Production factory terminal route test.",
+        time_range_start=now,
+        time_range_end=now + timedelta(minutes=5),
+        thread_id=str(uuid4()),
+    )
+    database_session.add(incident)
+    database_session.commit()
+    monkeypatch.setattr(workflow_module, "retrieval_node", _fake_retrieval)
+    monkeypatch.setattr(
+        execution_module, "query_metrics", lambda *_: _successful_metrics_output()
+    )
+    graph = build_production_investigation_graph(
+        _workflow_dependencies(
+            WorkflowFakeLLM(),
+            FakeEvaluator([EvaluationDecision.NEEDS_MANUAL_ACTION]),
+        ),
+        session=database_session,
+    )
+
+    result = WorkflowService(graph).start(incident)
+
+    database_session.refresh(incident)
+    assert incident.status == "NEEDS_MANUAL_ACTION"
+    assert result["current_stage"] is AgentStage.NEEDS_MANUAL_ACTION
+    assert result["report_outcome"] is not None
+    report = database_session.scalar(select(Report).where(Report.incident_id == incident.id))
+    assert report is not None
 
 
 def test_final_allowed_round_can_conclude_and_propose_resolution(

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from devsupport_backend.action_execution import ActionExecutionParameters
 from devsupport_backend.agent.state import (
+    ActionExecutionOutcome,
     AgentState,
     ApprovalOutcome,
     ReportOutcome,
@@ -270,8 +271,8 @@ class FinalReportService:
                     or execution.target_version != parameters.target_version
                 ):
                     raise FinalReportError("Execution parameters mismatch")
-            elif execution.executed:
-                raise FinalReportError("Failed execution cannot report execution")
+            else:
+                self._validate_failed_execution(execution, action, approval)
         if isinstance(verification_state, VerificationOutcome) and (
             action is None
             or verification is None
@@ -296,6 +297,41 @@ class FinalReportService:
             or not isinstance(verification_state, VerificationOutcome)
         ):
             raise FinalReportError("Resolved report lacks a verified execution chain")
+
+    @staticmethod
+    def _validate_failed_execution(
+        execution: ActionExecutionOutcome,
+        action: Action | None,
+        approval: Approval | None,
+    ) -> None:
+        """Retain only failure facts which still bind to authoritative Action records."""
+        if execution.executed:
+            raise FinalReportError("Failed execution cannot report execution")
+        if execution.action_id is not None and (
+            action is None or execution.action_id != action.id
+        ):
+            raise FinalReportError("Failed execution Action binding mismatch")
+        if execution.approval_id is not None and (
+            approval is None or execution.approval_id != approval.id
+        ):
+            raise FinalReportError("Failed execution Approval binding mismatch")
+        if any(
+            value is not None
+            for value in (execution.service, execution.environment, execution.target_version)
+        ):
+            if action is None:
+                raise FinalReportError("Failed execution parameters lack an Action")
+            parameters = ActionExecutionParameters.model_validate(action.parameters)
+            if (
+                execution.service is not None and execution.service != parameters.service
+            ) or (
+                execution.environment is not None
+                and execution.environment != parameters.environment
+            ) or (
+                execution.target_version is not None
+                and execution.target_version != parameters.target_version
+            ):
+                raise FinalReportError("Failed execution parameters mismatch")
 
     def _validate_existing(self, report: Report, expected: FinalReportContent) -> None:
         try:

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
+from sqlalchemy.orm import Session
 
 from devsupport_backend.agent.llm import LLMClient
 from devsupport_backend.agent.nodes.hypothesis_generation import hypothesis_generation_node
@@ -241,6 +242,28 @@ def build_investigation_graph(
     if dependencies.action_execution is None:
         graph.add_edge("approval_decision", END)
     return graph.compile(checkpointer=checkpointer)
+
+
+def build_production_investigation_graph(
+    dependencies: InvestigationWorkflowDependencies,
+    *,
+    session: Session,
+    limits: InvestigationLoopLimits | None = None,
+    checkpointer: BaseCheckpointSaver | None = None,
+) -> CompiledStateGraph:
+    """Compose the formal start graph with its PostgreSQL terminal report boundaries."""
+    from devsupport_backend.agent.terminalization import PostgresManualTerminalizer
+    from devsupport_backend.final_report import FinalReportService
+
+    return build_investigation_graph(
+        replace(
+            dependencies,
+            final_report=FinalReportService(session),
+            manual_terminalizer=PostgresManualTerminalizer(session),
+        ),
+        limits=limits,
+        checkpointer=checkpointer,
+    )
 
 
 def evidence_evaluation_node(
