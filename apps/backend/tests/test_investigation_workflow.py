@@ -163,6 +163,13 @@ class FakeApprovalWait:
         raise AssertionError(f"approval interrupt must not run for DENIED policy: {state}")
 
 
+class FakeApprovalDecision:
+    """The decision node only runs after a later same-thread resume."""
+
+    def resolve(self, state: AgentState) -> object:
+        raise AssertionError(f"approval decision must not run before resume: {state}")
+
+
 class RecordingApprovalWait:
     """Controlled interrupt payload for formal graph approval-wait wiring coverage."""
 
@@ -266,6 +273,7 @@ def _workflow_dependencies(
         evaluator=evaluator,
         policy_gate=policy_gate or FakePolicyGate(),
         approval_wait=approval_wait or FakeApprovalWait(),
+        approval_decision=FakeApprovalDecision(),
     )
 
 

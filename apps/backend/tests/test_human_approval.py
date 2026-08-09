@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -19,6 +20,8 @@ from devsupport_backend.agent.state import (
     ActionType,
     AgentStage,
     AgentState,
+    ApprovalOutcome,
+    ApprovalStatus,
     PolicyDecision,
     PolicyOutcome,
     PolicyReasonCode,
@@ -35,8 +38,11 @@ from devsupport_backend.approvals import (
 from devsupport_backend.database import get_session
 from devsupport_backend.main import app
 from devsupport_backend.models import Action, Approval, Incident
-from devsupport_backend.routers.incidents import get_workflow_state_reader
-from devsupport_backend.schemas.approvals import ApprovalDecision, ApprovalStatus
+from devsupport_backend.routers.incidents import (
+    get_approval_workflow_coordinator,
+    get_workflow_state_reader,
+)
+from devsupport_backend.schemas.approvals import ApprovalDecision
 
 PENDING_APPROVAL = "PENDING_APPROVAL"
 WAITING_APPROVAL = "WAITING_APPROVAL"
@@ -52,6 +58,36 @@ class StaticWorkflowStateReader:
     def get_state(self, thread_id: str) -> AgentState:
         self.calls.append(thread_id)
         return self._state
+
+
+class StaticWorkflowCoordinator:
+    """Advance the controlled checkpoint projection without exercising Task 4.3 here."""
+
+    def __init__(self, reader: StaticWorkflowStateReader, session: Session) -> None:
+        self._reader = reader
+        self._session = session
+        self.calls: list[str] = []
+
+    def resume(self, thread_id: str) -> AgentState:
+        self.calls.append(thread_id)
+        state = self._reader.get_state(thread_id)
+        policy = state["policy_outcome"]
+        assert policy is not None and policy.action_id is not None
+        approval = self._session.scalar(
+            select(Approval).where(Approval.action_id == policy.action_id)
+        )
+        assert approval is not None
+        state["approval_outcome"] = ApprovalOutcome(
+            approval_id=approval.id,
+            action_id=approval.action_id,
+            status=ApprovalStatus(approval.status),
+        )
+        state["current_stage"] = (
+            AgentStage.ACTION_EXECUTION
+            if approval.status == ApprovalStatus.APPROVED.value
+            else AgentStage.NEEDS_MANUAL_ACTION
+        )
+        return state
 
 
 def _incident(session: Session, *, status: str = WAITING_APPROVAL) -> Incident:
@@ -105,18 +141,20 @@ def _waiting_state(incident: Incident, action: Action) -> AgentState:
 @pytest.fixture
 def approval_api_client(
     database_session: Session,
-) -> Iterator[tuple[TestClient, StaticWorkflowStateReader]]:
+) -> Iterator[tuple[TestClient, StaticWorkflowStateReader, StaticWorkflowCoordinator]]:
     incident = _incident(database_session)
     action = _pending_action(database_session, incident)
     reader = StaticWorkflowStateReader(_waiting_state(incident, action))
+    coordinator = StaticWorkflowCoordinator(reader, database_session)
 
     def override_get_session() -> Iterator[Session]:
         yield database_session
 
     app.dependency_overrides[get_session] = override_get_session
     app.dependency_overrides[get_workflow_state_reader] = lambda: reader
+    app.dependency_overrides[get_approval_workflow_coordinator] = lambda: coordinator
     with TestClient(app) as client:
-        yield client, reader
+        yield client, reader, coordinator
     app.dependency_overrides.clear()
 
 
@@ -128,12 +166,12 @@ def approval_api_client(
     ],
 )
 def test_approval_api_persists_one_server_bound_final_decision(
-    approval_api_client: tuple[TestClient, StaticWorkflowStateReader],
+    approval_api_client: tuple[TestClient, StaticWorkflowStateReader, StaticWorkflowCoordinator],
     database_session: Session,
     decision: ApprovalDecision,
     expected_status: ApprovalStatus,
 ) -> None:
-    client, reader = approval_api_client
+    client, reader, coordinator = approval_api_client
     state = reader.get_state("test")
     incident_id = state["incident"].id
     action_id = state["policy_outcome"].action_id if state["policy_outcome"] else None
@@ -156,6 +194,9 @@ def test_approval_api_persists_one_server_bound_final_decision(
     assert action.parameters == before_parameters
     assert action.executed_at is None
     assert reader.calls
+    persisted_incident = database_session.get(Incident, incident_id)
+    assert persisted_incident is not None
+    assert coordinator.calls == [persisted_incident.thread_id]
 
 
 @pytest.mark.parametrize(
@@ -169,11 +210,11 @@ def test_approval_api_persists_one_server_bound_final_decision(
     ],
 )
 def test_approval_api_rejects_forged_client_authorization_fields(
-    approval_api_client: tuple[TestClient, StaticWorkflowStateReader],
+    approval_api_client: tuple[TestClient, StaticWorkflowStateReader, StaticWorkflowCoordinator],
     database_session: Session,
     payload: dict[str, object],
 ) -> None:
-    client, reader = approval_api_client
+    client, reader, _ = approval_api_client
     incident_id = reader.get_state("test")["incident"].id
 
     response = client.post(f"/incidents/{incident_id}/approval", json=payload)
@@ -183,10 +224,10 @@ def test_approval_api_rejects_forged_client_authorization_fields(
 
 
 def test_approval_api_fails_closed_for_mismatched_checkpoint_action(
-    approval_api_client: tuple[TestClient, StaticWorkflowStateReader],
+    approval_api_client: tuple[TestClient, StaticWorkflowStateReader, StaticWorkflowCoordinator],
     database_session: Session,
 ) -> None:
-    client, reader = approval_api_client
+    client, reader, _ = approval_api_client
     state = reader.get_state("test")
     other_incident = _incident(database_session)
     other_action = _pending_action(database_session, other_incident)
@@ -201,10 +242,10 @@ def test_approval_api_fails_closed_for_mismatched_checkpoint_action(
 
 
 def test_approval_api_cannot_approve_another_incidents_action(
-    approval_api_client: tuple[TestClient, StaticWorkflowStateReader],
+    approval_api_client: tuple[TestClient, StaticWorkflowStateReader, StaticWorkflowCoordinator],
     database_session: Session,
 ) -> None:
-    client, reader = approval_api_client
+    client, reader, _ = approval_api_client
     state = reader.get_state("test")
     other_incident = _incident(database_session)
 
@@ -216,10 +257,10 @@ def test_approval_api_cannot_approve_another_incidents_action(
 
 
 def test_approval_api_rejects_an_already_executed_action(
-    approval_api_client: tuple[TestClient, StaticWorkflowStateReader],
+    approval_api_client: tuple[TestClient, StaticWorkflowStateReader, StaticWorkflowCoordinator],
     database_session: Session,
 ) -> None:
-    client, reader = approval_api_client
+    client, reader, _ = approval_api_client
     state = reader.get_state("test")
     outcome = state["policy_outcome"]
     assert outcome is not None and outcome.action_id is not None
@@ -237,10 +278,10 @@ def test_approval_api_rejects_an_already_executed_action(
 
 
 def test_duplicate_matching_decision_is_idempotent_and_conflicting_one_is_rejected(
-    approval_api_client: tuple[TestClient, StaticWorkflowStateReader],
+    approval_api_client: tuple[TestClient, StaticWorkflowStateReader, StaticWorkflowCoordinator],
     database_session: Session,
 ) -> None:
-    client, reader = approval_api_client
+    client, reader, coordinator = approval_api_client
     incident_id = reader.get_state("test")["incident"].id
 
     first = client.post(f"/incidents/{incident_id}/approval", json={"decision": "APPROVE"})
@@ -252,6 +293,7 @@ def test_duplicate_matching_decision_is_idempotent_and_conflicting_one_is_reject
     assert repeated.json()["id"] == first.json()["id"]
     assert conflicting.status_code == 409
     assert database_session.query(Approval).count() == 1
+    assert len(coordinator.calls) == 1
 
 
 def test_approval_database_constraints_reject_orphans_and_duplicate_actions(

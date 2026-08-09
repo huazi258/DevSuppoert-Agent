@@ -60,6 +60,7 @@ def test_initial_agent_state_has_neutral_intake_defaults() -> None:
     assert state["proposed_action"] is None
     assert state["final_conclusion"] is None
     assert state["policy_outcome"] is None
+    assert state["approval_outcome"] is None
 
 
 def test_hypothesis_validates_fixed_status_and_confidence_range() -> None:

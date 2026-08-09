@@ -27,7 +27,13 @@ from devsupport_backend.agent.state import (
     EvaluationDecision,
     PolicyDecision,
 )
-from devsupport_backend.approvals import ApprovalWait, approval_interrupt_node, approval_wait_node
+from devsupport_backend.approvals import (
+    ApprovalDecisionService,
+    ApprovalWait,
+    approval_decision_node,
+    approval_interrupt_node,
+    approval_wait_node,
+)
 from devsupport_backend.rag.retrieval import RAGService
 
 DEFAULT_MAX_INVESTIGATION_ROUNDS = 3
@@ -70,6 +76,7 @@ class InvestigationWorkflowDependencies:
     evaluator: EvidenceEvaluator
     policy_gate: PolicyGate
     approval_wait: ApprovalWait
+    approval_decision: ApprovalDecisionService
 
 
 def build_investigation_graph(
@@ -124,6 +131,10 @@ def build_investigation_graph(
         "approval_interrupt",
         lambda state: approval_interrupt_node(state, dependencies.approval_wait),
     )
+    graph.add_node(
+        "approval_decision",
+        lambda state: approval_decision_node(state, dependencies.approval_decision),
+    )
 
     graph.add_edge(START, "intake")
     graph.add_conditional_edges(
@@ -177,7 +188,8 @@ def build_investigation_graph(
         {"approval_wait": "approval_wait", "end": END},
     )
     graph.add_edge("approval_wait", "approval_interrupt")
-    graph.add_edge("approval_interrupt", END)
+    graph.add_edge("approval_interrupt", "approval_decision")
+    graph.add_edge("approval_decision", END)
     return graph.compile(checkpointer=checkpointer)
 
 

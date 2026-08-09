@@ -36,6 +36,9 @@ class AgentStage(StrEnum):
     CONCLUSION = "conclusion"
     POLICY_GATE = "policy_gate"
     WAITING_APPROVAL = "waiting_approval"
+    APPROVAL_DECISION = "approval_decision"
+    ACTION_EXECUTION = "action_execution"
+    NEEDS_MANUAL_ACTION = "needs_manual_action"
 
 
 class HypothesisStatus(StrEnum):
@@ -74,6 +77,13 @@ class PolicyDecision(StrEnum):
 
     APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
     DENIED = "DENIED"
+
+
+class ApprovalStatus(StrEnum):
+    """The only persisted human decision statuses accepted by the workflow."""
+
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
 
 
 class PolicyReasonCode(StrEnum):
@@ -268,6 +278,14 @@ class PolicyOutcome(StateModel):
         return self
 
 
+class ApprovalOutcome(StateModel):
+    """Checkpoint-safe binding to the exact persisted human Approval record."""
+
+    approval_id: UUID
+    action_id: UUID
+    status: ApprovalStatus
+
+
 class AgentState(TypedDict):
     """Full runtime state carried by future workflow nodes and checkpointed safely."""
 
@@ -286,6 +304,7 @@ class AgentState(TypedDict):
     proposed_action: ProposedAction | None
     final_conclusion: FinalConclusion | None
     policy_outcome: PolicyOutcome | None
+    approval_outcome: ApprovalOutcome | None
 
 
 def create_initial_agent_state(
@@ -316,6 +335,7 @@ def create_initial_agent_state(
         "proposed_action": None,
         "final_conclusion": None,
         "policy_outcome": None,
+        "approval_outcome": None,
     }
 
 
@@ -357,6 +377,11 @@ def agent_state_to_checkpoint_payload(state: AgentState) -> dict[str, object]:
         "policy_outcome": (
             state["policy_outcome"].model_dump(mode="json")
             if state["policy_outcome"] is not None
+            else None
+        ),
+        "approval_outcome": (
+            state["approval_outcome"].model_dump(mode="json")
+            if state["approval_outcome"] is not None
             else None
         ),
     }

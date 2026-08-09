@@ -7,19 +7,14 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
+from devsupport_backend.agent.state import ApprovalStatus
+
 
 class ApprovalDecision(StrEnum):
     """The only human decisions accepted by the Approval API."""
 
     APPROVE = "APPROVE"
     REJECT = "REJECT"
-
-
-class ApprovalStatus(StrEnum):
-    """Persisted final status corresponding to one human decision."""
-
-    APPROVED = "APPROVED"
-    REJECTED = "REJECTED"
 
 
 class ApprovalCreate(BaseModel):
