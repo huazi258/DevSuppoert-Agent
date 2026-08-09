@@ -52,6 +52,6 @@ class IncidentResponse(BaseModel):
     status: str
     time_range_start: datetime
     time_range_end: datetime
-    thread_id: str | None
+    thread_id: str
     created_at: datetime
     updated_at: datetime

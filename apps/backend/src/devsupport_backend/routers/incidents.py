@@ -1,7 +1,7 @@
 """HTTP endpoints for the Incident Service."""
 
 from typing import Annotated
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -25,7 +25,7 @@ def create_incident(payload: IncidentCreate, session: SessionDependency) -> Inci
         time_range_start=payload.time_range_start,
         time_range_end=payload.time_range_end,
         status="OPEN",
-        thread_id=None,
+        thread_id=str(uuid4()),
     )
     session.add(incident)
     session.commit()

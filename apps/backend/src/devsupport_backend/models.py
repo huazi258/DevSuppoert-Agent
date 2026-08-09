@@ -50,7 +50,7 @@ class Incident(TimestampMixin, Base):
     details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
     time_range_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     time_range_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    thread_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    thread_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
 
     hypotheses: Mapped[list["Hypothesis"]] = relationship(back_populates="incident")
     evidence_items: Mapped[list["Evidence"]] = relationship(back_populates="incident")

@@ -47,7 +47,7 @@ def incident_payload() -> dict[str, str]:
     }
 
 
-def create_incident(api_client: TestClient, payload: dict[str, str]) -> dict[str, str | None]:
+def create_incident(api_client: TestClient, payload: dict[str, str]) -> dict[str, str]:
     response = api_client.post("/incidents", json=payload)
 
     assert response.status_code == 201
@@ -62,7 +62,8 @@ def test_create_incident_persists_open_record(
 
     assert stored is not None
     assert stored.status == "OPEN"
-    assert stored.thread_id is None
+    assert stored.thread_id == body["thread_id"]
+    assert body["thread_id"]
     assert body["service"] == incident_payload["service"]
     assert datetime.fromisoformat(str(body["time_range_start"])) == datetime.fromisoformat(
         incident_payload["time_range_start"]
@@ -78,6 +79,7 @@ def test_get_incident_returns_persisted_record(
 
     assert response.status_code == 200
     assert response.json() == created
+    assert response.json()["thread_id"] == created["thread_id"]
 
 
 def test_get_missing_incident_returns_not_found(api_client: TestClient) -> None:
@@ -138,6 +140,7 @@ def test_database_session_fixture_rolls_back_each_test(database_session: Session
         description="This record is rolled back after the test.",
         time_range_start=now,
         time_range_end=now + timedelta(minutes=1),
+        thread_id=str(uuid4()),
     )
     database_session.add(incident)
     database_session.flush()

@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from langgraph.checkpoint.memory import InMemorySaver
 
 import devsupport_backend.agent.nodes.tool_execution as execution_module
 import devsupport_backend.agent.workflow as workflow_module
@@ -240,6 +241,17 @@ def test_graph_compiles() -> None:
 
     assert "evidence_evaluation" in graph.get_graph().nodes
     assert "tool_execution" in graph.get_graph().nodes
+
+
+def test_graph_compiles_with_an_injected_checkpointer() -> None:
+    evaluator = FakeEvaluator([EvaluationDecision.CONCLUDE])
+
+    graph = build_investigation_graph(
+        _workflow_dependencies(WorkflowFakeLLM(), evaluator),
+        checkpointer=InMemorySaver(),
+    )
+
+    assert "evidence_evaluation" in graph.get_graph().nodes
 
 
 def test_continue_forms_a_second_plan_then_conclude_without_repeating_initial_nodes(

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -66,8 +67,9 @@ def build_investigation_graph(
     dependencies: InvestigationWorkflowDependencies,
     *,
     limits: InvestigationLoopLimits | None = None,
+    checkpointer: BaseCheckpointSaver | None = None,
 ) -> CompiledStateGraph:
-    """Compile the bounded Task 3.8 graph without a persistence/checkpointer layer."""
+    """Compile the bounded Day 3 graph with an optional externally owned checkpointer."""
     loop_limits = limits or InvestigationLoopLimits()
     graph = StateGraph(AgentState)
 
@@ -148,7 +150,7 @@ def build_investigation_graph(
         },
     )
     graph.add_edge("resolution_proposal", END)
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 def evidence_evaluation_node(

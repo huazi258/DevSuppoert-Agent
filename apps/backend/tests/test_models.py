@@ -51,7 +51,8 @@ def test_schema_models_include_required_v0_fields_without_fixed_vector_dimension
     chunk_embedding = KnowledgeChunk.__table__.c.embedding
 
     assert {"time_range_start", "time_range_end", "thread_id"} <= set(incident_columns.keys())
-    assert incident_columns.thread_id.nullable
+    assert not incident_columns.thread_id.nullable
+    assert incident_columns.thread_id.unique
     assert {"hypothesis_id", "evidence_type", "data"} <= set(evidence_columns.keys())
     assert {"result", "error", "duration_ms"} <= set(tool_call_columns.keys())
     assert {"action_id", "status"} <= set(approval_columns.keys())
