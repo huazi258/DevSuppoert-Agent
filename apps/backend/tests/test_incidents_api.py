@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from devsupport_backend.database import engine, get_session
 from devsupport_backend.main import app
-from devsupport_backend.models import Incident
+from devsupport_backend.models import Incident, Report
 
 
 @pytest.fixture
@@ -87,6 +87,31 @@ def test_get_missing_incident_returns_not_found(api_client: TestClient) -> None:
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Incident not found"}
+
+
+def test_get_final_report_is_read_only_and_distinguishes_missing_records(
+    api_client: TestClient, database_session: Session, incident_payload: dict[str, str]
+) -> None:
+    created = create_incident(api_client, incident_payload)
+    incident_id = UUID(created["id"])
+
+    no_report = api_client.get(f"/incidents/{incident_id}/report")
+    unknown = api_client.get(f"/incidents/{uuid4()}/report")
+    report = Report(
+        incident_id=incident_id,
+        root_cause="A test root cause.",
+        content={"schema_version": "v0", "final_status": "NEEDS_MANUAL_ACTION"},
+    )
+    database_session.add(report)
+    database_session.commit()
+
+    response = api_client.get(f"/incidents/{incident_id}/report")
+
+    assert no_report.status_code == 404
+    assert unknown.status_code == 404
+    assert response.status_code == 200
+    assert response.json()["id"] == str(report.id)
+    assert response.json()["content"] == report.content
 
 
 def test_list_incidents_returns_created_record(

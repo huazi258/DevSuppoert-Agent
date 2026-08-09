@@ -22,7 +22,9 @@ from devsupport_backend.agent.nodes.tool_execution import (
 from devsupport_backend.agent.policy import PolicyGate, policy_gate_node
 from devsupport_backend.agent.post_approval import (
     ControlledActionExecution,
+    FinalReport,
     RecoveryVerification,
+    add_final_report_node,
     add_post_approval_continuation,
 )
 from devsupport_backend.agent.resolution_proposal import resolution_proposal_node
@@ -51,6 +53,13 @@ class EvidenceEvaluator(Protocol):
 
     def evaluate(self, state: AgentState) -> EvaluationDecision:
         """Return the bounded decision for the current post-update investigation state."""
+
+
+class ManualTerminalizer(Protocol):
+    """Persist the deterministic terminal lifecycle before a terminal report is projected."""
+
+    def mark_needs_manual_action(self, state: AgentState) -> AgentState:
+        """Return state at NEEDS_MANUAL_ACTION after updating the authoritative Incident."""
 
 
 class InvestigationWorkflowError(RuntimeError):
@@ -84,6 +93,8 @@ class InvestigationWorkflowDependencies:
     approval_decision: ApprovalDecisionService
     action_execution: ControlledActionExecution | None = None
     recovery_verification: RecoveryVerification | None = None
+    final_report: FinalReport | None = None
+    manual_terminalizer: ManualTerminalizer | None = None
 
 
 def build_investigation_graph(
@@ -142,11 +153,27 @@ def build_investigation_graph(
         "approval_decision",
         lambda state: approval_decision_node(state, dependencies.approval_decision),
     )
+    has_terminal_report = (
+        dependencies.final_report is not None and dependencies.manual_terminalizer is not None
+    )
+    if has_terminal_report:
+        graph.add_node(
+            "manual_terminalization",
+            lambda state: dependencies.manual_terminalizer.mark_needs_manual_action(state),
+        )
+        if dependencies.action_execution is None:
+            add_final_report_node(graph, dependencies.final_report)
+        graph.add_edge("manual_terminalization", "final_report")
+    else:
+        # Keep route targets valid in pure Day 3 unit graphs without a report boundary.
+        graph.add_node("manual_terminalization", lambda state: state)
+        graph.add_edge("manual_terminalization", END)
     if dependencies.action_execution is not None:
         add_post_approval_continuation(
             graph,
             action_execution=dependencies.action_execution,
             recovery_verification=dependencies.recovery_verification,
+            final_report=dependencies.final_report,
         )
 
     graph.add_edge(START, "intake")
@@ -167,8 +194,12 @@ def build_investigation_graph(
     )
     graph.add_conditional_edges(
         "planning_guard",
-        _route_after_planning_guard,
-        {"investigation_planning": "investigation_planning", "end": END},
+        lambda state: _route_after_planning_guard(state, has_terminal_report),
+        {
+            "investigation_planning": "investigation_planning",
+            "manual_terminalization": "manual_terminalization",
+            "end": END,
+        },
     )
     graph.add_conditional_edges(
         "investigation_planning",
@@ -187,18 +218,23 @@ def build_investigation_graph(
     )
     graph.add_conditional_edges(
         "evidence_evaluation",
-        _route_after_evidence_evaluation,
+        lambda state: _route_after_evidence_evaluation(state, has_terminal_report),
         {
             "planning_guard": "planning_guard",
             "resolution_proposal": "resolution_proposal",
+            "manual_terminalization": "manual_terminalization",
             "end": END,
         },
     )
     graph.add_edge("resolution_proposal", "policy_gate")
     graph.add_conditional_edges(
         "policy_gate",
-        _route_after_policy_gate,
-        {"approval_wait": "approval_wait", "end": END},
+        lambda state: _route_after_policy_gate(state, has_terminal_report),
+        {
+            "approval_wait": "approval_wait",
+            "manual_terminalization": "manual_terminalization",
+            "end": END,
+        },
     )
     graph.add_edge("approval_wait", "approval_interrupt")
     graph.add_edge("approval_interrupt", "approval_decision")
@@ -281,9 +317,9 @@ def _route_after_hypothesis_generation(state: AgentState) -> str:
     )
 
 
-def _route_after_planning_guard(state: AgentState) -> str:
+def _route_after_planning_guard(state: AgentState, terminal_report_enabled: bool = False) -> str:
     if state["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION:
-        return "end"
+        return "manual_terminalization" if terminal_report_enabled else "end"
     return (
         "investigation_planning"
         if state["current_stage"] is AgentStage.INVESTIGATION_PLANNING
@@ -311,16 +347,18 @@ def _route_after_hypothesis_update(state: AgentState) -> str:
     )
 
 
-def _route_after_evidence_evaluation(state: AgentState) -> str:
+def _route_after_evidence_evaluation(
+    state: AgentState, terminal_report_enabled: bool = False
+) -> str:
     if state["evaluation_decision"] is EvaluationDecision.CONTINUE:
         return "planning_guard"
     if state["evaluation_decision"] is EvaluationDecision.CONCLUDE:
         return "resolution_proposal"
-    return "end"
+    return "manual_terminalization" if terminal_report_enabled else "end"
 
 
-def _route_after_policy_gate(state: AgentState) -> str:
+def _route_after_policy_gate(state: AgentState, terminal_report_enabled: bool = False) -> str:
     outcome = state["policy_outcome"]
     if outcome is not None and outcome.decision is PolicyDecision.APPROVAL_REQUIRED:
         return "approval_wait"
-    return "end"
+    return "manual_terminalization" if terminal_report_enabled else "end"

@@ -24,6 +24,14 @@ class FinalReport(Protocol):
         """Persist a deterministic terminal audit projection."""
 
 
+def add_final_report_node(graph: StateGraph, final_report: FinalReport) -> None:
+    """Add the one shared terminal report node used by every eligible topology."""
+    from devsupport_backend.final_report import final_report_node
+
+    graph.add_node("final_report", lambda state: final_report_node(state, final_report))
+    graph.add_edge("final_report", END)
+
+
 def add_post_approval_continuation(
     graph: StateGraph,
     *,
@@ -50,10 +58,7 @@ def add_post_approval_continuation(
         },
     )
     if final_report is not None:
-        from devsupport_backend.final_report import final_report_node
-
-        graph.add_node("final_report", lambda state: final_report_node(state, final_report))
-        graph.add_edge("final_report", END)
+        add_final_report_node(graph, final_report)
     if recovery_verification is None:
         graph.add_conditional_edges(
             "controlled_action_execution",
@@ -72,6 +77,9 @@ def add_post_approval_continuation(
         lambda state: (
             "recovery_verification"
             if state["current_stage"] is AgentStage.RECOVERY_VERIFICATION
+            else "final_report"
+            if final_report is not None
+            and state["current_stage"] is AgentStage.NEEDS_MANUAL_ACTION
             else "end"
         ),
         {
