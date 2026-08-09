@@ -3,6 +3,7 @@
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import pytest
 from sqlalchemy.orm import Session
 
 from devsupport_backend.agent.state import (
@@ -19,9 +20,9 @@ from devsupport_backend.agent.state import (
 )
 from devsupport_backend.models import Action, Approval, Incident, Verification
 from devsupport_backend.recovery_verification import RecoveryVerificationService
-from devsupport_backend.tools.deployments import DeploymentQueryResult
-from devsupport_backend.tools.logs import LogQueryResult
-from devsupport_backend.tools.metrics import MetricQueryResult
+from devsupport_backend.tools.deployments import DeploymentAdapterError, DeploymentQueryResult
+from devsupport_backend.tools.logs import LogQueryResult, LogsAdapterError
+from devsupport_backend.tools.metrics import MetricQueryResult, MetricsAdapterError
 from devsupport_backend.tools.recovery_probe import RecoveryProbeResult
 
 
@@ -181,6 +182,115 @@ def test_binding_failure_is_inconclusive_without_resolving(database_session: Ses
     database_session.refresh(incident)
     assert outcome.status is VerificationStatus.INCONCLUSIVE
     assert incident.status == "NEEDS_MANUAL_ACTION"
+
+
+class RaisingDeploymentAdapter:
+    def query(self, _input):
+        raise DeploymentAdapterError("unavailable", "unavailable")
+
+
+class RaisingMetricsAdapter:
+    def __init__(self, after: bool = False) -> None:
+        self.calls = 0
+        self.after = after
+
+    def query(self, _input):
+        self.calls += 1
+        if not self.after or self.calls > 1:
+            raise MetricsAdapterError("unavailable", "unavailable")
+        return MetricQueryResult("order-service", "ok", 10, 5, 5, None, None)
+
+
+class RaisingLogsAdapter:
+    def query(self, _input):
+        raise LogsAdapterError("unavailable", "unavailable")
+
+
+@pytest.mark.parametrize(
+    ("deployment", "metrics", "logs", "probe", "expected"),
+    [
+        (
+            DeploymentAdapter("v9"),
+            MetricsAdapter(),
+            LogsAdapter(),
+            ProbeAdapter(),
+            VerificationStatus.FAIL,
+        ),
+        (
+            DeploymentAdapter(),
+            MetricsAdapter(health="down"),
+            LogsAdapter(),
+            ProbeAdapter(),
+            VerificationStatus.FAIL,
+        ),
+        (
+            DeploymentAdapter(),
+            MetricsAdapter(),
+            LogsAdapter(),
+            ProbeAdapter("fail"),
+            VerificationStatus.FAIL,
+        ),
+        (
+            DeploymentAdapter(),
+            MetricsAdapter(error_delta=1),
+            LogsAdapter(),
+            ProbeAdapter(),
+            VerificationStatus.FAIL,
+        ),
+        (
+            DeploymentAdapter(),
+            MetricsAdapter(),
+            LogsAdapter(1),
+            ProbeAdapter(),
+            VerificationStatus.FAIL,
+        ),
+        (
+            RaisingDeploymentAdapter(),
+            MetricsAdapter(),
+            LogsAdapter(),
+            ProbeAdapter(),
+            VerificationStatus.INCONCLUSIVE,
+        ),
+        (
+            DeploymentAdapter(),
+            RaisingMetricsAdapter(),
+            LogsAdapter(),
+            ProbeAdapter(),
+            VerificationStatus.INCONCLUSIVE,
+        ),
+        (
+            DeploymentAdapter(),
+            RaisingMetricsAdapter(after=True),
+            LogsAdapter(),
+            ProbeAdapter(),
+            VerificationStatus.INCONCLUSIVE,
+        ),
+        (
+            DeploymentAdapter(),
+            MetricsAdapter(),
+            RaisingLogsAdapter(),
+            ProbeAdapter(),
+            VerificationStatus.INCONCLUSIVE,
+        ),
+    ],
+)
+def test_deterministic_fail_and_inconclusive_matrix(
+    database_session: Session, deployment, metrics, logs, probe, expected: VerificationStatus
+) -> None:
+    incident, action, state = _state(database_session)
+    outcome = RecoveryVerificationService(
+        database_session, deployment, metrics, logs, probe
+    ).verify(state)
+    database_session.refresh(incident)
+    database_session.refresh(action)
+    assert outcome.status is expected
+    assert incident.status == "NEEDS_MANUAL_ACTION"
+    assert action.status == "EXECUTED"
+    verification = (
+        database_session.query(Verification).filter(Verification.action_id == action.id).one()
+    )
+    assert verification.details["verification_started_at"]
+    assert verification.details["verification_completed_at"]
     assert outcome.action_id == action.id
     assert (
         database_session.query(Verification).filter(Verification.action_id == action.id).count()
