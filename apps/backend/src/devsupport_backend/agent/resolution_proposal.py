@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from devsupport_backend.agent.llm import LLMClient, LLMError
 from devsupport_backend.agent.state import (
+    ActionType,
     AgentStage,
     AgentState,
     EvaluationDecision,
@@ -36,7 +37,7 @@ class ResolutionProposalOutput(BaseModel):
     root_cause: str = Field(min_length=1, max_length=2_000)
     confidence: float = Field(ge=0, le=1)
     recommended_action: str = Field(min_length=1, max_length=2_000)
-    action_type: str = Field(min_length=1, max_length=100)
+    action_type: ActionType
     reason: str = Field(min_length=1, max_length=2_000)
     supporting_evidence_ids: list[UUID] = Field(min_length=1, max_length=100)
     risk: str = Field(min_length=1, max_length=1_000)
@@ -144,6 +145,7 @@ _SYSTEM_PROMPT = "\n".join(
         "recommended_action, action_type, reason, supporting_evidence_ids, and risk.",
         "Use one supplied CONFIRMED hypothesis as root_cause exactly and cite its supplied "
         "supporting evidence IDs.",
+        "action_type must be exactly rollback_deployment or manual_action.",
         "Propose only a high-level action. Do not include target service, version, deployment, "
         "or other execution parameters.",
         "Do not execute a Tool, grant approval, claim a rollback succeeded, or claim recovery.",

@@ -34,6 +34,7 @@ class AgentStage(StrEnum):
     EVIDENCE_EVALUATION = "evidence_evaluation"
     RESOLUTION_PROPOSAL = "resolution_proposal"
     CONCLUSION = "conclusion"
+    POLICY_GATE = "policy_gate"
 
 
 class HypothesisStatus(StrEnum):
@@ -58,6 +59,38 @@ class IntakeDecision(StrEnum):
 
     READY = "READY"
     NEEDS_INFORMATION = "NEEDS_INFORMATION"
+
+
+class ActionType(StrEnum):
+    """The only high-level remediation recommendations recognized in V0."""
+
+    ROLLBACK_DEPLOYMENT = "rollback_deployment"
+    MANUAL_ACTION = "manual_action"
+
+
+class PolicyDecision(StrEnum):
+    """Bounded code-level decisions made by the Task 4.1 Policy Gate."""
+
+    APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
+    DENIED = "DENIED"
+
+
+class PolicyReasonCode(StrEnum):
+    """Auditable reasons for an allowlist-bound Policy Gate outcome."""
+
+    APPROVAL_REQUIRED = "approval_required"
+    INVESTIGATION_NOT_CONCLUDED = "investigation_not_concluded"
+    MISSING_FINAL_CONCLUSION = "missing_final_conclusion"
+    MISSING_PROPOSED_ACTION = "missing_proposed_action"
+    MANUAL_ACTION = "manual_action"
+    UNSUPPORTED_ACTION = "unsupported_action"
+    PROPOSAL_PARAMETERS_NOT_EMPTY = "proposal_parameters_not_empty"
+    PRODUCTION_ENVIRONMENT = "production_environment"
+    UNSUPPORTED_ENVIRONMENT = "unsupported_environment"
+    UNSUPPORTED_SERVICE = "unsupported_service"
+    DEPLOYMENT_UNAVAILABLE = "deployment_unavailable"
+    INVALID_DEPLOYMENT_STATE = "invalid_deployment_state"
+    CONFLICTING_PENDING_ACTION = "conflicting_pending_action"
 
 
 class IncidentStateSource(Protocol):
@@ -197,7 +230,7 @@ class ToolHistoryEntry(StateModel):
 class ProposedAction(StateModel):
     """A future resolution proposal only; this state does not authorize execution."""
 
-    action_type: str = Field(min_length=1, max_length=100)
+    action_type: ActionType
     summary: str = Field(min_length=1, max_length=2_000)
     parameters: dict[str, JsonValue] = Field(default_factory=dict, max_length=50)
     reason: str = Field(min_length=1, max_length=2_000)
@@ -214,6 +247,15 @@ class FinalConclusion(StateModel):
     supporting_evidence_ids: list[UUID] = Field(default_factory=list, max_length=100)
     contradicting_evidence_ids: list[UUID] = Field(default_factory=list, max_length=100)
     recommended_next_action: str | None = Field(default=None, min_length=1, max_length=2_000)
+
+
+class PolicyOutcome(StateModel):
+    """Checkpoint-safe result of code-level Policy Gate evaluation only."""
+
+    decision: PolicyDecision
+    reason_code: PolicyReasonCode
+    reason: str = Field(min_length=1, max_length=2_000)
+    action_id: UUID | None = None
 
 
 class AgentState(TypedDict):
@@ -233,6 +275,7 @@ class AgentState(TypedDict):
     evaluation_decision: EvaluationDecision | None
     proposed_action: ProposedAction | None
     final_conclusion: FinalConclusion | None
+    policy_outcome: PolicyOutcome | None
 
 
 def create_initial_agent_state(
@@ -262,6 +305,7 @@ def create_initial_agent_state(
         "evaluation_decision": None,
         "proposed_action": None,
         "final_conclusion": None,
+        "policy_outcome": None,
     }
 
 
@@ -298,6 +342,11 @@ def agent_state_to_checkpoint_payload(state: AgentState) -> dict[str, object]:
         "final_conclusion": (
             state["final_conclusion"].model_dump(mode="json")
             if state["final_conclusion"] is not None
+            else None
+        ),
+        "policy_outcome": (
+            state["policy_outcome"].model_dump(mode="json")
+            if state["policy_outcome"] is not None
             else None
         ),
     }

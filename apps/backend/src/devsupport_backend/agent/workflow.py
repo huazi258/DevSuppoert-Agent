@@ -19,6 +19,7 @@ from devsupport_backend.agent.nodes.tool_execution import (
     ToolExecutionDependencies,
     tool_execution_node,
 )
+from devsupport_backend.agent.policy import PolicyGate, policy_gate_node
 from devsupport_backend.agent.resolution_proposal import resolution_proposal_node
 from devsupport_backend.agent.state import AgentStage, AgentState, EvaluationDecision
 from devsupport_backend.rag.retrieval import RAGService
@@ -61,6 +62,7 @@ class InvestigationWorkflowDependencies:
     llm_client: LLMClient
     tool_execution: ToolExecutionDependencies
     evaluator: EvidenceEvaluator
+    policy_gate: PolicyGate
 
 
 def build_investigation_graph(
@@ -102,6 +104,10 @@ def build_investigation_graph(
     graph.add_node(
         "resolution_proposal",
         lambda state: resolution_proposal_node(state, dependencies.llm_client),
+    )
+    graph.add_node(
+        "policy_gate",
+        lambda state: policy_gate_node(state, dependencies.policy_gate),
     )
 
     graph.add_edge(START, "intake")
@@ -149,7 +155,8 @@ def build_investigation_graph(
             "end": END,
         },
     )
-    graph.add_edge("resolution_proposal", END)
+    graph.add_edge("resolution_proposal", "policy_gate")
+    graph.add_edge("policy_gate", END)
     return graph.compile(checkpointer=checkpointer)
 
 

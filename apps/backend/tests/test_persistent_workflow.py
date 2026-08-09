@@ -81,7 +81,7 @@ def _complete_agent_state(incident: Incident) -> AgentState:
             "tool_call_count": 3,
             "evaluation_decision": EvaluationDecision.CONCLUDE,
             "proposed_action": ProposedAction(
-                action_type="manual_remediation",
+                action_type="manual_action",
                 summary="Request operator review of the confirmed evidence.",
                 reason="The hypothesis is supported by runtime evidence.",
                 risk="Any operational change requires later policy review.",

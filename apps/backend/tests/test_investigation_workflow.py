@@ -17,6 +17,9 @@ from devsupport_backend.agent.state import (
     AgentState,
     EvaluationDecision,
     EvidenceContext,
+    PolicyDecision,
+    PolicyOutcome,
+    PolicyReasonCode,
     create_initial_agent_state,
 )
 from devsupport_backend.agent.workflow import (
@@ -109,7 +112,7 @@ class WorkflowFakeLLM:
                     "root_cause": confirmed["summary"],
                     "confidence": confirmed["confidence"],
                     "recommended_action": "Request operator review of the confirmed evidence.",
-                    "action_type": "manual_remediation",
+                    "action_type": "manual_action",
                     "reason": "The confirmed hypothesis is tied to the cited evidence.",
                     "supporting_evidence_ids": confirmed["supporting_evidence_ids"],
                     "risk": "Any change requires later policy review and human approval.",
@@ -129,6 +132,24 @@ class FakeEvaluator:
         self.calls += 1
         assert state["current_stage"] is AgentStage.EVIDENCE_EVALUATION
         return self._decisions.pop(0)
+
+
+class FakePolicyGate:
+    """Keep graph wiring tests independent from database-backed Task 4.1 policy tests."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def evaluate(self, state: AgentState) -> PolicyOutcome:
+        self.calls += 1
+        assert state["current_stage"] is AgentStage.CONCLUSION
+        assert state["final_conclusion"] is not None
+        assert state["proposed_action"] is not None
+        return PolicyOutcome(
+            decision=PolicyDecision.DENIED,
+            reason_code=PolicyReasonCode.MANUAL_ACTION,
+            reason="The graph wiring test uses a non-executable manual action.",
+        )
 
 
 def _build_initial_state() -> AgentState:
@@ -201,6 +222,7 @@ def _workflow_dependencies(
         llm_client=llm_client,
         tool_execution=tool_execution,
         evaluator=evaluator,
+        policy_gate=FakePolicyGate(),
     )
 
 
@@ -241,6 +263,7 @@ def test_graph_compiles() -> None:
 
     assert "evidence_evaluation" in graph.get_graph().nodes
     assert "tool_execution" in graph.get_graph().nodes
+    assert "policy_gate" in graph.get_graph().nodes
 
 
 def test_graph_compiles_with_an_injected_checkpointer() -> None:
@@ -266,9 +289,11 @@ def test_continue_forms_a_second_plan_then_conclude_without_repeating_initial_no
     )
 
     assert result["evaluation_decision"] is EvaluationDecision.CONCLUDE
-    assert result["current_stage"] is AgentStage.CONCLUSION
+    assert result["current_stage"] is AgentStage.POLICY_GATE
     assert result["final_conclusion"] is not None
     assert result["proposed_action"] is not None
+    assert result["policy_outcome"] is not None
+    assert result["policy_outcome"].decision is PolicyDecision.DENIED
     assert result["investigation_round"] == 2
     assert result["tool_call_count"] == 2
     assert llm_client.generation_calls == 1
@@ -344,9 +369,10 @@ def test_final_allowed_round_can_conclude_and_propose_resolution(
     )
 
     assert result["evaluation_decision"] is EvaluationDecision.CONCLUDE
-    assert result["current_stage"] is AgentStage.CONCLUSION
+    assert result["current_stage"] is AgentStage.POLICY_GATE
     assert result["final_conclusion"] is not None
     assert result["proposed_action"] is not None
+    assert result["policy_outcome"] is not None
     assert result["investigation_round"] == 1
     assert result["tool_call_count"] == 1
     assert llm_client.planning_calls == 1

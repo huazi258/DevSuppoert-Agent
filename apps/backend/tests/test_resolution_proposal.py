@@ -88,7 +88,7 @@ def proposal_response(
     hypothesis: HypothesisContext,
     evidence: EvidenceContext,
     *,
-    action_type: str = "manual_remediation",
+    action_type: str = "manual_action",
     recommended_action: str = "Ask an operator to review the confirmed deployment evidence.",
 ) -> str:
     """Build a valid high-level proposal without executable deployment parameters."""
@@ -149,7 +149,7 @@ def test_rollback_suggestion_is_only_a_non_executable_proposed_action() -> None:
     assert updated["current_stage"] is AgentStage.CONCLUSION
 
 
-def test_manual_remediation_proposal_is_structured() -> None:
+def test_manual_action_proposal_is_structured() -> None:
     state, evidence, hypothesis = build_resolution_state()
 
     updated = resolution_proposal_node(
@@ -158,7 +158,7 @@ def test_manual_remediation_proposal_is_structured() -> None:
     )
 
     assert updated["proposed_action"] is not None
-    assert updated["proposed_action"].action_type == "manual_remediation"
+    assert updated["proposed_action"].action_type == "manual_action"
     assert updated["proposed_action"].risk
 
 
@@ -190,6 +190,19 @@ def test_no_confirmed_hypothesis_or_ungrounded_execution_parameters_are_rejected
     payload["parameters"] = {"target_version": "v9.9.9"}
     with pytest.raises(ResolutionProposalError, match="output validation failed"):
         resolution_proposal_node(state, FakeLLMClient(json.dumps(payload)))
+
+    assert state["final_conclusion"] is None
+    assert state["proposed_action"] is None
+
+
+def test_unknown_action_type_is_rejected_at_the_structured_output_boundary() -> None:
+    state, evidence, hypothesis = build_resolution_state()
+
+    with pytest.raises(ResolutionProposalError, match="output validation failed"):
+        resolution_proposal_node(
+            state,
+            FakeLLMClient(proposal_response(hypothesis, evidence, action_type="restart_service")),
+        )
 
     assert state["final_conclusion"] is None
     assert state["proposed_action"] is None

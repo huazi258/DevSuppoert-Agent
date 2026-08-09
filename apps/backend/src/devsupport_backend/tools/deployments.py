@@ -14,6 +14,7 @@ from devsupport_backend.tools.schemas import GetDeploymentHistoryInput
 
 SUPPORTED_ENVIRONMENT = "local"
 ServiceName = Literal["order-service", "payment-service"]
+SUPPORTED_SERVICES = frozenset(("order-service", "payment-service"))
 
 
 class DeploymentAdapterError(RuntimeError):
