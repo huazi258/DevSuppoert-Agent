@@ -153,6 +153,7 @@ class Verification(TimestampMixin, IncidentRecordMixin, Base):
 
 class Report(TimestampMixin, IncidentRecordMixin, Base):
     __tablename__ = "reports"
+    __table_args__ = (UniqueConstraint("incident_id", name="uq_reports_incident_id"),)
 
     content: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
     root_cause: Mapped[str | None] = mapped_column(Text, nullable=True)

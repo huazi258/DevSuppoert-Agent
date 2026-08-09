@@ -214,8 +214,7 @@ class EvidenceContext(StateModel):
         ).encode()
         if len(serialized_data) > MAX_EVIDENCE_DATA_SERIALIZED_BYTES:
             raise ValueError(
-                "evidence data exceeds "
-                f"{MAX_EVIDENCE_DATA_SERIALIZED_BYTES} serialized bytes"
+                f"evidence data exceeds {MAX_EVIDENCE_DATA_SERIALIZED_BYTES} serialized bytes"
             )
         return self
 
@@ -337,6 +336,12 @@ class VerificationOutcome(StateModel):
     summary: str = Field(min_length=1, max_length=2_000)
 
 
+class ReportOutcome(StateModel):
+    report_id: UUID
+    incident_id: UUID
+    final_status: str = Field(min_length=1, max_length=50)
+
+
 class AgentState(TypedDict):
     """Full runtime state carried by future workflow nodes and checkpointed safely."""
 
@@ -358,6 +363,7 @@ class AgentState(TypedDict):
     approval_outcome: ApprovalOutcome | None
     execution_outcome: ActionExecutionOutcome | None
     verification_outcome: VerificationOutcome | None
+    report_outcome: ReportOutcome | None
 
 
 def create_initial_agent_state(
@@ -391,6 +397,7 @@ def create_initial_agent_state(
         "approval_outcome": None,
         "execution_outcome": None,
         "verification_outcome": None,
+        "report_outcome": None,
     }
 
 
@@ -415,9 +422,7 @@ def agent_state_to_checkpoint_payload(state: AgentState) -> dict[str, object]:
         ),
         "missing_information": state["missing_information"],
         "evaluation_decision": (
-            state["evaluation_decision"].value
-            if state["evaluation_decision"] is not None
-            else None
+            state["evaluation_decision"].value if state["evaluation_decision"] is not None else None
         ),
         "proposed_action": (
             state["proposed_action"].model_dump(mode="json")
@@ -449,4 +454,7 @@ def agent_state_to_checkpoint_payload(state: AgentState) -> dict[str, object]:
             if state["verification_outcome"] is not None
             else None
         ),
+        "report_outcome": state["report_outcome"].model_dump(mode="json")
+        if state["report_outcome"]
+        else None,
     }

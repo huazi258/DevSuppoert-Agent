@@ -55,3 +55,13 @@ class IncidentResponse(BaseModel):
     thread_id: str
     created_at: datetime
     updated_at: datetime
+
+
+class ReportResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    incident_id: UUID
+    root_cause: str | None
+    content: dict[str, object]
+    created_at: datetime
+    updated_at: datetime

@@ -18,9 +18,9 @@ from devsupport_backend.approvals import (
     WorkflowStateReader,
 )
 from devsupport_backend.database import get_session
-from devsupport_backend.models import Approval, Incident
+from devsupport_backend.models import Approval, Incident, Report
 from devsupport_backend.schemas.approvals import ApprovalCreate, ApprovalResponse
-from devsupport_backend.schemas.incidents import IncidentCreate, IncidentResponse
+from devsupport_backend.schemas.incidents import IncidentCreate, IncidentResponse, ReportResponse
 
 router = APIRouter(prefix="/incidents", tags=["incidents"])
 SessionDependency = Annotated[Session, Depends(get_session)]
@@ -36,9 +36,7 @@ def get_approval_workflow_coordinator() -> ApprovalWorkflowCoordinator:
     return PostgresApprovalWorkflowCoordinator()
 
 
-WorkflowStateReaderDependency = Annotated[
-    WorkflowStateReader, Depends(get_workflow_state_reader)
-]
+WorkflowStateReaderDependency = Annotated[WorkflowStateReader, Depends(get_workflow_state_reader)]
 ApprovalWorkflowCoordinatorDependency = Annotated[
     ApprovalWorkflowCoordinator, Depends(get_approval_workflow_coordinator)
 ]
@@ -69,6 +67,16 @@ def get_incident(incident_id: UUID, session: SessionDependency) -> Incident:
     if incident is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Incident not found")
     return incident
+
+
+@router.get("/{incident_id}/report", response_model=ReportResponse)
+def get_final_report(incident_id: UUID, session: SessionDependency) -> Report:
+    if session.get(Incident, incident_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Incident not found")
+    report = session.scalar(select(Report).where(Report.incident_id == incident_id))
+    if report is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Final report not found")
+    return report
 
 
 @router.get("", response_model=list[IncidentResponse])
