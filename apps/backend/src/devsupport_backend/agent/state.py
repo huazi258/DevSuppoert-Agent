@@ -39,6 +39,7 @@ class AgentStage(StrEnum):
     APPROVAL_DECISION = "approval_decision"
     ACTION_EXECUTION = "action_execution"
     RECOVERY_VERIFICATION = "recovery_verification"
+    RESOLVED = "resolved"
     NEEDS_MANUAL_ACTION = "needs_manual_action"
 
 
@@ -85,6 +86,14 @@ class ApprovalStatus(StrEnum):
 
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
+
+
+class VerificationStatus(StrEnum):
+    """The deterministic terminal recovery evidence decisions."""
+
+    PASS = "PASS"
+    FAIL = "FAIL"
+    INCONCLUSIVE = "INCONCLUSIVE"
 
 
 class PolicyReasonCode(StrEnum):
@@ -319,6 +328,15 @@ class ActionExecutionOutcome(StateModel):
         return self
 
 
+class VerificationOutcome(StateModel):
+    """Checkpoint-safe outcome of independent recovery verification."""
+
+    verification_id: UUID | None = None
+    action_id: UUID | None = None
+    status: VerificationStatus
+    summary: str = Field(min_length=1, max_length=2_000)
+
+
 class AgentState(TypedDict):
     """Full runtime state carried by future workflow nodes and checkpointed safely."""
 
@@ -339,6 +357,7 @@ class AgentState(TypedDict):
     policy_outcome: PolicyOutcome | None
     approval_outcome: ApprovalOutcome | None
     execution_outcome: ActionExecutionOutcome | None
+    verification_outcome: VerificationOutcome | None
 
 
 def create_initial_agent_state(
@@ -371,6 +390,7 @@ def create_initial_agent_state(
         "policy_outcome": None,
         "approval_outcome": None,
         "execution_outcome": None,
+        "verification_outcome": None,
     }
 
 
@@ -422,6 +442,11 @@ def agent_state_to_checkpoint_payload(state: AgentState) -> dict[str, object]:
         "execution_outcome": (
             state["execution_outcome"].model_dump(mode="json")
             if state["execution_outcome"] is not None
+            else None
+        ),
+        "verification_outcome": (
+            state["verification_outcome"].model_dump(mode="json")
+            if state["verification_outcome"] is not None
             else None
         ),
     }

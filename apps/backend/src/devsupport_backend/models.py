@@ -138,16 +138,17 @@ class Action(TimestampMixin, IncidentRecordMixin, Base):
 
 class Verification(TimestampMixin, IncidentRecordMixin, Base):
     __tablename__ = "verifications"
+    __table_args__ = (UniqueConstraint("action_id", name="uq_verifications_action_id"),)
 
-    action_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("actions.id", ondelete="SET NULL"), nullable=True, index=True
+    action_id: Mapped[UUID] = mapped_column(
+        ForeignKey("actions.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     status: Mapped[str] = mapped_column(String(50), nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
 
     incident: Mapped[Incident] = relationship(back_populates="verifications")
-    action: Mapped[Action | None] = relationship(back_populates="verifications")
+    action: Mapped[Action] = relationship(back_populates="verifications")
 
 
 class Report(TimestampMixin, IncidentRecordMixin, Base):

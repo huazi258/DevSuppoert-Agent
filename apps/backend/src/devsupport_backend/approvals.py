@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from devsupport_backend.agent.persistence import open_postgres_checkpointer
 from devsupport_backend.agent.post_approval import (
     ControlledActionExecution,
+    RecoveryVerification,
     add_post_approval_continuation,
 )
 from devsupport_backend.agent.runtime import WorkflowService
@@ -32,6 +33,9 @@ from devsupport_backend.database import SessionLocal
 from devsupport_backend.models import Action, Approval, Incident
 from devsupport_backend.schemas.approvals import ApprovalDecision
 from devsupport_backend.tools.deployments import FaultLabDeploymentAdapter, FaultLabRollbackAdapter
+from devsupport_backend.tools.logs import FaultLabLogsAdapter
+from devsupport_backend.tools.metrics import FaultLabMetricsAdapter
+from devsupport_backend.tools.recovery_probe import FaultLabRecoveryProbeAdapter
 
 PENDING_APPROVAL = "PENDING_APPROVAL"
 WAITING_APPROVAL = "WAITING_APPROVAL"
@@ -395,6 +399,7 @@ def build_approval_resume_graph(
     approval_wait: ApprovalWait,
     approval_decision: ApprovalDecisionService,
     action_execution: ControlledActionExecution | None = None,
+    recovery_verification: RecoveryVerification | None = None,
     checkpointer: BaseCheckpointSaver,
 ):
     """Compile the persisted continuation for the original approval-interrupted workflow."""
@@ -412,7 +417,11 @@ def build_approval_resume_graph(
     if action_execution is None:
         graph.add_edge("approval_decision", END)
     else:
-        add_post_approval_continuation(graph, action_execution=action_execution)
+        add_post_approval_continuation(
+            graph,
+            action_execution=action_execution,
+            recovery_verification=recovery_verification,
+        )
     return graph.compile(checkpointer=checkpointer)
 
 
@@ -426,6 +435,7 @@ class PostgresApprovalWorkflowCoordinator:
                     approval_wait=ApprovalWaitService(session),
                     approval_decision=ApprovalDecisionService(session),
                     action_execution=_action_execution_service(session),
+                    recovery_verification=_recovery_verification_service(session),
                     checkpointer=checkpointer,
                 )
                 return WorkflowService(graph).resume(
@@ -447,4 +457,16 @@ def _action_execution_service(session: Session):
         session,
         FaultLabDeploymentAdapter.from_settings(),
         FaultLabRollbackAdapter.from_settings(),
+    )
+
+
+def _recovery_verification_service(session: Session):
+    from devsupport_backend.recovery_verification import RecoveryVerificationService
+
+    return RecoveryVerificationService(
+        session,
+        FaultLabDeploymentAdapter.from_settings(),
+        FaultLabMetricsAdapter.from_settings(),
+        FaultLabLogsAdapter.from_settings(),
+        FaultLabRecoveryProbeAdapter.from_settings(),
     )

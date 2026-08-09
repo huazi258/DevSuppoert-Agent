@@ -22,6 +22,7 @@ from devsupport_backend.agent.nodes.tool_execution import (
 from devsupport_backend.agent.policy import PolicyGate, policy_gate_node
 from devsupport_backend.agent.post_approval import (
     ControlledActionExecution,
+    RecoveryVerification,
     add_post_approval_continuation,
 )
 from devsupport_backend.agent.resolution_proposal import resolution_proposal_node
@@ -82,6 +83,7 @@ class InvestigationWorkflowDependencies:
     approval_wait: ApprovalWait
     approval_decision: ApprovalDecisionService
     action_execution: ControlledActionExecution | None = None
+    recovery_verification: RecoveryVerification | None = None
 
 
 def build_investigation_graph(
@@ -141,7 +143,11 @@ def build_investigation_graph(
         lambda state: approval_decision_node(state, dependencies.approval_decision),
     )
     if dependencies.action_execution is not None:
-        add_post_approval_continuation(graph, action_execution=dependencies.action_execution)
+        add_post_approval_continuation(
+            graph,
+            action_execution=dependencies.action_execution,
+            recovery_verification=dependencies.recovery_verification,
+        )
 
     graph.add_edge(START, "intake")
     graph.add_conditional_edges(
