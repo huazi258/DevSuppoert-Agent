@@ -18,18 +18,24 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from order_service.config import settings
-from order_service.deployment_state import FAULTY_VERSION, get_deployment_state
+from order_service.deployment_state import (
+    FAULTY_VERSION,
+    get_deployment_state,
+    reset_deployment_state,
+)
 from order_service.log_buffer import LogBuffer
 from order_service.runtime_state import (
     get_runtime_state,
     metrics_snapshot,
     record_order_result,
+    reset_runtime_state,
 )
 from order_service.telemetry import configure_telemetry
 
 SERVICE_NAME = "order-service"
 PAYMENT_SERVICE_NAME = "payment-service"
 REQUEST_ID_HEADER = "X-Request-ID"
+INTERNAL_FAULT_LAB_RESET_PATH = "/internal/fault-lab/reset"
 
 
 class JsonFormatter(logging.Formatter):
@@ -145,6 +151,8 @@ async def log_http_request(request: Request, call_next: RequestResponseEndpoint)
     response = await call_next(request)
     duration_ms = round((perf_counter() - started_at) * 1000, 2)
     response.headers[REQUEST_ID_HEADER] = request_id
+    if request.url.path == INTERNAL_FAULT_LAB_RESET_PATH:
+        return response
     logger.info(
         "http_request",
         extra={
@@ -230,6 +238,16 @@ def internal_deployment() -> dict[str, str | None]:
         "previous_version": deployment.previous_version,
         "deployed_at": deployment.deployed_at,
     }
+
+
+@app.post(INTERNAL_FAULT_LAB_RESET_PATH)
+def internal_fault_lab_reset() -> dict[str, str]:
+    """Reset this process's local Fault Lab state without retaining control evidence."""
+    reset_runtime_state()
+    reset_deployment_state()
+    log_buffer.clear()
+    telemetry.span_buffer.clear()
+    return {"service": SERVICE_NAME, "status": "reset"}
 
 
 @app.post("/orders", response_model=OrderResponse)

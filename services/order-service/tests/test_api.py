@@ -7,8 +7,18 @@ import pytest
 from fastapi.testclient import TestClient
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
-from order_service.fault_control import inject_missing_config_fault, reset_fault_lab
-from order_service.main import REQUEST_ID_HEADER, app, get_payment_client, log_buffer, telemetry
+import order_service.fault_control as fault_control
+from order_service.deployment_state import reset_deployment_state
+from order_service.fault_control import inject_missing_config_fault
+from order_service.main import (
+    INTERNAL_FAULT_LAB_RESET_PATH,
+    REQUEST_ID_HEADER,
+    app,
+    get_payment_client,
+    log_buffer,
+    telemetry,
+)
+from order_service.runtime_state import reset_runtime_state
 
 client = TestClient(app)
 
@@ -22,7 +32,8 @@ def clear_dependency_overrides() -> None:
         ) as payment_client:
             yield payment_client
 
-    reset_fault_lab()
+    reset_runtime_state()
+    reset_deployment_state()
     log_buffer.clear()
     telemetry.span_buffer.clear()
     app.dependency_overrides.clear()
@@ -31,7 +42,8 @@ def clear_dependency_overrides() -> None:
     app.dependency_overrides.clear()
     log_buffer.clear()
     telemetry.span_buffer.clear()
-    reset_fault_lab()
+    reset_runtime_state()
+    reset_deployment_state()
 
 
 def mock_payment_service(handler: Callable[[httpx.Request], httpx.Response]) -> None:
@@ -291,11 +303,12 @@ def test_reset_recovers_from_missing_configuration() -> None:
     inject_missing_config_fault()
 
     failed_response = client.post("/orders", json={"amount": 99.9})
-    reset_fault_lab()
+    reset_response = client.post(INTERNAL_FAULT_LAB_RESET_PATH)
     recovered_response = client.post("/orders", json={"amount": 99.9})
     deployment_response = client.get("/internal/deployment")
 
     assert failed_response.status_code == 500
+    assert reset_response.status_code == 200
     assert recovered_response.status_code == 200
     assert recovered_response.json()["status"] == "confirmed"
     assert deployment_response.json()["current_version"] == "v1.0.0"
@@ -393,10 +406,11 @@ def test_missing_config_fault_records_deployment_transition_without_leaking_faul
 
 def test_reset_restores_deployment_baseline_after_missing_config_fault() -> None:
     inject_missing_config_fault()
-    reset_fault_lab()
+    reset_response = client.post(INTERNAL_FAULT_LAB_RESET_PATH)
 
     response = client.get("/internal/deployment")
 
+    assert reset_response.status_code == 200
     assert response.status_code == 200
     assert response.json() == {
         "service": "order-service",
@@ -404,3 +418,113 @@ def test_reset_restores_deployment_baseline_after_missing_config_fault() -> None
         "previous_version": None,
         "deployed_at": None,
     }
+
+
+def test_internal_fault_lab_reset_clears_order_observability_and_runtime_state() -> None:
+    def payment_handler(request: httpx.Request) -> httpx.Response:
+        order_id = json.loads(request.content)["order_id"]
+        return httpx.Response(
+            200,
+            json={"payment_id": "pay-123", "order_id": order_id, "status": "approved"},
+        )
+
+    mock_payment_service(payment_handler)
+    started_at = datetime.now(UTC)
+    inject_missing_config_fault()
+
+    failed_response = client.post("/orders", json={"amount": 99.9})
+    before_logs = log_buffer.query(
+        time_range_start=started_at - timedelta(seconds=1),
+        time_range_end=datetime.now(UTC) + timedelta(seconds=1),
+        level="error",
+        query="MissingRequiredConfiguration",
+        limit=10,
+    )
+    before_traces = telemetry.span_buffer.query(
+        time_range_start=started_at - timedelta(seconds=1),
+        time_range_end=datetime.now(UTC) + timedelta(seconds=1),
+        trace_id=None,
+        limit=100,
+    )
+
+    reset_response = client.post(INTERNAL_FAULT_LAB_RESET_PATH)
+    after_logs = log_buffer.query(
+        time_range_start=started_at - timedelta(seconds=1),
+        time_range_end=datetime.now(UTC) + timedelta(seconds=1),
+        level=None,
+        query=None,
+        limit=100,
+    )
+    after_traces = telemetry.span_buffer.query(
+        time_range_start=started_at - timedelta(seconds=1),
+        time_range_end=datetime.now(UTC) + timedelta(seconds=1),
+        trace_id=None,
+        limit=100,
+    )
+    metrics_response = client.get("/internal/metrics")
+    deployment_response = client.get("/internal/deployment")
+    recovered_response = client.post("/orders", json={"amount": 99.9})
+
+    assert failed_response.status_code == 500
+    assert before_logs[0] == 1
+    assert any("POST /orders" in span["operation"] for span in before_traces[1])
+    assert reset_response.status_code == 200
+    assert reset_response.json() == {"service": "order-service", "status": "reset"}
+    assert after_logs == (0, [])
+    assert after_traces == (0, [])
+    assert metrics_response.json()["request_count"] == 0
+    assert metrics_response.json()["error_count"] == 0
+    assert deployment_response.json()["current_version"] == "v1.0.0"
+    assert deployment_response.json()["previous_version"] is None
+    assert recovered_response.status_code == 200
+
+
+def test_cli_reset_calls_both_fault_lab_services(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, str]:
+            service = (
+                "order-service"
+                if calls[-1].startswith("http://127.0.0.1:8000")
+                else "payment-service"
+            )
+            return {"service": service, "status": "reset"}
+
+    def post(url: str, **_: object) -> Response:
+        calls.append(url)
+        return Response()
+
+    monkeypatch.setattr(fault_control.httpx, "post", post)
+
+    fault_control.reset_fault_lab()
+
+    assert calls == [
+        "http://127.0.0.1:8000/internal/fault-lab/reset",
+        "http://127.0.0.1:8001/internal/fault-lab/reset",
+    ]
+
+
+def test_cli_reset_fails_when_one_service_reset_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Response:
+        def __init__(self, service: str) -> None:
+            self._service = service
+
+        def raise_for_status(self) -> None:
+            if self._service == "payment-service":
+                raise RuntimeError("payment reset unavailable")
+
+        def json(self) -> dict[str, str]:
+            return {"service": self._service, "status": "reset"}
+
+    def post(url: str, **_: object) -> Response:
+        service = "order-service" if ":8000" in url else "payment-service"
+        return Response(service)
+
+    monkeypatch.setattr(fault_control.httpx, "post", post)
+
+    with pytest.raises(RuntimeError, match="payment-service"):
+        fault_control.reset_fault_lab()

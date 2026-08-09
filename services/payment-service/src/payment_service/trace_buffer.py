@@ -11,6 +11,7 @@ from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor
 from opentelemetry.trace.status import StatusCode
 
 MAX_TRACE_SPANS = 500
+FAULT_LAB_RESET_PATH = "/internal/fault-lab/reset"
 
 
 class SpanBuffer(SpanProcessor):
@@ -25,6 +26,8 @@ class SpanBuffer(SpanProcessor):
 
     def on_end(self, span: ReadableSpan) -> None:
         """Store a compact projection of the exact OpenTelemetry span that ended."""
+        if FAULT_LAB_RESET_PATH in span.name:
+            return
         if span.start_time is None or span.end_time is None:
             return
         context = span.get_span_context()

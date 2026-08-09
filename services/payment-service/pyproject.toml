@@ -9,6 +9,7 @@ description = "DevSupport Agent V0 payment service"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.115,<1.0",
+    "httpx>=0.28,<1.0",
     "opentelemetry-api==1.44.0",
     "opentelemetry-exporter-otlp-proto-http==1.44.0",
     "opentelemetry-instrumentation-fastapi==0.65b0",

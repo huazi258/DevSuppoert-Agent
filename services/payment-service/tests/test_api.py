@@ -4,7 +4,13 @@ from time import perf_counter
 import pytest
 from fastapi.testclient import TestClient
 
-from payment_service.main import REQUEST_ID_HEADER, app, log_buffer, telemetry
+from payment_service.main import (
+    INTERNAL_FAULT_LAB_RESET_PATH,
+    REQUEST_ID_HEADER,
+    app,
+    log_buffer,
+    telemetry,
+)
 from payment_service.runtime_state import inject_payment_timeout, reset_runtime_state
 
 client = TestClient(app)
@@ -176,3 +182,50 @@ def test_internal_logs_returns_bounded_structured_stdout_events() -> None:
     assert not {"fault_name", "root_cause", "expected_answer", "recommended_action"} & logs[
         "events"
     ][0].keys()
+
+
+def test_internal_fault_lab_reset_clears_payment_observability_and_metrics() -> None:
+    started_at = datetime.now(UTC)
+    inject_payment_timeout(delay_seconds=0.05)
+
+    payment_response = client.post("/payments", json={"order_id": "order-123", "amount": 99.9})
+    before_logs = log_buffer.query(
+        time_range_start=started_at - timedelta(seconds=1),
+        time_range_end=datetime.now(UTC) + timedelta(seconds=1),
+        level=None,
+        query=None,
+        limit=100,
+    )
+    before_traces = telemetry.span_buffer.query(
+        time_range_start=started_at - timedelta(seconds=1),
+        time_range_end=datetime.now(UTC) + timedelta(seconds=1),
+        trace_id=None,
+        limit=100,
+    )
+
+    reset_response = client.post(INTERNAL_FAULT_LAB_RESET_PATH)
+    after_logs = log_buffer.query(
+        time_range_start=started_at - timedelta(seconds=1),
+        time_range_end=datetime.now(UTC) + timedelta(seconds=1),
+        level=None,
+        query=None,
+        limit=100,
+    )
+    after_traces = telemetry.span_buffer.query(
+        time_range_start=started_at - timedelta(seconds=1),
+        time_range_end=datetime.now(UTC) + timedelta(seconds=1),
+        trace_id=None,
+        limit=100,
+    )
+    metrics_response = client.get("/internal/metrics")
+
+    assert payment_response.status_code == 200
+    assert before_logs[0] >= 1
+    assert any("POST /payments" in span["operation"] for span in before_traces[1])
+    assert reset_response.status_code == 200
+    assert reset_response.json() == {"service": "payment-service", "status": "reset"}
+    assert after_logs == (0, [])
+    assert after_traces == (0, [])
+    assert metrics_response.json()["request_count"] == 0
+    assert metrics_response.json()["success_count"] == 0
+    assert metrics_response.json()["error_count"] == 0
