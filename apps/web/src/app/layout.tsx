@@ -4,8 +4,8 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "DevSupport Agent V0",
-  description: "DevSupport Agent V0 web foundation",
+  title: "DevSupport Agent",
+  description: "Incident investigation and controlled remediation console",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
