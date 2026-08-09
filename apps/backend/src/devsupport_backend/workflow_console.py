@@ -6,6 +6,7 @@ from typing import Protocol, cast
 from uuid import UUID
 
 from langgraph.graph import END, START, StateGraph
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -151,7 +152,11 @@ class WorkflowConsoleService:
         try:
             state = self._runtime.start(incident)
         except Exception as error:
-            if self._runtime.get_state(incident.thread_id) is None:
+            try:
+                checkpoint = self._runtime.get_state(incident.thread_id)
+            except Exception:
+                raise WorkflowStartError("Workflow start failed") from error
+            if checkpoint is None:
                 self._session.refresh(incident)
                 incident.status = "OPEN"
                 self._session.commit()
@@ -321,7 +326,10 @@ def _validate_incident_binding(incident: Incident, state: AgentState) -> None:
 def _action_response(action: Action | None) -> WorkflowActionResponse | None:
     if action is None:
         return None
-    parameters = ActionExecutionParameters.model_validate(action.parameters)
+    try:
+        parameters = ActionExecutionParameters.model_validate(action.parameters)
+    except ValidationError as error:
+        raise WorkflowStateConflict("Persisted Action parameters are invalid") from error
     return WorkflowActionResponse(
         action_id=action.id,
         action_type=action.action_type,

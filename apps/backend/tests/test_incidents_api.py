@@ -7,7 +7,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from devsupport_backend.agent.state import AgentStage, EvidenceContext, create_initial_agent_state
+from devsupport_backend.agent.state import (
+    AgentStage,
+    EvidenceContext,
+    PolicyDecision,
+    PolicyOutcome,
+    PolicyReasonCode,
+    create_initial_agent_state,
+)
 from devsupport_backend.database import engine, get_session
 from devsupport_backend.main import app
 from devsupport_backend.models import Action, Incident, Report
@@ -15,13 +22,24 @@ from devsupport_backend.routers.incidents import get_workflow_runtime
 
 
 class FakeWorkflowRuntime:
-    def __init__(self, *, start_error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        start_error: Exception | None = None,
+        get_state_results: list[object | None] | None = None,
+    ) -> None:
         self.states: dict[str, object] = {}
         self.start_error = start_error
+        self.get_state_results = get_state_results or []
         self.start_calls = 0
         self.started_threads: list[str] = []
 
     def get_state(self, thread_id: str):
+        if self.get_state_results:
+            state = self.get_state_results.pop(0)
+            if isinstance(state, Exception):
+                raise state
+            return state
         return self.states.get(thread_id)
 
     def start(self, incident: Incident):
@@ -223,6 +241,60 @@ def test_workflow_start_failure_restores_open(
     incident = database_session.get(Incident, UUID(created["id"]))
     assert response.status_code == 503
     assert incident is not None and incident.status == "OPEN"
+
+
+def test_workflow_get_invalid_persisted_action_parameters_returns_conflict(
+    api_client: TestClient, database_session: Session, incident_payload: dict[str, str]
+) -> None:
+    runtime = FakeWorkflowRuntime()
+    client = workflow_client(api_client, runtime)
+    created = create_incident(client, incident_payload)
+    incident = database_session.get(Incident, UUID(created["id"]))
+    assert incident is not None
+    action = Action(
+        incident_id=incident.id,
+        action_type="rollback_deployment",
+        status="PENDING_APPROVAL",
+        parameters={
+            "service": "order-service",
+            "environment": "local",
+            "current_version": "v1.1.0",
+            "reason": "Verified deployment facts require rollback.",
+        },
+    )
+    database_session.add(action)
+    database_session.commit()
+    state = create_initial_agent_state(incident)
+    state["policy_outcome"] = PolicyOutcome(
+        decision=PolicyDecision.APPROVAL_REQUIRED,
+        reason_code=PolicyReasonCode.APPROVAL_REQUIRED,
+        reason="Verified action requires approval.",
+        action_id=action.id,
+    )
+    runtime.states[incident.thread_id] = state
+
+    response = client.get(f"/incidents/{incident.id}/workflow")
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Persisted Action parameters are invalid"}
+
+
+def test_workflow_start_reconciliation_read_failure_preserves_investigating(
+    api_client: TestClient, database_session: Session, incident_payload: dict[str, str]
+) -> None:
+    runtime = FakeWorkflowRuntime(
+        start_error=RuntimeError("provider unavailable"),
+        get_state_results=[None, RuntimeError("checkpoint unavailable")],
+    )
+    client = workflow_client(api_client, runtime)
+    created = create_incident(client, incident_payload)
+
+    response = client.post(f"/incidents/{created['id']}/workflow")
+
+    incident = database_session.get(Incident, UUID(created["id"]))
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Workflow start failed"}
+    assert incident is not None and incident.status == "INVESTIGATING"
 
 
 @pytest.mark.parametrize("origin", ["http://localhost:3000", "http://127.0.0.1:3000"])

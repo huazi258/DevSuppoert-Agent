@@ -52,7 +52,10 @@ class FakeRuntime:
     def get_state(self, thread_id: str):
         self.thread_ids.append(thread_id)
         if self.states:
-            return self.states.pop(0)
+            state = self.states.pop(0)
+            if isinstance(state, Exception):
+                raise state
+            return state
         return self.state
 
     def start(self, incident: Incident):
@@ -185,6 +188,26 @@ def test_projector_rejects_action_and_incident_binding_mismatches(
         project_workflow_response(incident, mismatched, action)
 
 
+def test_projector_rejects_invalid_persisted_action_parameters(
+    database_session: Session,
+) -> None:
+    incident = _incident(database_session)
+    action = _action(database_session, incident)
+    action.parameters = {
+        "service": "order-service",
+        "environment": "local",
+        "current_version": "v1.1.0",
+        "reason": "Verified deployment facts require rollback.",
+    }
+    database_session.commit()
+
+    with pytest.raises(
+        WorkflowStateConflict,
+        match="Persisted Action parameters are invalid",
+    ):
+        project_workflow_response(incident, _state(incident, action), action)
+
+
 def test_start_reuses_thread_and_conflicts_on_existing_checkpoint(
     database_session: Session,
 ) -> None:
@@ -226,6 +249,23 @@ def test_start_failure_preserves_existing_checkpoint_status(database_session: Se
 
     with pytest.raises(WorkflowStartError):
         service.start(incident.id)
+
+    database_session.refresh(incident)
+    assert runtime.start_calls == 1
+    assert incident.status == "INVESTIGATING"
+
+
+def test_start_reconciliation_read_failure_preserves_investigating(
+    database_session: Session,
+) -> None:
+    incident = _incident(database_session)
+    runtime = FakeRuntime(
+        states=[None, RuntimeError("checkpoint unavailable")],
+        start_error=RuntimeError("provider unavailable"),
+    )
+
+    with pytest.raises(WorkflowStartError):
+        WorkflowConsoleService(database_session, runtime).start(incident.id)
 
     database_session.refresh(incident)
     assert runtime.start_calls == 1
