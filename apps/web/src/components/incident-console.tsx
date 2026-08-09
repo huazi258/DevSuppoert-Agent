@@ -39,6 +39,7 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
   const [mutationPending, setMutationPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
+  const [approvalRetryDecision, setApprovalRetryDecision] = useState<ApprovalDecision | null>(null);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
   const [reportError, setReportError] = useState<string | null>(null);
   const refreshInFlight = useRef(false);
@@ -77,6 +78,7 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
     setReport(null);
     setError(null);
     setMutationError(null);
+    setApprovalRetryDecision(null);
     setWorkflowError(null);
     setReportError(null);
     setLoading(true);
@@ -145,9 +147,14 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
     setMutationError(null);
     try {
       await submitApproval(incidentId, decision);
+      setApprovalRetryDecision(null);
       await refresh();
     } catch (approvalError: unknown) {
       setMutationError(messageFor(approvalError, "Unable to record the Approval decision."));
+      if (approvalError instanceof ApiError && approvalError.status === 503) {
+        setApprovalRetryDecision(decision);
+      }
+      await refresh();
     } finally {
       setMutationPending(false);
     }
@@ -166,13 +173,20 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
     );
   }
 
-  const canStart = incident.status === "OPEN" && workflow === null;
+  const canStart =
+    incident.status === "OPEN" &&
+    workflow === null &&
+    !workflowLoading &&
+    workflowError === null;
   const canApprove =
     incident.status === "WAITING_APPROVAL" &&
     workflow?.current_stage === "waiting_approval" &&
     workflow.policy_outcome?.decision === "APPROVAL_REQUIRED" &&
     workflow.action !== null &&
-    workflow.approval_outcome === null;
+    workflow.approval_outcome === null &&
+    !workflowLoading &&
+    workflowError === null &&
+    approvalRetryDecision === null;
 
   return (
     <main className="page-shell console-shell">
@@ -224,6 +238,14 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
             </div>
             {canApprove ? (
               <div className="approval-controls"><p>Approve or reject the authoritative Action above. Action parameters cannot be edited here.</p><button className="button primary-button" disabled={mutationPending} onClick={() => void decideApproval("APPROVE")} type="button">Approve</button><button className="button danger-button" disabled={mutationPending} onClick={() => void decideApproval("REJECT")} type="button">Reject</button></div>
+            ) : null}
+            {approvalRetryDecision ? (
+              <div className="approval-controls">
+                <p>The approval decision may already be persisted, but workflow resume failed. Only the same decision can be retried.</p>
+                <button className="button primary-button" disabled={mutationPending} onClick={() => void decideApproval(approvalRetryDecision)} type="button">
+                  {mutationPending ? "Retrying…" : `Retry ${approvalRetryDecision === "APPROVE" ? "Approve" : "Reject"}`}
+                </button>
+              </div>
             ) : null}
             <div className="decision-grid">
               {workflow.approval_outcome ? <article className="record-card"><h3>Approval</h3><p><StatusBadge value={workflow.approval_outcome.status} /></p><p className="mono compact-id">{workflow.approval_outcome.approval_id}</p></article> : null}
