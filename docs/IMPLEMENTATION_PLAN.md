@@ -1218,6 +1218,8 @@ Policy Gate 之外的 Action 不得执行。
 
 实现 LangGraph Interrupt。
 
+Policy Gate 生成或确定可执行 Action 后才能请求审批。Approval Record 必须绑定该 Action ID；Approval API 的请求只能表达 `APPROVE` 或 `REJECT`，不得修改 `service`、`target_version` 或其他 Action parameters。`APPROVE` 只授权已经通过 Policy Gate 的该确定 Action。
+
 流程：
 
 ```text
@@ -1264,6 +1266,17 @@ Hypotheses
 Evidence
 Tool History
 ```
+
+Workflow resume 后、执行 rollback 前，代码必须重新验证：
+
+```text
+Approval Record 存在
+Approval Record 绑定当前 Action
+Approval 状态为 APPROVED
+Action 尚未执行
+```
+
+`REJECT` 不得进入 execution。不得仅信任 LangGraph resume payload 中的 `"APPROVE"` 就执行副作用。
 
 ---
 
@@ -1325,7 +1338,7 @@ INCONCLUSIVE
 RESOLVED
 ```
 
-## FAIL
+## FAIL / INCONCLUSIVE
 
 不能：
 
@@ -1333,6 +1346,9 @@ RESOLVED
 RESOLVED
 ```
 
+应进入：
+
+```text
 NEEDS_MANUAL_ACTION
 ```
 

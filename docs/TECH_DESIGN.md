@@ -368,6 +368,8 @@ Reject
 
 Approval API 必须独立于模型。
 
+Policy Gate 确定可执行 Action 后才可以请求审批。Approval Record 必须绑定该 Action ID；审批请求只允许表达 `APPROVE` 或 `REJECT`，不得修改 `service`、`target_version` 或任何 Action parameters。`APPROVE` 只授权已通过 Policy Gate 的该确定 Action。
+
 流程：
 
 ```text
@@ -668,6 +670,8 @@ Current State
 
 人工审批后使用已持久化的同一 `thread_id` 恢复；不得重启调查来构造 resume。
 
+LangGraph resume payload 只是恢复工作流的信号，不是副作用授权；不能仅因 payload 包含 `"APPROVE"` 而执行 rollback。
+
 ---
 
 ## 9.11 Execution
@@ -679,6 +683,8 @@ rollback_deployment
 ```
 
 `rollback_deployment` 是独立的 remediation execution path，不属于 Day 3 read-only Investigation Planner / Tool Executor。它只接收 Policy Gate 根据真实 Evidence、Deployment State 和 Approval Record 生成的可执行 Action。
+
+在执行 rollback 前，代码必须重新验证 Approval Record 存在、其 Action ID 等于当前 Action、状态为 `APPROVED`，且该 Action 尚未执行。任何校验失败或 `REJECT` 都不得进入 execution。
 
 Execution 不得由模型直接拼接 Shell，也不得复用 Fault Lab reset。Rollback 不得清理历史 logs、traces 或 metrics，必须真实改变目标服务的运行状态，使 Scenario A 的请求恢复。
 
