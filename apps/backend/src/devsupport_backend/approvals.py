@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from devsupport_backend.agent.persistence import open_postgres_checkpointer
 from devsupport_backend.agent.post_approval import (
     ControlledActionExecution,
+    FinalReport,
     RecoveryVerification,
     add_post_approval_continuation,
 )
@@ -294,9 +295,7 @@ class ApprovalService:
         return False
 
 
-def _policy_action_id(
-    state: AgentState, *, required_stage: AgentStage | None = None
-) -> UUID:
+def _policy_action_id(state: AgentState, *, required_stage: AgentStage | None = None) -> UUID:
     if required_stage is not None and state.get("current_stage") != required_stage:
         raise ApprovalValidationError("Workflow checkpoint is not waiting for approval")
     outcome = state.get("policy_outcome")
@@ -400,6 +399,7 @@ def build_approval_resume_graph(
     approval_decision: ApprovalDecisionService,
     action_execution: ControlledActionExecution | None = None,
     recovery_verification: RecoveryVerification | None = None,
+    final_report: FinalReport | None = None,
     checkpointer: BaseCheckpointSaver,
 ):
     """Compile the persisted continuation for the original approval-interrupted workflow."""
@@ -421,6 +421,7 @@ def build_approval_resume_graph(
             graph,
             action_execution=action_execution,
             recovery_verification=recovery_verification,
+            final_report=final_report,
         )
     return graph.compile(checkpointer=checkpointer)
 
@@ -436,11 +437,10 @@ class PostgresApprovalWorkflowCoordinator:
                     approval_decision=ApprovalDecisionService(session),
                     action_execution=_action_execution_service(session),
                     recovery_verification=_recovery_verification_service(session),
+                    final_report=_final_report_service(session),
                     checkpointer=checkpointer,
                 )
-                return WorkflowService(graph).resume(
-                    thread_id, {"event": "approval_recorded"}
-                )
+                return WorkflowService(graph).resume(thread_id, {"event": "approval_recorded"})
         except ApprovalError:
             raise
         except Exception as error:
@@ -470,3 +470,9 @@ def _recovery_verification_service(session: Session):
         FaultLabLogsAdapter.from_settings(),
         FaultLabRecoveryProbeAdapter.from_settings(),
     )
+
+
+def _final_report_service(session: Session):
+    from devsupport_backend.final_report import FinalReportService
+
+    return FinalReportService(session)

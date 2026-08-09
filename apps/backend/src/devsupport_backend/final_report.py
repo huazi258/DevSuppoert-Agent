@@ -5,6 +5,7 @@ import json
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from devsupport_backend.action_execution import ActionExecutionParameters
 from devsupport_backend.agent.state import (
     AgentState,
     ApprovalOutcome,
@@ -56,6 +57,38 @@ class FinalReportService:
             raise FinalReportError("Verification binding mismatch")
         if verification and ((verification.status == "PASS") != (incident.status == "RESOLVED")):
             raise FinalReportError("Verification status mismatch")
+        execution = state["execution_outcome"]
+        if isinstance(approval_state, ApprovalOutcome) and (
+            action is None
+            or approval is None
+            or approval.action_id != approval_state.action_id
+            or approval.status != approval_state.status.value
+        ):
+            raise FinalReportError("Approval checkpoint mismatch")
+        if execution is not None:
+            if (
+                action is None
+                or approval is None
+                or execution.status.value != "success"
+                or execution.action_id != action.id
+                or execution.approval_id != approval.id
+            ):
+                raise FinalReportError("Execution binding mismatch")
+            parameters = ActionExecutionParameters.model_validate(action.parameters)
+            if (
+                execution.service != parameters.service
+                or execution.environment != parameters.environment
+                or execution.target_version != parameters.target_version
+            ):
+                raise FinalReportError("Execution parameters mismatch")
+        if isinstance(verification_state, VerificationOutcome) and (
+            action is None
+            or verification is None
+            or verification.id != verification_state.verification_id
+            or verification.action_id != verification_state.action_id
+            or verification.status != verification_state.status.value
+        ):
+            raise FinalReportError("Verification checkpoint mismatch")
         if incident.status == "RESOLVED" and (
             action is None
             or approval is None
@@ -63,7 +96,8 @@ class FinalReportService:
             or action.status != "EXECUTED"
             or approval.status != "APPROVED"
             or verification.status != "PASS"
-            or state["execution_outcome"] is None
+            or execution is None
+            or not isinstance(verification_state, VerificationOutcome)
         ):
             raise FinalReportError("Resolved report lacks a verified execution chain")
         evidence = {item.id: item for item in state["evidence"]}
