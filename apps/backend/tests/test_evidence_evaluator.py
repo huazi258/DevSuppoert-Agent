@@ -11,6 +11,7 @@ import pytest
 from devsupport_backend.agent.evidence_evaluator import (
     EvidenceEvaluationError,
     LLMEvidenceEvaluator,
+    _build_prompt_context,
 )
 from devsupport_backend.agent.llm import LLMError
 from devsupport_backend.agent.state import (
@@ -104,11 +105,22 @@ def test_insufficient_evidence_can_continue_and_prompt_contains_only_state_facts
     assert decision.value == "CONTINUE"
     assert client.user_prompt is not None
     context = json.loads(client.user_prompt)
-    assert set(context) == {"incident", "hypotheses", "evidence", "tool_history"}
+    assert set(context) == {
+        "incident",
+        "hypotheses",
+        "evidence",
+        "tool_history",
+        "decision_contract",
+    }
     assert context["incident"]["service"] == "catalog-service"
     assert context["hypotheses"][0]["id"] == str(hypothesis.id)
     assert context["evidence"][0]["id"] == str(evidence.id)
     assert context["tool_history"][0]["tool_name"] == "query_metrics"
+    assert context["decision_contract"]["allowed_decisions"] == [
+        "CONTINUE",
+        "NEEDS_MANUAL_ACTION",
+    ]
+    assert context["decision_contract"]["conclude_allowed"] is False
     assert client.system_prompt is not None
     assert "untrusted" in client.system_prompt
 
@@ -124,11 +136,77 @@ def test_confirmed_hypothesis_with_real_supporting_evidence_can_conclude() -> No
         )
     ]
 
+    contract = _build_prompt_context(state)["decision_contract"]
     decision = LLMEvidenceEvaluator(
         FakeLLMClient(evaluation_response("CONCLUDE"))
     ).evaluate(state)
 
+    assert contract["conclude_allowed"] is True
+    assert "CONCLUDE" in contract["allowed_decisions"]
     assert decision.value == "CONCLUDE"
+
+
+def test_supported_hypothesis_with_real_evidence_cannot_conclude_regardless_of_confidence() -> None:
+    state, evidence, hypothesis = build_evaluation_state()
+    state["hypotheses"] = [
+        hypothesis.model_copy(
+            update={
+                "status": HypothesisStatus.SUPPORTED,
+                "confidence": 0.9,
+                "supporting_evidence_ids": [evidence.id],
+            }
+        )
+    ]
+
+    contract = _build_prompt_context(state)["decision_contract"]
+
+    assert contract["allowed_decisions"] == ["CONTINUE", "NEEDS_MANUAL_ACTION"]
+    assert contract["conclude_allowed"] is False
+    assert contract["supported_is_insufficient_for_conclude"] is True
+
+
+@pytest.mark.parametrize("status", [HypothesisStatus.ACTIVE, HypothesisStatus.REJECTED])
+def test_non_confirmed_hypotheses_do_not_allow_conclude(status: HypothesisStatus) -> None:
+    state, evidence, hypothesis = build_evaluation_state()
+    state["hypotheses"] = [
+        hypothesis.model_copy(
+            update={"status": status, "supporting_evidence_ids": [evidence.id]}
+        )
+    ]
+
+    contract = _build_prompt_context(state)["decision_contract"]
+
+    assert "CONCLUDE" not in contract["allowed_decisions"]
+    assert contract["conclude_allowed"] is False
+
+
+def test_confirmed_hypothesis_without_supporting_evidence_does_not_allow_conclude() -> None:
+    state, _, hypothesis = build_evaluation_state()
+    state["hypotheses"] = [
+        hypothesis.model_copy(update={"status": HypothesisStatus.CONFIRMED})
+    ]
+
+    contract = _build_prompt_context(state)["decision_contract"]
+
+    assert "CONCLUDE" not in contract["allowed_decisions"]
+    assert contract["conclude_allowed"] is False
+
+
+def test_confirmed_hypothesis_with_unknown_evidence_does_not_allow_conclude() -> None:
+    state, _, hypothesis = build_evaluation_state()
+    state["hypotheses"] = [
+        hypothesis.model_copy(
+            update={
+                "status": HypothesisStatus.CONFIRMED,
+                "supporting_evidence_ids": [uuid4()],
+            }
+        )
+    ]
+
+    contract = _build_prompt_context(state)["decision_contract"]
+
+    assert "CONCLUDE" not in contract["allowed_decisions"]
+    assert contract["conclude_allowed"] is False
 
 
 def test_conclusion_without_confirmed_hypothesis_is_rejected_without_state_changes() -> None:
