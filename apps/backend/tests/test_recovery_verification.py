@@ -170,7 +170,7 @@ def test_failed_probe_needs_manual_action_and_keeps_action_executed(
 
 
 def test_binding_failure_is_inconclusive_without_resolving(database_session: Session) -> None:
-    incident, _, state = _state(database_session)
+    incident, action, state = _state(database_session)
     state["execution_outcome"] = None
     service = RecoveryVerificationService(
         database_session, DeploymentAdapter(), MetricsAdapter(), LogsAdapter(), ProbeAdapter()
@@ -180,4 +180,9 @@ def test_binding_failure_is_inconclusive_without_resolving(database_session: Ses
 
     database_session.refresh(incident)
     assert outcome.status is VerificationStatus.INCONCLUSIVE
-    assert incident.status == "VERIFYING"
+    assert incident.status == "NEEDS_MANUAL_ACTION"
+    assert outcome.action_id == action.id
+    assert (
+        database_session.query(Verification).filter(Verification.action_id == action.id).count()
+        == 1
+    )

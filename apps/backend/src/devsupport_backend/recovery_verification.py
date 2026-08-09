@@ -62,7 +62,10 @@ class RecoveryVerificationService:
                 and action is not None
                 and existing.incident_id == state["incident"].id
                 and action.incident_id == existing.incident_id
+                and action.status == "EXECUTED"
+                and action.executed_at is not None
                 and existing.status in set(VerificationStatus)
+                and self._outcomes_match_action(state, action)
             ):
                 return VerificationOutcome(
                     verification_id=existing.id,
@@ -73,10 +76,7 @@ class RecoveryVerificationService:
         try:
             incident, action, approval, execution, parameters = self._validated_records(state)
         except (RecoveryVerificationError, ValueError):
-            return VerificationOutcome(
-                status=VerificationStatus.INCONCLUSIVE,
-                summary="Recovery verification binding could not be established.",
-            )
+            return self._binding_inconclusive(state)
         started_at = datetime.now(UTC)
         details: dict[str, object] = {
             "verification_started_at": started_at.isoformat(),
@@ -292,6 +292,7 @@ class RecoveryVerificationService:
         details: dict[str, object],
         summary: str,
     ) -> VerificationOutcome:
+        details.setdefault("verification_completed_at", datetime.now(UTC).isoformat())
         verification = Verification(
             incident_id=incident.id,
             action_id=action.id,
@@ -306,6 +307,50 @@ class RecoveryVerificationService:
         return VerificationOutcome(
             verification_id=verification.id, action_id=action.id, status=status, summary=summary
         )
+
+    def _binding_inconclusive(self, state: AgentState) -> VerificationOutcome:
+        """Fail closed without inventing an Action when only the Incident is trustworthy."""
+        incident = self._session.get(Incident, state["incident"].id)
+        policy = state.get("policy_outcome")
+        action = (
+            self._session.get(Action, policy.action_id)
+            if isinstance(policy, PolicyOutcome) and policy.action_id is not None
+            else None
+        )
+        if incident is None:
+            return VerificationOutcome(
+                status=VerificationStatus.INCONCLUSIVE,
+                summary="Recovery verification binding could not be established.",
+            )
+        if action is not None and action.incident_id == incident.id:
+            now = datetime.now(UTC).isoformat()
+            return self._persist(
+                incident,
+                action,
+                VerificationStatus.INCONCLUSIVE,
+                {"verification_started_at": now, "verification_completed_at": now},
+                "Recovery verification binding could not be established.",
+            )
+        incident.status = "NEEDS_MANUAL_ACTION"
+        self._session.commit()
+        return VerificationOutcome(
+            status=VerificationStatus.INCONCLUSIVE,
+            summary="Recovery verification binding could not be established.",
+        )
+
+    def _outcomes_match_action(self, state: AgentState, action: Action) -> bool:
+        approval_outcome, execution = state.get("approval_outcome"), state.get("execution_outcome")
+        if (
+            isinstance(approval_outcome, ApprovalOutcome)
+            and approval_outcome.action_id != action.id
+        ):
+            return False
+        if isinstance(execution, ActionExecutionOutcome) and (
+            execution.action_id != action.id
+            or execution.approval_id != getattr(approval_outcome, "approval_id", None)
+        ):
+            return False
+        return True
 
 
 class RecoveryVerificationError(RuntimeError):
