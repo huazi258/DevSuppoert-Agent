@@ -232,7 +232,7 @@ class RecoveryVerificationService:
         )
 
     def _validated_records(self, state: AgentState):
-        if state["current_stage"] is not AgentStage.RECOVERY_VERIFICATION:
+        if state["current_stage"] != AgentStage.RECOVERY_VERIFICATION:
             raise RecoveryVerificationError("Recovery verification requires its dedicated stage")
         policy, approval_outcome, execution = (
             state["policy_outcome"],

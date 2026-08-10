@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TypedDict
 from uuid import uuid4
 
@@ -9,7 +12,18 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
+import devsupport_backend.agent.workflow as workflow_module
+from devsupport_backend.agent.llm import LLMError
+from devsupport_backend.agent.nodes.planner import PlanningError, investigation_planner_node
+from devsupport_backend.agent.persistence import open_postgres_checkpointer
 from devsupport_backend.agent.runtime import WorkflowService
+from devsupport_backend.agent.state import (
+    AgentStage,
+    AgentState,
+    EvaluationDecision,
+    create_initial_agent_state,
+)
+from devsupport_backend.agent.workflow import InvestigationLoopLimits
 
 
 class RecoveryState(TypedDict):
@@ -163,3 +177,146 @@ def test_workflow_service_second_failed_retry_remains_inspectable() -> None:
     )
     assert failure is not None
     assert failure.failed_node == "investigation_planning"
+
+
+@dataclass
+class _RecoveryIncident:
+    """Minimal Incident source for the durable AgentState retry regression."""
+
+    id: object
+    service: str = "synthetic-service"
+    environment: str = "local"
+    description: str = "durable planner retry regression"
+    time_range_start: datetime = datetime(2026, 8, 11, tzinfo=UTC)
+    time_range_end: datetime = datetime(2026, 8, 11, tzinfo=UTC)
+
+
+class _SequencedPlannerLLM:
+    """Return a controlled provider failure followed by one valid Planner response."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+        del system_prompt, user_prompt
+        self.calls += 1
+        if self.calls == 1:
+            raise LLMError("controlled planner provider failure")
+        return json.dumps(
+            {
+                "investigation_goal": "Inspect payment latency.",
+                "tool_name": "query_metrics",
+                "tool_arguments": {
+                    "service": "synthetic-service",
+                    "environment": "local",
+                },
+                "reason": "Correlate latency.",
+            }
+        )
+
+
+def _durable_agent_state_retry_graph(
+    *,
+    checkpointer: object,
+    planner_llm: _SequencedPlannerLLM,
+    calls: dict[str, int],
+):
+    """Use the actual Planner node and routing branch around a persisted failure."""
+
+    def planning_guard(state: AgentState) -> AgentState:
+        calls["planning_guard"] += 1
+        return workflow_module._planning_guard_node(state, InvestigationLoopLimits())
+
+    def planning(state: AgentState) -> AgentState:
+        calls["planning"] += 1
+        return investigation_planner_node(state, planner_llm)
+
+    def tool_execution(state: AgentState) -> AgentState:
+        calls["tool_execution"] += 1
+        return {**state, "current_stage": AgentStage.NEEDS_MANUAL_ACTION}
+
+    graph = StateGraph(AgentState)
+    graph.add_node("planning_guard", planning_guard)
+    graph.add_node("investigation_planning", planning)
+    graph.add_node("tool_execution", tool_execution)
+    graph.add_edge(START, "planning_guard")
+    graph.add_conditional_edges(
+        "planning_guard",
+        lambda state: workflow_module._route_after_planning_guard(state, False),
+        {"investigation_planning": "investigation_planning", "end": END},
+    )
+    graph.add_conditional_edges(
+        "investigation_planning",
+        workflow_module._route_after_planning,
+        {"tool_execution": "tool_execution", "end": END},
+    )
+    graph.add_edge("tool_execution", END)
+    return graph.compile(checkpointer=checkpointer)
+
+
+def test_postgres_recompiled_agent_state_retry_executes_restored_failed_planner() -> None:
+    """A restored string stage must run the actual Planner and route to Tool Executor."""
+
+    thread_id = str(uuid4())
+    config = WorkflowService.config_for(thread_id)
+    planner_llm = _SequencedPlannerLLM()
+    calls = {"planning_guard": 0, "planning": 0, "tool_execution": 0}
+    state = create_initial_agent_state(_RecoveryIncident(id=uuid4()))
+    state["current_stage"] = AgentStage.INVESTIGATION_PLANNING
+
+    try:
+        with open_postgres_checkpointer() as first_checkpointer:
+            first_graph = _durable_agent_state_retry_graph(
+                checkpointer=first_checkpointer,
+                planner_llm=planner_llm,
+                calls=calls,
+            )
+            with pytest.raises(PlanningError, match="planner provider failed"):
+                first_graph.invoke(state, config)
+
+            failed_snapshot = first_graph.get_state(config)
+            assert type(failed_snapshot.values["current_stage"]) is str
+            assert failed_snapshot.values["current_stage"] == "investigation_planning"
+            assert list(failed_snapshot.next) == ["investigation_planning"]
+            assert any(
+                task.name == "investigation_planning" and task.error is not None
+                for task in failed_snapshot.tasks
+            )
+
+        with open_postgres_checkpointer() as second_checkpointer:
+            second_graph = _durable_agent_state_retry_graph(
+                checkpointer=second_checkpointer,
+                planner_llm=planner_llm,
+                calls=calls,
+            )
+            result = WorkflowService(second_graph).retry_failed_task(thread_id)
+
+            assert calls == {"planning_guard": 1, "planning": 2, "tool_execution": 1}
+            assert planner_llm.calls == 2
+            assert result["current_stage"] == AgentStage.NEEDS_MANUAL_ACTION
+            assert result["current_stage"] != AgentStage.INVESTIGATION_PLANNING
+            assert list(second_graph.get_state(config).next) == []
+    finally:
+        with open_postgres_checkpointer() as checkpointer:
+            checkpointer.delete_thread(thread_id)
+
+
+def test_workflow_routes_and_guard_accept_restored_top_level_enum_values() -> None:
+    """Top-level checkpoint values may be StrEnum-compatible strings after restore."""
+
+    state = create_initial_agent_state(_RecoveryIncident(id=uuid4()))
+    state["current_stage"] = AgentStage.TOOL_EXECUTION.value
+
+    assert workflow_module._route_after_planning(state) == "tool_execution"
+
+    state["current_stage"] = AgentStage.EVIDENCE_EVALUATION.value
+    state["evaluation_decision"] = EvaluationDecision.CONTINUE.value
+
+    assert workflow_module._route_after_evidence_evaluation(state) == "planning_guard"
+
+    state["current_stage"] = AgentStage.INVESTIGATION_PLANNING.value
+    state["investigation_round"] = InvestigationLoopLimits().max_rounds
+
+    guarded = workflow_module._planning_guard_node(state, InvestigationLoopLimits())
+
+    assert guarded["evaluation_decision"] == EvaluationDecision.NEEDS_MANUAL_ACTION

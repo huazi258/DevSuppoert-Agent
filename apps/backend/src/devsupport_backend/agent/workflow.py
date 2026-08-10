@@ -272,7 +272,7 @@ def evidence_evaluation_node(
     limits: InvestigationLoopLimits,
 ) -> AgentState:
     """Evaluate completed evidence before the planning guard limits any new round."""
-    if state["current_stage"] is not AgentStage.EVIDENCE_EVALUATION:
+    if state["current_stage"] != AgentStage.EVIDENCE_EVALUATION:
         return state
 
     decision = evaluator.evaluate(state)
@@ -283,7 +283,7 @@ def evidence_evaluation_node(
         "evaluation_decision": decision,
         "current_stage": (
             AgentStage.INVESTIGATION_PLANNING
-            if decision is EvaluationDecision.CONTINUE
+            if decision == EvaluationDecision.CONTINUE
             else state["current_stage"]
         ),
     }
@@ -293,8 +293,8 @@ def _hypothesis_update_round_node(state: AgentState, llm_client: LLMClient) -> A
     """Let the existing node own updates, then count exactly one completed success path."""
     updated = hypothesis_update_node(state, llm_client)
     if (
-        state["current_stage"] is AgentStage.HYPOTHESIS_UPDATE
-        and updated["current_stage"] is AgentStage.EVIDENCE_EVALUATION
+        state["current_stage"] == AgentStage.HYPOTHESIS_UPDATE
+        and updated["current_stage"] == AgentStage.EVIDENCE_EVALUATION
     ):
         return {
             **updated,
@@ -305,7 +305,7 @@ def _hypothesis_update_round_node(state: AgentState, llm_client: LLMClient) -> A
 
 def _planning_guard_node(state: AgentState, limits: InvestigationLoopLimits) -> AgentState:
     """Stop before calling Planner when a business safety limit has already been reached."""
-    if state["current_stage"] is AgentStage.INVESTIGATION_PLANNING and _limits_reached(
+    if state["current_stage"] == AgentStage.INVESTIGATION_PLANNING and _limits_reached(
         state, limits
     ):
         return {**state, "evaluation_decision": EvaluationDecision.NEEDS_MANUAL_ACTION}
@@ -321,13 +321,13 @@ def _limits_reached(state: AgentState, limits: InvestigationLoopLimits) -> bool:
 
 
 def _route_after_intake(state: AgentState) -> str:
-    return "retrieval" if state["current_stage"] is AgentStage.RETRIEVAL else "end"
+    return "retrieval" if state["current_stage"] == AgentStage.RETRIEVAL else "end"
 
 
 def _route_after_retrieval(state: AgentState) -> str:
     return (
         "hypothesis_generation"
-        if state["current_stage"] is AgentStage.HYPOTHESIS_GENERATION
+        if state["current_stage"] == AgentStage.HYPOTHESIS_GENERATION
         else "end"
     )
 
@@ -335,29 +335,29 @@ def _route_after_retrieval(state: AgentState) -> str:
 def _route_after_hypothesis_generation(state: AgentState) -> str:
     return (
         "planning_guard"
-        if state["current_stage"] is AgentStage.INVESTIGATION_PLANNING
+        if state["current_stage"] == AgentStage.INVESTIGATION_PLANNING
         else "end"
     )
 
 
 def _route_after_planning_guard(state: AgentState, terminal_report_enabled: bool = False) -> str:
-    if state["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION:
+    if state["evaluation_decision"] == EvaluationDecision.NEEDS_MANUAL_ACTION:
         return "manual_terminalization" if terminal_report_enabled else "end"
     return (
         "investigation_planning"
-        if state["current_stage"] is AgentStage.INVESTIGATION_PLANNING
+        if state["current_stage"] == AgentStage.INVESTIGATION_PLANNING
         else "end"
     )
 
 
 def _route_after_planning(state: AgentState) -> str:
-    return "tool_execution" if state["current_stage"] is AgentStage.TOOL_EXECUTION else "end"
+    return "tool_execution" if state["current_stage"] == AgentStage.TOOL_EXECUTION else "end"
 
 
 def _route_after_tool_execution(state: AgentState) -> str:
-    if state["current_stage"] is AgentStage.HYPOTHESIS_UPDATE:
+    if state["current_stage"] == AgentStage.HYPOTHESIS_UPDATE:
         return "hypothesis_update"
-    if state["current_stage"] is AgentStage.INVESTIGATION_PLANNING:
+    if state["current_stage"] == AgentStage.INVESTIGATION_PLANNING:
         return "planning_guard"
     return "end"
 
@@ -365,7 +365,7 @@ def _route_after_tool_execution(state: AgentState) -> str:
 def _route_after_hypothesis_update(state: AgentState) -> str:
     return (
         "evidence_evaluation"
-        if state["current_stage"] is AgentStage.EVIDENCE_EVALUATION
+        if state["current_stage"] == AgentStage.EVIDENCE_EVALUATION
         else "end"
     )
 
@@ -373,9 +373,9 @@ def _route_after_hypothesis_update(state: AgentState) -> str:
 def _route_after_evidence_evaluation(
     state: AgentState, terminal_report_enabled: bool = False
 ) -> str:
-    if state["evaluation_decision"] is EvaluationDecision.CONTINUE:
+    if state["evaluation_decision"] == EvaluationDecision.CONTINUE:
         return "planning_guard"
-    if state["evaluation_decision"] is EvaluationDecision.CONCLUDE:
+    if state["evaluation_decision"] == EvaluationDecision.CONCLUDE:
         return "resolution_proposal"
     return "manual_terminalization" if terminal_report_enabled else "end"
 

@@ -75,7 +75,7 @@ class ToolExecutionDependencies:
 def tool_execution_node(state: AgentState, dependencies: ToolExecutionDependencies) -> AgentState:
     """Execute one revalidated read-only Tool and record compact structured facts."""
     pending_tool_call = state["pending_tool_call"]
-    if pending_tool_call is None or state["current_stage"] is not AgentStage.TOOL_EXECUTION:
+    if pending_tool_call is None or state["current_stage"] != AgentStage.TOOL_EXECUTION:
         return state
 
     if pending_tool_call.tool_name not in READ_ONLY_INVESTIGATION_TOOLS:

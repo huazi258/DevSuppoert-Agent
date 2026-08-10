@@ -44,7 +44,7 @@ READ_ONLY_INVESTIGATION_TOOLS = frozenset(
 
 def investigation_planner_node(state: AgentState, llm_client: LLMClient) -> AgentState:
     """Plan one safe next check without executing a Tool or changing investigation facts."""
-    if state["current_stage"] is not AgentStage.INVESTIGATION_PLANNING:
+    if state["current_stage"] != AgentStage.INVESTIGATION_PLANNING:
         return state
 
     try:

@@ -28,8 +28,8 @@ def retrieval_node(
 ) -> AgentState:
     """Retrieve knowledge once for a ready Incident and convert results to evidence."""
     if (
-        state["intake_decision"] is not IntakeDecision.READY
-        or state["current_stage"] is not AgentStage.RETRIEVAL
+        state["intake_decision"] != IntakeDecision.READY
+        or state["current_stage"] != AgentStage.RETRIEVAL
     ):
         return state
 

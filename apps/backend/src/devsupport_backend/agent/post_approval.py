@@ -76,10 +76,10 @@ def add_post_approval_continuation(
         "controlled_action_execution",
         lambda state: (
             "recovery_verification"
-            if state["current_stage"] is AgentStage.RECOVERY_VERIFICATION
+            if state["current_stage"] == AgentStage.RECOVERY_VERIFICATION
             else "final_report"
             if final_report is not None
-            and state["current_stage"] is AgentStage.NEEDS_MANUAL_ACTION
+            and state["current_stage"] == AgentStage.NEEDS_MANUAL_ACTION
             else "end"
         ),
         {
@@ -94,20 +94,20 @@ def add_post_approval_continuation(
 def _route_after_approval_decision(state: AgentState) -> str:
     return (
         "controlled_action_execution"
-        if state["current_stage"] is AgentStage.ACTION_EXECUTION
+        if state["current_stage"] == AgentStage.ACTION_EXECUTION
         else "final_report"
-        if state["current_stage"] is AgentStage.NEEDS_MANUAL_ACTION
+        if state["current_stage"] == AgentStage.NEEDS_MANUAL_ACTION
         else "end"
     )
 
 
 def _route_after_execution(state: AgentState) -> str:
-    return "final_report" if state["current_stage"] is AgentStage.NEEDS_MANUAL_ACTION else "end"
+    return "final_report" if state["current_stage"] == AgentStage.NEEDS_MANUAL_ACTION else "end"
 
 
 def _route_approval_without_report(state: AgentState) -> str:
     return (
         "controlled_action_execution"
-        if state["current_stage"] is AgentStage.ACTION_EXECUTION
+        if state["current_stage"] == AgentStage.ACTION_EXECUTION
         else "end"
     )

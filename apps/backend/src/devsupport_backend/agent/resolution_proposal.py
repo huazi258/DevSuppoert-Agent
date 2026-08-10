@@ -46,8 +46,8 @@ class ResolutionProposalOutput(BaseModel):
 def resolution_proposal_node(state: AgentState, llm_client: LLMClient) -> AgentState:
     """Create a grounded, non-executable proposal only after a safe CONCLUDE decision."""
     if (
-        state["current_stage"] is not AgentStage.EVIDENCE_EVALUATION
-        or state["evaluation_decision"] is not EvaluationDecision.CONCLUDE
+        state["current_stage"] != AgentStage.EVIDENCE_EVALUATION
+        or state["evaluation_decision"] != EvaluationDecision.CONCLUDE
     ):
         return state
 

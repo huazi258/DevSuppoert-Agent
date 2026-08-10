@@ -47,7 +47,7 @@ class HypothesisUpdateOutput(BaseModel):
 
 def hypothesis_update_node(state: AgentState, llm_client: LLMClient) -> AgentState:
     """Apply one validated, atomic update pass without calling Tools or mutating evidence."""
-    if state["current_stage"] is not AgentStage.HYPOTHESIS_UPDATE:
+    if state["current_stage"] != AgentStage.HYPOTHESIS_UPDATE:
         return state
 
     try:

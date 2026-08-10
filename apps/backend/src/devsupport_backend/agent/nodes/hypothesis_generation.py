@@ -45,7 +45,7 @@ class HypothesisGenerationOutput(BaseModel):
 
 def hypothesis_generation_node(state: AgentState, llm_client: LLMClient) -> AgentState:
     """Generate validated ACTIVE hypotheses without tools, mutation, or side effects."""
-    if state["current_stage"] is not AgentStage.HYPOTHESIS_GENERATION:
+    if state["current_stage"] != AgentStage.HYPOTHESIS_GENERATION:
         return state
 
     prompt_context = _build_prompt_context(state)
