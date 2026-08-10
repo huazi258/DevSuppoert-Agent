@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import deque
 from datetime import datetime
 from threading import Lock
@@ -69,4 +70,13 @@ def _matches(
         return False
     if query is None:
         return True
-    return query in " ".join(str(value) for value in event.values() if value is not None).lower()
+    searchable_event = " ".join(
+        str(value) for value in event.values() if value is not None
+    ).lower()
+    return any(term in searchable_event for term in _query_terms(query))
+
+
+def _query_terms(query: str) -> tuple[str, ...]:
+    """Split the Fault Lab's small, case-insensitive OR query syntax."""
+    terms = tuple(term.strip() for term in re.split(r"\s+or\s+", query) if term.strip())
+    return terms or (query,)

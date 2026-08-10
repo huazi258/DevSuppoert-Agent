@@ -184,6 +184,25 @@ def test_internal_logs_returns_bounded_structured_stdout_events() -> None:
     ][0].keys()
 
 
+def test_internal_logs_supports_case_insensitive_or_query_terms() -> None:
+    started_at = datetime.now(UTC)
+    payment_response = client.post("/payments", json={"order_id": "order-123", "amount": 99.9})
+    logs_response = client.get(
+        "/internal/logs",
+        params={
+            "time_range_start": (started_at - timedelta(seconds=1)).isoformat(),
+            "time_range_end": (datetime.now(UTC) + timedelta(seconds=1)).isoformat(),
+            "level": "info",
+            "query": "timeout OR HTTP_REQUEST",
+            "limit": 10,
+        },
+    )
+
+    assert payment_response.status_code == 200
+    assert logs_response.status_code == 200
+    assert logs_response.json()["match_count"] == 1
+
+
 def test_internal_fault_lab_reset_clears_payment_observability_and_metrics() -> None:
     started_at = datetime.now(UTC)
     inject_payment_timeout(delay_seconds=0.05)
