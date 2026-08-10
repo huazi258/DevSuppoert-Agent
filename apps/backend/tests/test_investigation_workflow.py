@@ -358,6 +358,36 @@ def test_graph_compiles() -> None:
     assert "approval_wait" in graph.get_graph().nodes
 
 
+def test_default_limits_allow_five_investigation_rounds_with_initial_retrieval_budget() -> None:
+    limits = InvestigationLoopLimits()
+
+    assert limits.max_rounds == 5
+    assert limits.max_tool_calls == 6
+    assert limits.max_rounds + 1 == limits.max_tool_calls
+
+
+def test_default_planning_guard_preserves_checkpoint_equivalent_remaining_budget() -> None:
+    limits = InvestigationLoopLimits()
+    state = _build_initial_state()
+    state["current_stage"] = AgentStage.INVESTIGATION_PLANNING
+    state["investigation_round"] = 3
+    state["tool_call_count"] = 4
+    state["evaluation_decision"] = EvaluationDecision.CONTINUE
+
+    allowed = workflow_module._planning_guard_node(state, limits)
+
+    assert allowed is state
+    assert allowed["evaluation_decision"] is EvaluationDecision.CONTINUE
+
+    at_round_limit = {**state, "investigation_round": 5}
+    round_limited = workflow_module._planning_guard_node(at_round_limit, limits)
+    assert round_limited["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
+
+    at_tool_limit = {**state, "tool_call_count": 6}
+    tool_limited = workflow_module._planning_guard_node(at_tool_limit, limits)
+    assert tool_limited["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
+
+
 def test_graph_compiles_with_an_injected_checkpointer() -> None:
     evaluator = FakeEvaluator([EvaluationDecision.CONCLUDE])
 

@@ -44,7 +44,7 @@ from devsupport_backend.approvals import (
 )
 from devsupport_backend.rag.retrieval import RAGService
 
-DEFAULT_MAX_INVESTIGATION_ROUNDS = 3
+DEFAULT_MAX_INVESTIGATION_ROUNDS = 5
 DEFAULT_MAX_TOOL_CALLS = 6
 """Conservative V0 workflow limits, kept central rather than in graph edges."""
 
