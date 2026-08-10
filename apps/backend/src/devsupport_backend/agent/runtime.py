@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol
 
 from langgraph.graph.state import CompiledStateGraph
@@ -15,6 +16,14 @@ from devsupport_backend.agent.state import (
 
 DEFAULT_WORKFLOW_RECURSION_LIMIT = 40
 """Enough bounded graph steps for five successful rounds and one terminal path."""
+
+
+@dataclass(frozen=True)
+class WorkflowFailure:
+    """Safe internal projection of one persisted LangGraph task failure."""
+
+    failed_node: str
+    safe_error: str
 
 
 class WorkflowIncidentSource(IncidentStateSource, Protocol):
@@ -42,6 +51,26 @@ class WorkflowService:
     def get_state(self, thread_id: str) -> AgentState:
         """Return the latest checkpointed state for one workflow thread."""
         return self._graph.get_state(self.config_for(thread_id)).values
+
+    def get_failure(self, thread_id: str) -> WorkflowFailure | None:
+        """Project exactly one persisted task failure without exposing its raw error."""
+        snapshot = self._graph.get_state(self.config_for(thread_id))
+        failed_tasks = [task for task in snapshot.tasks if task.error is not None]
+        if len(failed_tasks) != 1:
+            return None
+
+        failed_task = failed_tasks[0]
+        if not failed_task.name:
+            return None
+        return WorkflowFailure(
+            failed_node=failed_task.name,
+            safe_error="Persisted workflow task failed",
+        )
+
+    def retry_failed_task(self, thread_id: str) -> AgentState:
+        """Continue one persisted thread from its failed LangGraph task."""
+        result = self._graph.invoke(None, self.config_for(thread_id))
+        return result
 
     def resume(self, thread_id: str, payload: object) -> AgentState:
         """Resume a future interrupted workflow without interpreting the payload as approval."""
