@@ -58,16 +58,18 @@ create a new Incident/thread.
 - `apps/web/src/components/incident-console.tsx` already fail-closes mutation
   controls when workflow state is loading or invalid.
 
-The current graph names are:
+The current graph nodes relevant to recovery policy are:
 
 ```text
-retryable: retrieval, hypothesis_generation, investigation_planning,
-           tool_execution, hypothesis_update, evidence_evaluation,
-           resolution_proposal
+pre-approval investigation path: retrieval, hypothesis_generation,
+                                 investigation_planning, tool_execution,
+                                 hypothesis_update, evidence_evaluation,
+                                 resolution_proposal
 
-ineligible: intake, planning_guard, policy_gate, approval_wait,
-            approval_interrupt, approval_decision, action_execution,
-            recovery_verification, final_report, manual_terminalization
+other production nodes: intake, planning_guard, policy_gate, approval_wait,
+                        approval_interrupt, approval_decision, action_execution,
+                        recovery_verification, final_report,
+                        manual_terminalization
 ```
 
 ## Task 1 — Runtime failed-task inspection and same-thread continuation
@@ -77,12 +79,13 @@ Files:
 - Modify `apps/backend/src/devsupport_backend/agent/runtime.py`
 - Add `apps/backend/tests/test_pre_approval_workflow_recovery.py`
 
-- [ ] Write `test_workflow_service_inspects_allowlisted_failed_task_before_retry`.
+- [ ] Write `test_workflow_service_inspects_persisted_failed_task`.
   Build a deterministic checkpointer-backed graph where a successful
   predecessor runs once and `investigation_planning` fails. Assert the initial
   RED failure because the runtime has no failure-inspection contract. The test
-  must inspect the persisted snapshot through the runtime and assert the exact
-  node name plus a safe error string, without exposing a raw traceback.
+  must inspect the persisted snapshot through the runtime and preserve the
+  exact failed-node name plus a safe error string, without exposing a raw
+  traceback or provider payload.
 
 - [ ] Write `test_workflow_service_retries_failed_planner_on_same_thread_without_replaying_predecessors`.
   Persist one successful predecessor and a one-time planner failure, then retry
@@ -92,22 +95,24 @@ Files:
   state/counters/history remain available to the retried node.
 
 - [ ] Write `test_workflow_service_second_failed_retry_remains_inspectable`.
-  Make the retryable planner fail twice. It is initially RED because no retry
-  method exists. On pass, the second failure leaves the same thread's latest
+  Make the planner fail twice. It is initially RED because no retry method
+  exists. On pass, the second failure leaves the same thread's latest
   snapshot with `next == ["investigation_planning"]`, a task error, and an
-  inspectable eligible failure for a later explicit retry.
+  inspectable persisted failure for a later policy-authorized retry.
 
 - [ ] Implement a small typed runtime contract in `agent/runtime.py`, for
   example a frozen `WorkflowFailure` containing `failed_node` and `safe_error`.
   Add `WorkflowService.get_failure(thread_id)` that reads the current
-  `StateSnapshot.tasks` and returns a failure only when exactly one failed task
-  belongs to the pre-approval allowlist. Add
+  `StateSnapshot.tasks`, identifies the persisted failed task, and returns its
+  node name plus sanitized error. It must not decide whether any node is
+  retryable. Add
   `WorkflowService.retry_failed_task(thread_id)` that uses the verified
   `graph.invoke(None, config_for(thread_id))` continuation.
 
 - [ ] Keep state inspection separate from continuation. `get_state()` remains
   the existing AgentState-value reader and Approval's existing
-  `Command(resume=...)` contract is unchanged.
+  `Command(resume=...)` contract is unchanged. The retry method is a generic
+  internal continuation primitive, not a public replay policy.
 
 - [ ] Run RED tests first, implement the minimum runtime boundary, then run:
 
@@ -135,14 +140,21 @@ Files:
   capabilities while preserving the existing production graph composition for
   start and retry.
 
+- [ ] Define `RETRYABLE_PRE_APPROVAL_NODES` (or the repository-style
+  equivalent) in `workflow_console.py`, containing only `retrieval`,
+  `hypothesis_generation`, `investigation_planning`, `tool_execution`,
+  `hypothesis_update`, `evidence_evaluation`, and `resolution_proposal`.
+  This WorkflowConsole policy, not `agent/runtime.py`, owns the allowlist.
+
 - [ ] Write `test_retry_available_requires_exact_failed_preapproval_task`.
   Start RED with a fake runtime failure state and assert `WorkflowResponse` has
   no retry field. Once implemented, assert `retry_available` is true only for
-  a failed allowlisted pre-approval task on an `INVESTIGATING` Incident.
+  runtime failure `investigation_planning` on an `INVESTIGATING` Incident with
+  all other authoritative facts valid.
 
 - [ ] Write `test_retry_available_rejects_ineligible_node_and_non_investigating_status`.
-  Assert false for `policy_gate`, `approval_wait`, and `final_report` failures,
-  and for `OPEN`, `WAITING_APPROVAL`, `RESOLVED`, and
+  Assert false for runtime failures `policy_gate`, `approval_wait`, and
+  `action_execution`, and for `OPEN`, `WAITING_APPROVAL`, `RESOLVED`, and
   `NEEDS_MANUAL_ACTION` Incident states.
 
 - [ ] Write `test_retry_available_rejects_persisted_action_approval_and_postapproval_outcomes`.
@@ -153,9 +165,9 @@ Files:
 
 - [ ] Implement one `WorkflowConsoleService` eligibility helper that combines
   authoritative Incident status/thread facts, runtime failure provenance,
-  PostgreSQL Action/Approval facts, and checkpoint execution/verification
-  outcomes. The helper is the only source for the projection and future retry
-  mutation eligibility.
+  `RETRYABLE_PRE_APPROVAL_NODES`, PostgreSQL Action/Approval facts, and
+  checkpoint execution/verification outcomes. The helper is the only source
+  for the projection and public retry mutation eligibility.
 
 - [ ] Add `retry_available: bool = False` to `WorkflowResponse` in
   `schemas/workflows.py`, and populate it from the eligibility helper in
@@ -213,7 +225,8 @@ Files:
 - [ ] Keep retry orchestration in `WorkflowConsoleService.retry(incident_id)`.
   The router only maps lookup to `404`, eligibility/conflict failures to `409`,
   and retry execution failure to `503`. Re-read authoritative eligibility
-  immediately before invoking runtime retry.
+  immediately before invoking the generic runtime retry primitive; only this
+  policy-authorized console path may call it from the public API.
 
 - [ ] Do not alter `WorkflowConsoleService.start` or
   `POST /incidents/{id}/workflow`; retain the existing duplicate-start tests and
