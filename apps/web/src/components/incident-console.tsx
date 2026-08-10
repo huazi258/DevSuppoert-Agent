@@ -8,6 +8,7 @@ import {
   getFinalReport,
   getIncident,
   getWorkflow,
+  retryWorkflow,
   startWorkflow,
   submitApproval,
 } from "../lib/api";
@@ -142,6 +143,22 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
     }
   }
 
+  async function retryInvestigation() {
+    setMutationPending(true);
+    setMutationError(null);
+    try {
+      const retried = await retryWorkflow(incidentId);
+      setWorkflow(retried);
+      setWorkflowError(null);
+      await refresh();
+    } catch (retryError: unknown) {
+      setMutationError(messageFor(retryError, "Unable to retry the investigation."));
+      await refresh();
+    } finally {
+      setMutationPending(false);
+    }
+  }
+
   async function decideApproval(decision: ApprovalDecision) {
     setMutationPending(true);
     setMutationError(null);
@@ -178,6 +195,13 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
     workflow === null &&
     !workflowLoading &&
     workflowError === null;
+  const retryEligibilityKnown =
+    incident.status === "INVESTIGATING" &&
+    workflow?.retry_available === true &&
+    !workflowLoading &&
+    workflowError === null &&
+    approvalRetryDecision === null;
+  const canRetryInvestigation = retryEligibilityKnown && !mutationPending;
   const canApprove =
     incident.status === "WAITING_APPROVAL" &&
     workflow?.current_stage === "waiting_approval" &&
@@ -225,6 +249,14 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
           <section className="panel" aria-labelledby="decision-heading">
             <p className="eyebrow">Decision and action</p>
             <h2 id="decision-heading">Policy, Approval, and Recovery</h2>
+            {retryEligibilityKnown ? (
+              <div className="approval-controls">
+                <p>Investigation execution was interrupted after its progress was persisted. Retry continues the same investigation thread.</p>
+                <button className="button primary-button" disabled={!canRetryInvestigation} onClick={() => void retryInvestigation()} type="button">
+                  {mutationPending ? "Retrying…" : "Retry Investigation"}
+                </button>
+              </div>
+            ) : null}
             <div className="decision-grid">
               {workflow.proposed_action ? (
                 <article className="record-card"><h3>Proposed Action</h3><p><strong>{workflow.proposed_action.action_type}</strong> — {workflow.proposed_action.summary}</p><p>{workflow.proposed_action.reason}</p><p>Risk: {workflow.proposed_action.risk}</p><p className="mono compact-id">Evidence: {workflow.proposed_action.supporting_evidence_ids.join(", ") || "—"}</p></article>

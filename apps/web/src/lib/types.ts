@@ -146,6 +146,7 @@ export interface WorkflowResponse {
   execution_outcome: WorkflowExecutionOutcome | null;
   verification_outcome: WorkflowVerificationOutcome | null;
   report_outcome: WorkflowReportOutcome | null;
+  retry_available: boolean;
 }
 
 export type ApprovalDecision = "APPROVE" | "REJECT";

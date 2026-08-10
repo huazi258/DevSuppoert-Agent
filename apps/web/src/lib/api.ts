@@ -77,6 +77,10 @@ export function startWorkflow(id: string): Promise<WorkflowResponse> {
   return request<WorkflowResponse>(`/incidents/${id}/workflow`, { method: "POST" });
 }
 
+export function retryWorkflow(id: string): Promise<WorkflowResponse> {
+  return request<WorkflowResponse>(`/incidents/${id}/workflow/retry`, { method: "POST" });
+}
+
 export function getWorkflow(id: string): Promise<WorkflowResponse> {
   return request<WorkflowResponse>(`/incidents/${id}/workflow`);
 }
