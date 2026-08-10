@@ -71,6 +71,10 @@ class WorkflowStartError(WorkflowConsoleError):
     """The production workflow could not complete its start call safely."""
 
 
+class WorkflowRetryError(WorkflowConsoleError):
+    """A persisted workflow retry could not safely continue."""
+
+
 RETRYABLE_PRE_APPROVAL_NODES = frozenset(
     {
         "retrieval",
@@ -248,6 +252,40 @@ class WorkflowConsoleService:
         self._session.refresh(incident)
         return project_workflow_response(incident, state, self._action_for_state(incident, state))
 
+    def retry(self, incident_id: UUID) -> WorkflowResponse:
+        """Revalidate and continue exactly one eligible persisted pre-approval failure."""
+        incident = self._session.scalar(
+            select(Incident).where(Incident.id == incident_id).with_for_update()
+        )
+        if incident is None:
+            raise LookupError("Incident not found")
+        if not incident.thread_id or not incident.thread_id.strip():
+            raise WorkflowConflictError("Incident has no stable workflow thread")
+        try:
+            state = self._runtime.get_state(incident.thread_id)
+        except Exception as error:
+            raise WorkflowRetryError("Workflow retry failed") from error
+        if state is None:
+            raise WorkflowConflictError("Workflow has no persisted checkpoint to retry")
+        try:
+            failure = self._runtime.get_failure(incident.thread_id)
+        except Exception as error:
+            raise WorkflowRetryError("Workflow retry failed") from error
+        if not self._is_retry_eligible(incident, state, failure):
+            raise WorkflowConflictError("Workflow retry is not eligible for this Incident")
+        try:
+            result = self._runtime.retry_failed_task(incident.thread_id)
+        except Exception as error:
+            raise WorkflowRetryError("Workflow retry failed") from error
+        self._session.refresh(incident)
+        action = self._action_for_state(incident, result)
+        return project_workflow_response(
+            incident,
+            result,
+            action,
+            retry_available=self._retry_available(incident, result),
+        )
+
     def _get_incident(self, incident_id: UUID) -> Incident:
         incident = self._session.get(Incident, incident_id)
         if incident is None:
@@ -272,6 +310,21 @@ class WorkflowConsoleService:
 
     def _retry_available(self, incident: Incident, state: AgentState) -> bool:
         """Fail closed unless persisted pre-approval facts authorize a retry projection."""
+        if not incident.thread_id or not incident.thread_id.strip():
+            return False
+        try:
+            failure = self._runtime.get_failure(incident.thread_id)
+        except Exception:
+            return False
+        return self._is_retry_eligible(incident, state, failure)
+
+    def _is_retry_eligible(
+        self,
+        incident: Incident,
+        state: AgentState,
+        failure: WorkflowFailure | None,
+    ) -> bool:
+        """Apply the one authoritative policy shared by read and retry mutation paths."""
         action_exists = self._session.scalar(
             select(Action.id).where(Action.incident_id == incident.id).limit(1)
         ) is not None
@@ -282,6 +335,8 @@ class WorkflowConsoleService:
             incident.status != "INVESTIGATING"
             or not incident.thread_id
             or not incident.thread_id.strip()
+            or failure is None
+            or failure.failed_node not in RETRYABLE_PRE_APPROVAL_NODES
             or action_exists
             or approval_exists
             or state["approval_outcome"] is not None
@@ -290,11 +345,7 @@ class WorkflowConsoleService:
             or state["current_stage"] in _POST_APPROVAL_OR_TERMINAL_STAGES
         ):
             return False
-        try:
-            failure = self._runtime.get_failure(incident.thread_id)
-        except Exception:
-            return False
-        return failure is not None and failure.failed_node in RETRYABLE_PRE_APPROVAL_NODES
+        return True
 
 
 def project_workflow_response(

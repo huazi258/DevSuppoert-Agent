@@ -27,6 +27,7 @@ from devsupport_backend.workflow_console import (
     WorkflowConflictError,
     WorkflowConsoleService,
     WorkflowNotStartedError,
+    WorkflowRetryError,
     WorkflowRuntime,
     WorkflowStartError,
     WorkflowStateConflict,
@@ -90,6 +91,26 @@ def start_workflow(
     except (WorkflowConflictError, WorkflowStateConflict) as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     except WorkflowStartError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(error),
+        ) from error
+
+
+@router.post("/{incident_id}/workflow/retry", response_model=WorkflowResponse)
+def retry_workflow(
+    incident_id: UUID,
+    session: SessionDependency,
+    workflow_runtime: WorkflowRuntimeDependency,
+) -> WorkflowResponse:
+    """Retry only a freshly revalidated persisted pre-approval workflow failure."""
+    try:
+        return WorkflowConsoleService(session, workflow_runtime).retry(incident_id)
+    except LookupError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except (WorkflowConflictError, WorkflowStateConflict) as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    except WorkflowRetryError as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(error),

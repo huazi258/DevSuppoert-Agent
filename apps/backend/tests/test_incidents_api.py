@@ -7,18 +7,25 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from devsupport_backend.agent.runtime import WorkflowFailure
 from devsupport_backend.agent.state import (
+    ActionExecutionOutcome,
     AgentStage,
+    ApprovalOutcome,
+    ApprovalStatus,
     EvidenceContext,
     PolicyDecision,
     PolicyOutcome,
     PolicyReasonCode,
+    VerificationOutcome,
+    VerificationStatus,
     create_initial_agent_state,
 )
 from devsupport_backend.database import engine, get_session
 from devsupport_backend.main import app
-from devsupport_backend.models import Action, Incident, Report
+from devsupport_backend.models import Action, Approval, Incident, Report
 from devsupport_backend.routers.incidents import get_workflow_runtime
+from devsupport_backend.tools.schemas import ToolStatus
 
 
 class FakeWorkflowRuntime:
@@ -27,12 +34,20 @@ class FakeWorkflowRuntime:
         *,
         start_error: Exception | None = None,
         get_state_results: list[object | None] | None = None,
+        failure: WorkflowFailure | None = None,
+        failure_error: Exception | None = None,
+        retry_error: Exception | None = None,
     ) -> None:
         self.states: dict[str, object] = {}
         self.start_error = start_error
         self.get_state_results = get_state_results or []
+        self.failure = failure
+        self.failure_error = failure_error
+        self.retry_error = retry_error
         self.start_calls = 0
         self.started_threads: list[str] = []
+        self.retry_calls = 0
+        self.retried_threads: list[str] = []
 
     def get_state(self, thread_id: str):
         if self.get_state_results:
@@ -63,6 +78,19 @@ class FakeWorkflowRuntime:
         )
         self.states[incident.thread_id] = state
         return state
+
+    def get_failure(self, thread_id: str) -> WorkflowFailure | None:
+        if self.failure_error is not None:
+            raise self.failure_error
+        return self.failure
+
+    def retry_failed_task(self, thread_id: str):
+        self.retry_calls += 1
+        self.retried_threads.append(thread_id)
+        if self.retry_error is not None:
+            raise self.retry_error
+        self.failure = None
+        return self.states[thread_id]
 
 
 @pytest.fixture
@@ -110,6 +138,30 @@ def create_incident(api_client: TestClient, payload: dict[str, str]) -> dict[str
 def workflow_client(api_client: TestClient, runtime: FakeWorkflowRuntime) -> TestClient:
     app.dependency_overrides[get_workflow_runtime] = lambda: runtime
     return api_client
+
+
+def _prepare_retryable_incident(
+    api_client: TestClient,
+    database_session: Session,
+    payload: dict[str, str],
+    runtime: FakeWorkflowRuntime,
+    *,
+    status: str = "INVESTIGATING",
+    failed_node: str = "investigation_planning",
+) -> Incident:
+    created = create_incident(api_client, payload)
+    incident = database_session.get(Incident, UUID(created["id"]))
+    assert incident is not None
+    incident.status = status
+    database_session.commit()
+    state = create_initial_agent_state(incident)
+    state["current_stage"] = AgentStage.INVESTIGATION_PLANNING
+    runtime.states[incident.thread_id] = state
+    runtime.failure = WorkflowFailure(
+        failed_node=failed_node,
+        safe_error="Persisted workflow task failed",
+    )
+    return incident
 
 
 def test_create_incident_persists_open_record(
@@ -195,6 +247,13 @@ def test_workflow_api_duplicate_and_non_open_start_are_conflicts(
     runtime.states[incident.thread_id] = create_initial_agent_state(incident)
 
     duplicate = client.post(f"/incidents/{incident.id}/workflow")
+    incident.status = "INVESTIGATING"
+    runtime.failure = WorkflowFailure(
+        failed_node="investigation_planning",
+        safe_error="Persisted workflow task failed",
+    )
+    database_session.commit()
+    investigating = client.post(f"/incidents/{incident.id}/workflow")
     incident.status = "WAITING_APPROVAL"
     database_session.commit()
     waiting = client.post(f"/incidents/{incident.id}/workflow")
@@ -202,8 +261,206 @@ def test_workflow_api_duplicate_and_non_open_start_are_conflicts(
     database_session.commit()
     resolved = client.post(f"/incidents/{incident.id}/workflow")
 
-    assert duplicate.status_code == waiting.status_code == resolved.status_code == 409
+    assert {
+        duplicate.status_code,
+        investigating.status_code,
+        waiting.status_code,
+        resolved.status_code,
+    } == {409}
     assert runtime.start_calls == 0
+
+
+def test_workflow_retry_api_retries_eligible_failure_on_original_thread(
+    api_client: TestClient,
+    database_session: Session,
+    incident_payload: dict[str, str],
+) -> None:
+    runtime = FakeWorkflowRuntime()
+    client = workflow_client(api_client, runtime)
+    incident = _prepare_retryable_incident(client, database_session, incident_payload, runtime)
+
+    response = client.post(f"/incidents/{incident.id}/workflow/retry")
+
+    database_session.refresh(incident)
+    assert response.status_code == 200
+    assert response.json()["incident_id"] == str(incident.id)
+    assert response.json()["retry_available"] is False
+    assert incident.thread_id == runtime.retried_threads[0]
+    assert runtime.retry_calls == 1
+    assert runtime.retried_threads == [incident.thread_id]
+    assert runtime.start_calls == 0
+    assert database_session.scalar(
+        select(func.count()).select_from(Action).where(Action.incident_id == incident.id)
+    ) == 0
+    assert database_session.scalar(
+        select(func.count()).select_from(Approval).where(Approval.incident_id == incident.id)
+    ) == 0
+
+
+def test_workflow_retry_api_returns_503_and_preserves_retryable_failure(
+    api_client: TestClient,
+    database_session: Session,
+    incident_payload: dict[str, str],
+) -> None:
+    runtime = FakeWorkflowRuntime(retry_error=RuntimeError("provider returned empty content"))
+    client = workflow_client(api_client, runtime)
+    incident = _prepare_retryable_incident(client, database_session, incident_payload, runtime)
+
+    retried = client.post(f"/incidents/{incident.id}/workflow/retry")
+    refreshed = client.get(f"/incidents/{incident.id}/workflow")
+
+    database_session.refresh(incident)
+    assert retried.status_code == 503
+    assert retried.json() == {"detail": "Workflow retry failed"}
+    assert refreshed.status_code == 200
+    assert refreshed.json()["retry_available"] is True
+    assert incident.status == "INVESTIGATING"
+    assert runtime.retried_threads == [incident.thread_id]
+    assert runtime.start_calls == 0
+    assert database_session.scalar(
+        select(func.count()).select_from(Action).where(Action.incident_id == incident.id)
+    ) == 0
+    assert database_session.scalar(
+        select(func.count()).select_from(Approval).where(Approval.incident_id == incident.id)
+    ) == 0
+
+
+def test_workflow_retry_api_returns_503_when_failure_metadata_cannot_be_read(
+    api_client: TestClient,
+    database_session: Session,
+    incident_payload: dict[str, str],
+) -> None:
+    runtime = FakeWorkflowRuntime(failure_error=RuntimeError("checkpoint unavailable"))
+    client = workflow_client(api_client, runtime)
+    incident = _prepare_retryable_incident(client, database_session, incident_payload, runtime)
+
+    retried = client.post(f"/incidents/{incident.id}/workflow/retry")
+    refreshed = client.get(f"/incidents/{incident.id}/workflow")
+
+    database_session.refresh(incident)
+    assert retried.status_code == 503
+    assert retried.json() == {"detail": "Workflow retry failed"}
+    assert refreshed.status_code == 200
+    assert refreshed.json()["retry_available"] is False
+    assert incident.status == "INVESTIGATING"
+    assert runtime.retry_calls == 0
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "unknown",
+        "open",
+        "no_checkpoint",
+        "no_failure",
+        "policy_gate",
+        "approval_wait",
+        "controlled_action_execution",
+        "waiting_approval",
+        "resolved",
+        "needs_manual_action",
+        "action",
+        "approval",
+        "approval_outcome",
+        "execution_outcome",
+        "verification_outcome",
+    ],
+)
+def test_workflow_retry_api_rejects_ineligible_lifecycle_and_persistence_states(
+    api_client: TestClient,
+    database_session: Session,
+    incident_payload: dict[str, str],
+    case: str,
+) -> None:
+    runtime = FakeWorkflowRuntime()
+    client = workflow_client(api_client, runtime)
+    if case == "unknown":
+        response = client.post(f"/incidents/{uuid4()}/workflow/retry")
+        assert response.status_code == 404
+        assert runtime.retry_calls == 0
+        return
+
+    if case == "no_checkpoint":
+        created = create_incident(client, incident_payload)
+        incident = database_session.get(Incident, UUID(created["id"]))
+        assert incident is not None
+        incident.status = "INVESTIGATING"
+        database_session.commit()
+    else:
+        status_for_case = {
+            "open": "OPEN",
+            "waiting_approval": "WAITING_APPROVAL",
+            "resolved": "RESOLVED",
+            "needs_manual_action": "NEEDS_MANUAL_ACTION",
+        }.get(case, "INVESTIGATING")
+        failed_node = case if case in {
+            "policy_gate",
+            "approval_wait",
+            "controlled_action_execution",
+        } else "investigation_planning"
+        incident = _prepare_retryable_incident(
+            client,
+            database_session,
+            incident_payload,
+            runtime,
+            status=status_for_case,
+            failed_node=failed_node,
+        )
+
+    if case == "no_failure":
+        runtime.failure = None
+    elif case in {"action", "approval"}:
+        action = Action(
+            incident_id=incident.id,
+            action_type="rollback_deployment",
+            status="PENDING_APPROVAL",
+            parameters={},
+        )
+        database_session.add(action)
+        database_session.commit()
+        if case == "approval":
+            database_session.add(
+                Approval(incident_id=incident.id, action_id=action.id, status="APPROVED")
+            )
+            database_session.commit()
+    elif case == "execution_outcome":
+        runtime.states[incident.thread_id]["execution_outcome"] = ActionExecutionOutcome(
+            status=ToolStatus.FAILURE,
+            executed=False,
+        )
+    elif case == "approval_outcome":
+        runtime.states[incident.thread_id]["approval_outcome"] = ApprovalOutcome(
+            approval_id=uuid4(),
+            action_id=uuid4(),
+            status=ApprovalStatus.APPROVED,
+        )
+    elif case == "verification_outcome":
+        runtime.states[incident.thread_id]["verification_outcome"] = VerificationOutcome(
+            status=VerificationStatus.INCONCLUSIVE,
+            summary="Verification state already exists.",
+        )
+
+    response = client.post(f"/incidents/{incident.id}/workflow/retry")
+
+    assert response.status_code == 409
+    assert runtime.retry_calls == 0
+
+
+def test_workflow_retry_api_rejects_sequential_duplicate_after_successful_advance(
+    api_client: TestClient,
+    database_session: Session,
+    incident_payload: dict[str, str],
+) -> None:
+    runtime = FakeWorkflowRuntime()
+    client = workflow_client(api_client, runtime)
+    incident = _prepare_retryable_incident(client, database_session, incident_payload, runtime)
+
+    first = client.post(f"/incidents/{incident.id}/workflow/retry")
+    second = client.post(f"/incidents/{incident.id}/workflow/retry")
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert runtime.retry_calls == 1
 
 
 def test_workflow_get_is_read_only(
