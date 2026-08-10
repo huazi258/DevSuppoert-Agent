@@ -151,10 +151,14 @@
 
 ## Task 8 — Approval 503 Retry UX
 
-- [ ] At a real `WAITING_APPROVAL`, create an Approval resume failure by temporarily stopping a necessary local continuation dependency without changing production business rules, records, checkpoints, or browser API behavior.
-- [ ] Click Approve in the browser and confirm 503 detail is visible, ordinary Approve/Reject controls disappear, and only Retry Approve appears. Repeat analogously for Reject if an isolated safe run is available.
-- [ ] Restore the dependency and use the matching retry only. Confirm continuation resumes without a second Approval record.
-- [ ] After every refresh, verify stale retry is absent once workflow has moved beyond `waiting_approval` or a real approval outcome exists. If this fails, apply only the smallest Web-side state-clearing polish; do not modify backend semantics.
+- [ ] **Backend 503 contract — deterministic automated verification:** inspect existing Approval API/coordinator tests. Confirm or add the smallest test using dependency override/fake coordinator in which an exact Approval decision persists, coordinator resume raises `ApprovalResumeError`, and `POST /incidents/{id}/approval` returns 503.
+- [ ] The deterministic test must confirm safe HTTP detail, exact decision-to-Action binding remains persisted, the opposite decision is conflict, and the same decision is the only legal idempotent retry. Reuse existing complete coverage rather than duplicating it.
+- [ ] Do not modify production Approval semantics, checkpoints, or database records to simulate this; do not add a production failure-injection endpoint.
+- [ ] **Web retry UX — static/code verification:** review `IncidentConsole` to confirm 503 remembers exactly the submitted `ApprovalDecision`, refreshes authoritative Incident and Workflow, hides ordinary Approve/Reject controls, and exposes only the matching Retry decision. Also confirm `workflowLoading` or `workflowError` hides mutation controls.
+- [ ] If no frontend test framework exists, do not add Jest, Vitest, or Playwright for this case. Use `npm run lint`, `npx tsc --noEmit`, `npm run build`, and code review as the Web verification boundary.
+- [ ] **Natural real 503:** if a Scenario A or Reject browser run naturally returns Approval 503, additionally record the browser detail and matching retry behavior. If it does not, do not intentionally break Fault Lab, PostgreSQL, or the checkpointer, and do not fail E2E solely because no natural 503 occurred.
+- [ ] The real browser acceptance blockers remain Scenario A Approve, Scenario A Reject, Scenario B Manual, terminal polling stop, and persisted Final Report.
+- [ ] **Stale retry polish:** if authoritative refresh shows `current_stage != waiting_approval` or `approval_outcome != null` while retry remains visible, make the smallest Web-only fix to clear `approvalRetryDecision`; do not change backend semantics.
 
 ## Task 9 — Polling, Terminal, and Layout Validation
 
@@ -182,7 +186,7 @@
 - [ ] Real browser Scenario A completes Create → Start → RAG/Tool investigation → WAITING_APPROVAL → authoritative Action → Web Approve → real rollback → Verification PASS → RESOLVED → persisted Final Report.
 - [ ] Real browser Reject completes WAITING_APPROVAL → Reject → NEEDS_MANUAL_ACTION without rollback.
 - [ ] Real browser Scenario B reaches manual terminal state without incorrect order rollback or Verification PASS.
-- [ ] One Incident has one thread; duplicate start is 409; terminal polling stops; Approval 503 retry is safe.
+- [ ] One Incident has one thread; duplicate start is 409; terminal polling stops; the backend 503 contract is deterministically tested, Web retry state is statically verified, and natural browser 503 behavior is recorded when it occurs.
 - [ ] Web never accesses Fault Lab, executes rollback, changes Action parameters, or fabricates status.
 - [ ] Web lint/type/build and backend full pytest pass.
 
