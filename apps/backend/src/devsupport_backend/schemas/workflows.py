@@ -132,3 +132,4 @@ class WorkflowResponse(WorkflowResponseModel):
     execution_outcome: WorkflowExecutionResponse | None
     verification_outcome: WorkflowVerificationResponse | None
     report_outcome: WorkflowReportOutcomeResponse | None
+    retry_available: bool = False

@@ -5,7 +5,9 @@ from __future__ import annotations
 from typing import Protocol, cast
 from uuid import UUID
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -16,15 +18,15 @@ from devsupport_backend.agent.llm import OpenAICompatibleLLMClient
 from devsupport_backend.agent.nodes.tool_execution import ToolExecutionDependencies
 from devsupport_backend.agent.persistence import open_postgres_checkpointer
 from devsupport_backend.agent.policy import PolicyGateService
-from devsupport_backend.agent.runtime import WorkflowService
-from devsupport_backend.agent.state import AgentState
+from devsupport_backend.agent.runtime import WorkflowFailure, WorkflowService
+from devsupport_backend.agent.state import AgentStage, AgentState
 from devsupport_backend.agent.workflow import (
     InvestigationWorkflowDependencies,
     build_production_investigation_graph,
 )
 from devsupport_backend.approvals import ApprovalDecisionService, ApprovalWaitService
 from devsupport_backend.config import settings
-from devsupport_backend.models import Action, Incident
+from devsupport_backend.models import Action, Approval, Incident
 from devsupport_backend.rag.embeddings import OpenAICompatibleEmbeddingClient
 from devsupport_backend.rag.retrieval import RAGService
 from devsupport_backend.schemas.workflows import (
@@ -69,12 +71,63 @@ class WorkflowStartError(WorkflowConsoleError):
     """The production workflow could not complete its start call safely."""
 
 
+RETRYABLE_PRE_APPROVAL_NODES = frozenset(
+    {
+        "retrieval",
+        "hypothesis_generation",
+        "investigation_planning",
+        "tool_execution",
+        "hypothesis_update",
+        "evidence_evaluation",
+        "resolution_proposal",
+    }
+)
+"""Workflow Console policy for the only pre-approval nodes eligible for recovery."""
+
+_POST_APPROVAL_OR_TERMINAL_STAGES = frozenset(
+    {
+        AgentStage.WAITING_APPROVAL,
+        AgentStage.APPROVAL_DECISION,
+        AgentStage.ACTION_EXECUTION,
+        AgentStage.RECOVERY_VERIFICATION,
+        AgentStage.RESOLVED,
+        AgentStage.NEEDS_MANUAL_ACTION,
+    }
+)
+
+_PERSISTED_WORKFLOW_NODE_NAMES = (
+    "intake",
+    "retrieval",
+    "hypothesis_generation",
+    "planning_guard",
+    "investigation_planning",
+    "tool_execution",
+    "hypothesis_update",
+    "evidence_evaluation",
+    "resolution_proposal",
+    "policy_gate",
+    "approval_wait",
+    "approval_interrupt",
+    "approval_decision",
+    "action_execution",
+    "recovery_verification",
+    "final_report",
+    "manual_terminalization",
+)
+
+
 class WorkflowRuntime(Protocol):
     def get_state(self, thread_id: str) -> AgentState | None:
         """Return the latest state for one existing thread without mutating it."""
 
+    def get_failure(self, thread_id: str) -> WorkflowFailure | None:
+        """Return one safe persisted failed-task projection without mutating it."""
+
     def start(self, incident: Incident) -> AgentState:
         """Start the official production graph for an already persisted Incident."""
+
+    def retry_failed_task(self, thread_id: str) -> AgentState:
+        """Continue a persisted failed thread when a later policy authorizes it."""
 
 
 class PostgresWorkflowRuntime:
@@ -85,16 +138,43 @@ class PostgresWorkflowRuntime:
 
     def get_state(self, thread_id: str) -> AgentState | None:
         with open_postgres_checkpointer() as checkpointer:
-            graph = StateGraph(AgentState)
-            graph.add_node("checkpoint_reader", lambda state: state)
-            graph.add_edge(START, "checkpoint_reader")
-            graph.add_edge("checkpoint_reader", END)
-            snapshot = graph.compile(checkpointer=checkpointer).get_state(
+            snapshot = self._checkpoint_reader_graph(checkpointer).get_state(
                 WorkflowService.config_for(thread_id)
             )
         return cast(AgentState, snapshot.values) if snapshot.values else None
 
+    def get_failure(self, thread_id: str) -> WorkflowFailure | None:
+        """Read persisted failed-task metadata without composing external providers."""
+        with open_postgres_checkpointer() as checkpointer:
+            service = WorkflowService(self._checkpoint_reader_graph(checkpointer))
+            return service.get_failure(thread_id)
+
     def start(self, incident: Incident) -> AgentState:
+        with open_postgres_checkpointer() as checkpointer:
+            return WorkflowService(self._production_graph(checkpointer)).start(incident)
+
+    def retry_failed_task(self, thread_id: str) -> AgentState:
+        """Expose the generic continuation primitive for a later policy-owned caller."""
+        with open_postgres_checkpointer() as checkpointer:
+            service = WorkflowService(self._production_graph(checkpointer))
+            return service.retry_failed_task(thread_id)
+
+    @staticmethod
+    def _checkpoint_reader_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
+        """Register production node names so LangGraph can project persisted task metadata."""
+        graph = StateGraph(AgentState)
+        for node_name in _PERSISTED_WORKFLOW_NODE_NAMES:
+            graph.add_node(node_name, lambda state: state)
+        graph.add_edge(START, _PERSISTED_WORKFLOW_NODE_NAMES[0])
+        for current, following in zip(
+            _PERSISTED_WORKFLOW_NODE_NAMES,
+            _PERSISTED_WORKFLOW_NODE_NAMES[1:],
+        ):
+            graph.add_edge(current, following)
+        graph.add_edge(_PERSISTED_WORKFLOW_NODE_NAMES[-1], END)
+        return graph.compile(checkpointer=checkpointer)
+
+    def _production_graph(self, checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
         llm_client = OpenAICompatibleLLMClient.from_settings(settings)
         embedding_client = OpenAICompatibleEmbeddingClient.from_settings(settings)
         rag_service = RAGService(self._session, embedding_client)
@@ -113,13 +193,11 @@ class PostgresWorkflowRuntime:
             approval_wait=ApprovalWaitService(self._session),
             approval_decision=ApprovalDecisionService(self._session),
         )
-        with open_postgres_checkpointer() as checkpointer:
-            graph = build_production_investigation_graph(
-                dependencies,
-                session=self._session,
-                checkpointer=checkpointer,
-            )
-            return WorkflowService(graph).start(incident)
+        return build_production_investigation_graph(
+            dependencies,
+            session=self._session,
+            checkpointer=checkpointer,
+        )
 
 
 class WorkflowConsoleService:
@@ -132,7 +210,13 @@ class WorkflowConsoleService:
     def read(self, incident_id: UUID) -> WorkflowResponse:
         incident = self._get_incident(incident_id)
         state = self._read_state(incident)
-        return project_workflow_response(incident, state, self._action_for_state(incident, state))
+        action = self._action_for_state(incident, state)
+        return project_workflow_response(
+            incident,
+            state,
+            action,
+            retry_available=self._retry_available(incident, state),
+        )
 
     def start(self, incident_id: UUID) -> WorkflowResponse:
         incident = self._session.scalar(
@@ -186,9 +270,39 @@ class WorkflowConsoleService:
             return None
         return self._session.get(Action, policy.action_id)
 
+    def _retry_available(self, incident: Incident, state: AgentState) -> bool:
+        """Fail closed unless persisted pre-approval facts authorize a retry projection."""
+        action_exists = self._session.scalar(
+            select(Action.id).where(Action.incident_id == incident.id).limit(1)
+        ) is not None
+        approval_exists = self._session.scalar(
+            select(Approval.id).where(Approval.incident_id == incident.id).limit(1)
+        ) is not None
+        if (
+            incident.status != "INVESTIGATING"
+            or not incident.thread_id
+            or not incident.thread_id.strip()
+            or action_exists
+            or approval_exists
+            or state["approval_outcome"] is not None
+            or state["execution_outcome"] is not None
+            or state["verification_outcome"] is not None
+            or state["current_stage"] in _POST_APPROVAL_OR_TERMINAL_STAGES
+        ):
+            return False
+        try:
+            failure = self._runtime.get_failure(incident.thread_id)
+        except Exception:
+            return False
+        return failure is not None and failure.failed_node in RETRYABLE_PRE_APPROVAL_NODES
+
 
 def project_workflow_response(
-    incident: Incident, state: AgentState, action: Action | None
+    incident: Incident,
+    state: AgentState,
+    action: Action | None,
+    *,
+    retry_available: bool = False,
 ) -> WorkflowResponse:
     """Project only approved public facts after binding all authoritative identities."""
     _validate_incident_binding(incident, state)
@@ -307,6 +421,7 @@ def project_workflow_response(
             if state["report_outcome"]
             else None
         ),
+        retry_available=retry_available,
     )
 
 

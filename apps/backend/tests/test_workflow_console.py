@@ -10,7 +10,9 @@ from langgraph.graph import END, START, StateGraph
 from sqlalchemy.orm import Session
 
 from devsupport_backend.agent.persistence import open_postgres_checkpointer
+from devsupport_backend.agent.runtime import WorkflowFailure, WorkflowService
 from devsupport_backend.agent.state import (
+    ActionExecutionOutcome,
     ActionType,
     AgentStage,
     AgentState,
@@ -22,9 +24,12 @@ from devsupport_backend.agent.state import (
     PolicyOutcome,
     PolicyReasonCode,
     ProposedAction,
+    VerificationOutcome,
+    VerificationStatus,
     create_initial_agent_state,
 )
-from devsupport_backend.models import Action, Incident
+from devsupport_backend.models import Action, Approval, Incident
+from devsupport_backend.tools.schemas import ToolStatus
 from devsupport_backend.workflow_console import (
     PostgresWorkflowRuntime,
     WorkflowConflictError,
@@ -42,12 +47,16 @@ class FakeRuntime:
         state=None,
         states: list[object | None] | None = None,
         start_error: Exception | None = None,
+        failure: WorkflowFailure | None = None,
     ) -> None:
         self.state = state
         self.states = states or []
         self.start_error = start_error
+        self.failure = failure
         self.start_calls = 0
+        self.retry_calls = 0
         self.thread_ids: list[str] = []
+        self.failure_thread_ids: list[str] = []
 
     def get_state(self, thread_id: str):
         self.thread_ids.append(thread_id)
@@ -66,6 +75,15 @@ class FakeRuntime:
         if self.state is None:
             raise AssertionError("successful fake start requires a state")
         return self.state
+
+    def get_failure(self, thread_id: str) -> WorkflowFailure | None:
+        self.failure_thread_ids.append(thread_id)
+        return self.failure
+
+    def retry_failed_task(self, thread_id: str):
+        self.retry_calls += 1
+        self.thread_ids.append(thread_id)
+        raise AssertionError("Task 2 workflow reads must not continue failed tasks")
 
 
 def _incident(session: Session, *, status: str = "OPEN") -> Incident:
@@ -219,6 +237,7 @@ def test_start_reuses_thread_and_conflicts_on_existing_checkpoint(
 
     database_session.refresh(incident)
     assert response.incident_id == incident.id
+    assert response.retry_available is False
     assert incident.status == "INVESTIGATING"
     assert runtime.start_calls == 1
     assert runtime.thread_ids[-1] == incident.thread_id
@@ -295,3 +314,168 @@ def test_postgres_runtime_reads_existing_checkpoint_without_writing(
     finally:
         with open_postgres_checkpointer() as checkpointer:
             checkpointer.delete_thread(incident.thread_id)
+
+
+def test_postgres_runtime_reads_persisted_failed_task_metadata_without_external_providers(
+    database_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    incident = _incident(database_session, status="INVESTIGATING")
+    state = _state(incident)
+
+    def unexpected_provider(*_: object, **__: object) -> None:
+        raise AssertionError("workflow failure reads must not initialize external providers")
+
+    import devsupport_backend.workflow_console as workflow_console_module
+
+    monkeypatch.setattr(workflow_console_module, "OpenAICompatibleLLMClient", unexpected_provider)
+    monkeypatch.setattr(
+        workflow_console_module,
+        "OpenAICompatibleEmbeddingClient",
+        unexpected_provider,
+    )
+    monkeypatch.setattr(workflow_console_module, "RAGService", unexpected_provider)
+    monkeypatch.setattr(workflow_console_module, "FaultLabLogsAdapter", unexpected_provider)
+    monkeypatch.setattr(workflow_console_module, "FaultLabMetricsAdapter", unexpected_provider)
+    monkeypatch.setattr(workflow_console_module, "FaultLabTracesAdapter", unexpected_provider)
+    monkeypatch.setattr(workflow_console_module, "FaultLabDeploymentAdapter", unexpected_provider)
+
+    def fail_planning(_: AgentState) -> AgentState:
+        raise RuntimeError("controlled persisted planning failure")
+
+    try:
+        with open_postgres_checkpointer() as checkpointer:
+            graph = StateGraph(AgentState)
+            graph.add_node("successful_predecessor", lambda current: current)
+            graph.add_node("investigation_planning", fail_planning)
+            graph.add_edge(START, "successful_predecessor")
+            graph.add_edge("successful_predecessor", "investigation_planning")
+            graph.add_edge("investigation_planning", END)
+            with pytest.raises(RuntimeError, match="controlled persisted planning failure"):
+                graph.compile(checkpointer=checkpointer).invoke(
+                    state, WorkflowService.config_for(incident.thread_id)
+                )
+
+        failure = PostgresWorkflowRuntime(database_session).get_failure(incident.thread_id)
+
+        assert failure is not None
+        assert failure.failed_node == "investigation_planning"
+        assert failure.safe_error
+    finally:
+        with open_postgres_checkpointer() as checkpointer:
+            checkpointer.delete_thread(incident.thread_id)
+
+
+def test_retry_available_requires_exact_failed_preapproval_task(database_session: Session) -> None:
+    incident = _incident(database_session, status="INVESTIGATING")
+    state = _state(incident)
+    state["current_stage"] = AgentStage.INVESTIGATION_PLANNING
+    runtime = FakeRuntime(
+        state=state,
+        failure=WorkflowFailure(
+            failed_node="investigation_planning",
+            safe_error="Persisted workflow task failed",
+        ),
+    )
+
+    response = WorkflowConsoleService(database_session, runtime).read(incident.id)
+
+    assert response.retry_available is True
+    assert runtime.failure_thread_ids == [incident.thread_id]
+    assert runtime.retry_calls == 0
+    assert "failed_node" not in response.model_dump(mode="json")
+    assert "safe_error" not in response.model_dump(mode="json")
+
+
+@pytest.mark.parametrize("failed_node", ["policy_gate", "approval_wait", "action_execution"])
+def test_retry_available_rejects_ineligible_node_and_non_investigating_status(
+    database_session: Session,
+    failed_node: str,
+) -> None:
+    incident = _incident(database_session, status="INVESTIGATING")
+    runtime = FakeRuntime(
+        state=_state(incident),
+        failure=WorkflowFailure(
+            failed_node=failed_node,
+            safe_error="Persisted workflow task failed",
+        ),
+    )
+
+    response = WorkflowConsoleService(database_session, runtime).read(incident.id)
+    assert response.retry_available is False
+
+    for status in ("OPEN", "WAITING_APPROVAL", "RESOLVED", "NEEDS_MANUAL_ACTION"):
+        incident.status = status
+        database_session.commit()
+        runtime.failure = WorkflowFailure(
+            failed_node="investigation_planning",
+            safe_error="Persisted workflow task failed",
+        )
+
+        response = WorkflowConsoleService(database_session, runtime).read(incident.id)
+        assert response.retry_available is False
+
+
+def test_retry_available_rejects_persisted_action_approval_and_postapproval_outcomes(
+    database_session: Session,
+) -> None:
+    failure = WorkflowFailure(
+        failed_node="investigation_planning",
+        safe_error="Persisted workflow task failed",
+    )
+
+    action_incident = _incident(database_session, status="INVESTIGATING")
+    _action(database_session, action_incident)
+    assert (
+        WorkflowConsoleService(
+            database_session,
+            FakeRuntime(state=_state(action_incident), failure=failure),
+        ).read(action_incident.id).retry_available
+        is False
+    )
+
+    approval_incident = _incident(database_session, status="INVESTIGATING")
+    approval_action = _action(database_session, approval_incident)
+    database_session.add(
+        Approval(
+            incident_id=approval_incident.id,
+            action_id=approval_action.id,
+            status="APPROVED",
+        )
+    )
+    database_session.commit()
+    assert (
+        WorkflowConsoleService(
+            database_session,
+            FakeRuntime(state=_state(approval_incident), failure=failure),
+        ).read(approval_incident.id).retry_available
+        is False
+    )
+
+    execution_incident = _incident(database_session, status="INVESTIGATING")
+    execution_state = _state(execution_incident)
+    execution_state["execution_outcome"] = ActionExecutionOutcome(
+        status=ToolStatus.FAILURE,
+        executed=False,
+    )
+    assert (
+        WorkflowConsoleService(
+            database_session,
+            FakeRuntime(state=execution_state, failure=failure),
+        ).read(execution_incident.id).retry_available
+        is False
+    )
+
+    verification_incident = _incident(database_session, status="INVESTIGATING")
+    verification_state = _state(verification_incident)
+    verification_state["verification_outcome"] = VerificationOutcome(
+        status=VerificationStatus.INCONCLUSIVE,
+        summary="Verification state already exists.",
+    )
+    assert (
+        WorkflowConsoleService(
+            database_session,
+            FakeRuntime(state=verification_state, failure=failure),
+        ).read(verification_incident.id).retry_available
+        is False
+    )
