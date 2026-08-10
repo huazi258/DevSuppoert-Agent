@@ -13,6 +13,9 @@ from devsupport_backend.agent.state import (
     create_initial_agent_state,
 )
 
+DEFAULT_WORKFLOW_RECURSION_LIMIT = 40
+"""Enough bounded graph steps for five successful rounds and one terminal path."""
+
 
 class WorkflowIncidentSource(IncidentStateSource, Protocol):
     """Incident projection with the persisted identity for its LangGraph thread."""
@@ -46,8 +49,11 @@ class WorkflowService:
         return result
 
     @staticmethod
-    def config_for(thread_id: str | None) -> dict[str, dict[str, str]]:
-        """Build the sole LangGraph config shape used for a persisted incident thread."""
+    def config_for(thread_id: str | None) -> dict[str, object]:
+        """Build the bounded LangGraph config for one persisted incident thread."""
         if thread_id is None or not thread_id.strip():
             raise ValueError("a persisted incident thread_id is required")
-        return {"configurable": {"thread_id": thread_id}}
+        return {
+            "configurable": {"thread_id": thread_id},
+            "recursion_limit": DEFAULT_WORKFLOW_RECURSION_LIMIT,
+        }

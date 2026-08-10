@@ -366,6 +366,50 @@ def test_default_limits_allow_five_investigation_rounds_with_initial_retrieval_b
     assert limits.max_rounds + 1 == limits.max_tool_calls
 
 
+def test_workflow_service_default_budget_reaches_five_round_terminalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The five-round default must not exhaust LangGraph before its guard runs."""
+    tool_outputs = [_successful_metrics_output() for _ in range(5)]
+    tool_calls = 0
+
+    def fake_query_metrics(*_: object) -> QueryMetricsOutput:
+        nonlocal tool_calls
+        tool_calls += 1
+        return tool_outputs.pop(0)
+
+    monkeypatch.setattr(workflow_module, "retrieval_node", _fake_retrieval)
+    monkeypatch.setattr(execution_module, "query_metrics", fake_query_metrics)
+    terminalizer = RecordingManualTerminalizer()
+    report = RecordingFinalReport()
+    graph = build_investigation_graph(
+        _workflow_dependencies(
+            WorkflowFakeLLM(),
+            FakeEvaluator([EvaluationDecision.CONTINUE] * 5),
+            final_report=report,
+            manual_terminalizer=terminalizer,
+        )
+    )
+    incident = Incident(
+        id=uuid4(),
+        service="catalog-service",
+        environment="staging",
+        description="Five successful investigation rounds must reach the safety guard.",
+        time_range_start=datetime(2026, 8, 8, 10, 0, tzinfo=UTC),
+        time_range_end=datetime(2026, 8, 8, 10, 5, tzinfo=UTC),
+        thread_id=str(uuid4()),
+    )
+
+    result = WorkflowService(graph).start(incident)
+
+    assert result["current_stage"] is AgentStage.NEEDS_MANUAL_ACTION
+    assert result["investigation_round"] == 5
+    assert result["tool_call_count"] == 5
+    assert tool_calls == 5
+    assert terminalizer.calls == 1
+    assert report.calls == 1
+
+
 def test_default_planning_guard_preserves_checkpoint_equivalent_remaining_budget() -> None:
     limits = InvestigationLoopLimits()
     state = _build_initial_state()
