@@ -366,6 +366,53 @@ def test_postgres_runtime_reads_persisted_failed_task_metadata_without_external_
             checkpointer.delete_thread(incident.thread_id)
 
 
+def test_postgres_runtime_reads_controlled_action_execution_failure_metadata(
+    database_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    incident = _incident(database_session, status="INVESTIGATING")
+    state = _state(incident)
+
+    def unexpected_provider(*_: object, **__: object) -> None:
+        raise AssertionError("workflow failure reads must not initialize external providers")
+
+    import devsupport_backend.workflow_console as workflow_console_module
+
+    monkeypatch.setattr(workflow_console_module, "OpenAICompatibleLLMClient", unexpected_provider)
+    monkeypatch.setattr(
+        workflow_console_module,
+        "OpenAICompatibleEmbeddingClient",
+        unexpected_provider,
+    )
+    monkeypatch.setattr(workflow_console_module, "RAGService", unexpected_provider)
+    monkeypatch.setattr(workflow_console_module, "FaultLabLogsAdapter", unexpected_provider)
+    monkeypatch.setattr(workflow_console_module, "FaultLabMetricsAdapter", unexpected_provider)
+    monkeypatch.setattr(workflow_console_module, "FaultLabTracesAdapter", unexpected_provider)
+    monkeypatch.setattr(workflow_console_module, "FaultLabDeploymentAdapter", unexpected_provider)
+
+    def fail_controlled_execution(_: AgentState) -> AgentState:
+        raise RuntimeError("controlled action execution failure")
+
+    try:
+        with open_postgres_checkpointer() as checkpointer:
+            graph = StateGraph(AgentState)
+            graph.add_node("controlled_action_execution", fail_controlled_execution)
+            graph.add_edge(START, "controlled_action_execution")
+            graph.add_edge("controlled_action_execution", END)
+            with pytest.raises(RuntimeError, match="controlled action execution failure"):
+                graph.compile(checkpointer=checkpointer).invoke(
+                    state, WorkflowService.config_for(incident.thread_id)
+                )
+
+        failure = PostgresWorkflowRuntime(database_session).get_failure(incident.thread_id)
+
+        assert failure is not None
+        assert failure.failed_node == "controlled_action_execution"
+    finally:
+        with open_postgres_checkpointer() as checkpointer:
+            checkpointer.delete_thread(incident.thread_id)
+
+
 def test_retry_available_requires_exact_failed_preapproval_task(database_session: Session) -> None:
     incident = _incident(database_session, status="INVESTIGATING")
     state = _state(incident)
@@ -387,7 +434,10 @@ def test_retry_available_requires_exact_failed_preapproval_task(database_session
     assert "safe_error" not in response.model_dump(mode="json")
 
 
-@pytest.mark.parametrize("failed_node", ["policy_gate", "approval_wait", "action_execution"])
+@pytest.mark.parametrize(
+    "failed_node",
+    ["policy_gate", "approval_wait", "controlled_action_execution"],
+)
 def test_retry_available_rejects_ineligible_node_and_non_investigating_status(
     database_session: Session,
     failed_node: str,

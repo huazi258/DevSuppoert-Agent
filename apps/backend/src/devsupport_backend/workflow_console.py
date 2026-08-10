@@ -109,7 +109,7 @@ _PERSISTED_WORKFLOW_NODE_NAMES = (
     "approval_wait",
     "approval_interrupt",
     "approval_decision",
-    "action_execution",
+    "controlled_action_execution",
     "recovery_verification",
     "final_report",
     "manual_terminalization",
