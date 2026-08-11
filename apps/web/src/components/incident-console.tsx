@@ -65,6 +65,12 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
         }
       }
     } catch (incidentLoadError: unknown) {
+      setIncident(null);
+      setWorkflow(null);
+      setReport(null);
+      setApprovalRetryDecision(null);
+      setWorkflowError(null);
+      setReportError(null);
       setError(messageFor(incidentLoadError, "Unable to load the Incident."));
     } finally {
       setLoading(false);
@@ -191,11 +197,13 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
   }
 
   const canStart =
+    error === null &&
     incident.status === "OPEN" &&
     workflow === null &&
     !workflowLoading &&
     workflowError === null;
   const retryEligibilityKnown =
+    error === null &&
     incident.status === "INVESTIGATING" &&
     workflow?.retry_available === true &&
     !workflowLoading &&
@@ -203,6 +211,7 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
     approvalRetryDecision === null;
   const canRetryInvestigation = retryEligibilityKnown && !mutationPending;
   const canApprove =
+    error === null &&
     incident.status === "WAITING_APPROVAL" &&
     workflow?.current_stage === "waiting_approval" &&
     workflow.policy_outcome?.decision === "APPROVAL_REQUIRED" &&
@@ -271,7 +280,7 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
             {canApprove ? (
               <div className="approval-controls"><p>Approve or reject the authoritative Action above. Action parameters cannot be edited here.</p><button className="button primary-button" disabled={mutationPending} onClick={() => void decideApproval("APPROVE")} type="button">Approve</button><button className="button danger-button" disabled={mutationPending} onClick={() => void decideApproval("REJECT")} type="button">Reject</button></div>
             ) : null}
-            {approvalRetryDecision ? (
+            {approvalRetryDecision && error === null ? (
               <div className="approval-controls">
                 <p>The approval decision may already be persisted, but workflow resume failed. Only the same decision can be retried.</p>
                 <button className="button primary-button" disabled={mutationPending} onClick={() => void decideApproval(approvalRetryDecision)} type="button">
