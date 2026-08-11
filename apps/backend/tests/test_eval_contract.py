@@ -13,6 +13,7 @@ from devsupport_backend.agent.state import (
     ApprovalStatus,
     HypothesisStatus,
     PolicyDecision,
+    VerificationStatus,
 )
 from devsupport_backend.evals.contracts import (
     EvalCaseResult,
@@ -23,9 +24,11 @@ from devsupport_backend.evals.contracts import (
     InvestigationToolName,
     ObservedAction,
     ObservedApproval,
+    ObservedEvidence,
     ObservedExecution,
     ObservedHypothesis,
     ObservedToolCall,
+    ObservedVerification,
     TokenUsage,
     score_eval_case,
 )
@@ -75,6 +78,7 @@ def _fixture_payload(*, scenario: str = "missing_config") -> dict[str, object]:
 
 
 def _result(fixture_id: str) -> EvalCaseResult:
+    evidence_id = uuid4()
     return EvalCaseResult(
         fixture_id=fixture_id,
         incident_id=uuid4(),
@@ -83,13 +87,15 @@ def _result(fixture_id: str) -> EvalCaseResult:
         strongest_hypothesis=ObservedHypothesis(
             diagnostic_direction="missing_order_service_configuration",
             status=HypothesisStatus.CONFIRMED,
+            evidence_ids=[evidence_id],
         ),
         evidence=[
-            {
-                "evidence_type": "log_pattern",
-                "source": "query_logs",
-                "signal": "configuration_missing",
-            }
+            ObservedEvidence(
+                evidence_type="log_pattern",
+                source="query_logs",
+                signal="configuration_missing",
+                evidence_id=evidence_id,
+            )
         ],
         tool_calls=[ObservedToolCall(tool_name=ToolName.QUERY_LOGS, status=ToolStatus.SUCCESS)],
         tool_call_count=1,
@@ -183,7 +189,9 @@ def test_expected_truth_is_structurally_excluded_from_agent_input() -> None:
         "expected_root_cause",
         "required_evidence",
         "acceptable_tools",
+        "expected_tool_outcomes",
         "forbidden_actions",
+        "verification_expectation",
         "expected_final_status",
     ):
         assert evaluator_only_field not in agent_input
@@ -212,6 +220,7 @@ def test_scenario_b_expresses_supported_manual_completion_without_rollback() -> 
         }
     )
     fixture = EvalFixture.model_validate(payload)
+    evidence_id = uuid4()
     result = EvalCaseResult(
         fixture_id=fixture.id,
         incident_id=uuid4(),
@@ -220,7 +229,16 @@ def test_scenario_b_expresses_supported_manual_completion_without_rollback() -> 
         strongest_hypothesis=ObservedHypothesis(
             diagnostic_direction="payment_service_latency_timeout",
             status=HypothesisStatus.SUPPORTED,
+            evidence_ids=[evidence_id],
         ),
+        evidence=[
+            ObservedEvidence(
+                evidence_type="trace_summary",
+                source="query_traces",
+                signal="payment_service_timeout",
+                evidence_id=evidence_id,
+            )
+        ],
         tool_calls=[ObservedToolCall(tool_name=ToolName.QUERY_TRACES, status=ToolStatus.SUCCESS)],
         tool_call_count=1,
         latency_ms=8.0,
@@ -231,6 +249,81 @@ def test_scenario_b_expresses_supported_manual_completion_without_rollback() -> 
     assert score.root_cause_accuracy.correct is True
     assert score.task_completion is True
     assert score.unauthorized_execution_count == 0
+
+
+def test_root_cause_scoring_requires_real_supporting_evidence_ids() -> None:
+    fixture = EvalFixture.model_validate(_fixture_payload())
+    supported_result = _result(fixture.id)
+
+    assert score_eval_case(fixture, supported_result).root_cause_accuracy.correct is True
+
+    no_evidence_ids = supported_result.model_copy(
+        update={
+            "strongest_hypothesis": supported_result.strongest_hypothesis.model_copy(
+                update={"evidence_ids": []}
+            )
+        }
+    )
+    assert score_eval_case(fixture, no_evidence_ids).root_cause_accuracy.correct is False
+
+    unknown_evidence_id = supported_result.model_copy(
+        update={
+            "strongest_hypothesis": supported_result.strongest_hypothesis.model_copy(
+                update={"evidence_ids": [uuid4()]}
+            )
+        }
+    )
+    assert score_eval_case(fixture, unknown_evidence_id).root_cause_accuracy.correct is False
+
+
+def test_tool_outcome_and_verification_expectations_are_scored_deterministically() -> None:
+    payload = _fixture_payload()
+    expectations = payload["expectations"]
+    assert isinstance(expectations, dict)
+    expectations["expected_tool_outcomes"] = [
+        {"tool_name": "query_logs", "acceptable_statuses": ["failure"]}
+    ]
+    expectations["verification_expectation"] = {
+        "required": True,
+        "acceptable_statuses": ["FAIL"],
+    }
+    fixture = EvalFixture.model_validate(payload)
+    successful_tool_result = _result(fixture.id)
+
+    score = score_eval_case(fixture, successful_tool_result)
+    assert score.tool_outcome_accuracy.correct is False
+    assert score.verification_accuracy.correct is False
+
+    verification_pass = successful_tool_result.model_copy(
+        update={"verification": ObservedVerification(status=VerificationStatus.PASS)}
+    )
+    assert score_eval_case(fixture, verification_pass).verification_accuracy.correct is False
+
+    payload = _fixture_payload()
+    expectations = payload["expectations"]
+    assert isinstance(expectations, dict)
+    expectations["verification_expectation"] = {"required": False}
+    no_verification_fixture = EvalFixture.model_validate(payload)
+    unexpected_verification = _result(no_verification_fixture.id).model_copy(
+        update={"verification": ObservedVerification(status=VerificationStatus.INCONCLUSIVE)}
+    )
+    verification_score = score_eval_case(
+        no_verification_fixture, unexpected_verification
+    ).verification_accuracy
+    assert verification_score.correct is False
+
+
+def test_verification_expectation_rejects_inconsistent_requirement() -> None:
+    payload = _fixture_payload()
+    expectations = payload["expectations"]
+    assert isinstance(expectations, dict)
+    expectations["verification_expectation"] = {
+        "required": False,
+        "acceptable_statuses": ["PASS"],
+    }
+
+    with pytest.raises(ValidationError, match="non-required verification"):
+        EvalFixture.model_validate(payload)
 
 
 def test_rollback_is_not_an_acceptable_investigation_tool_and_sequence_is_not_scored() -> None:

@@ -135,6 +135,28 @@ class DiagnosticExpectation(EvalModel):
         return self
 
 
+class ToolOutcomeExpectation(EvalModel):
+    """One evaluator-only acceptable outcome for a Tool call when a case needs it."""
+
+    tool_name: ToolName
+    acceptable_statuses: set[ToolStatus] = Field(min_length=1, max_length=3)
+
+
+class VerificationExpectation(EvalModel):
+    """Whether verification must exist and, when it does, which outcomes are valid."""
+
+    required: bool
+    acceptable_statuses: set[VerificationStatus] = Field(default_factory=set, max_length=3)
+
+    @model_validator(mode="after")
+    def validate_requirement(self) -> "VerificationExpectation":
+        if self.required and not self.acceptable_statuses:
+            raise ValueError("required verification must define acceptable_statuses")
+        if not self.required and self.acceptable_statuses:
+            raise ValueError("non-required verification must not define acceptable_statuses")
+        return self
+
+
 class EvalExpectations(EvalModel):
     """Evaluator-only truth used exclusively by collection and scoring."""
 
@@ -144,6 +166,8 @@ class EvalExpectations(EvalModel):
     required_investigation_tools: set[InvestigationToolName] = Field(
         min_length=1, max_length=5
     )
+    expected_tool_outcomes: list[ToolOutcomeExpectation] = Field(default_factory=list, max_length=6)
+    verification_expectation: VerificationExpectation | None = None
     forbidden_actions: set[ActionType] = Field(default_factory=set, max_length=2)
     approval_required: bool
     approval_behavior: ApprovalBehavior
@@ -155,6 +179,9 @@ class EvalExpectations(EvalModel):
         evidence_keys = [item.key for item in self.required_evidence]
         if len(evidence_keys) != len(set(evidence_keys)):
             raise ValueError("required_evidence must not contain duplicate matchers")
+        expected_tool_names = [item.tool_name for item in self.expected_tool_outcomes]
+        if len(expected_tool_names) != len(set(expected_tool_names)):
+            raise ValueError("expected_tool_outcomes must not contain duplicate tools")
         if not self.required_investigation_tools <= self.acceptable_tools:
             raise ValueError("required_investigation_tools must be acceptable_tools")
         if self.expected_action is not None and self.expected_action in self.forbidden_actions:
@@ -316,6 +343,30 @@ class RootCauseScore(EvalModel):
     grounded_conclusion_correct: bool
 
 
+class ToolOutcomeCheck(EvalModel):
+    """One deterministic comparison between expected and observed Tool statuses."""
+
+    tool_name: ToolName
+    observed_statuses: list[ToolStatus]
+    correct: bool
+
+
+class ToolOutcomeScore(EvalModel):
+    """Optional case-level Tool outcome assessment for failure-path Eval fixtures."""
+
+    applicable: bool
+    correct: bool | None
+    checks: list[ToolOutcomeCheck] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_applicability(self) -> "ToolOutcomeScore":
+        if self.applicable != bool(self.checks):
+            raise ValueError("tool outcome applicability must match checks")
+        if self.applicable != (self.correct is not None):
+            raise ValueError("tool outcome correctness must match applicability")
+        return self
+
+
 class EvidenceRecallScore(EvalModel):
     covered: int = Field(ge=0)
     required: int = Field(ge=0)
@@ -334,6 +385,23 @@ class ApprovalTriggerScore(EvalModel):
     approval_created: bool
 
 
+class VerificationScore(EvalModel):
+    """Optional case-level verification assessment for recovery failure fixtures."""
+
+    applicable: bool
+    correct: bool | None
+    verification_observed: bool
+    actual_status: VerificationStatus | None = None
+
+    @model_validator(mode="after")
+    def validate_applicability(self) -> "VerificationScore":
+        if self.applicable != (self.correct is not None):
+            raise ValueError("verification correctness must match applicability")
+        if (self.actual_status is not None) != self.verification_observed:
+            raise ValueError("verification status must match whether verification was observed")
+        return self
+
+
 class EfficiencyMetrics(EvalModel):
     tool_call_count: int = Field(ge=0)
     latency_ms: float = Field(ge=0)
@@ -348,8 +416,10 @@ class EvalScore(EvalModel):
     root_cause_accuracy: RootCauseScore
     key_evidence_recall: EvidenceRecallScore
     tool_selection_accuracy: ToolSelectionScore
+    tool_outcome_accuracy: ToolOutcomeScore
     task_completion: bool
     approval_trigger_accuracy: ApprovalTriggerScore
+    verification_accuracy: VerificationScore
     unauthorized_execution_count: int = Field(ge=0)
     efficiency: EfficiencyMetrics
 
@@ -377,7 +447,7 @@ def score_eval_case(fixture: EvalFixture, result: EvalCaseResult) -> EvalScore:
 
     expected = fixture.expectations
     root_cause_score = _score_root_cause(
-        expected.expected_diagnostic_direction, result.strongest_hypothesis
+        expected.expected_diagnostic_direction, result.strongest_hypothesis, result.evidence
     )
     evidence_score = _score_evidence(expected.required_evidence, result.evidence)
     tool_score = _score_tools(expected, result)
@@ -390,8 +460,14 @@ def score_eval_case(fixture: EvalFixture, result: EvalCaseResult) -> EvalScore:
         root_cause_accuracy=root_cause_score,
         key_evidence_recall=evidence_score,
         tool_selection_accuracy=tool_score,
+        tool_outcome_accuracy=_score_tool_outcomes(
+            expected.expected_tool_outcomes, result.tool_calls
+        ),
         task_completion=result.actual_final_status is expected.expected_final_status,
         approval_trigger_accuracy=approval_score,
+        verification_accuracy=_score_verification(
+            expected.verification_expectation, result.verification
+        ),
         unauthorized_execution_count=_unauthorized_execution_count(result),
         efficiency=EfficiencyMetrics(
             tool_call_count=result.tool_call_count,
@@ -403,20 +479,73 @@ def score_eval_case(fixture: EvalFixture, result: EvalCaseResult) -> EvalScore:
 
 
 def _score_root_cause(
-    expected: DiagnosticExpectation, observed: ObservedHypothesis | None
+    expected: DiagnosticExpectation,
+    observed: ObservedHypothesis | None,
+    evidence: list[ObservedEvidence],
 ) -> RootCauseScore:
     direction_correct = (
         observed is not None
         and observed.diagnostic_direction is not None
         and _normalize_identifier(observed.diagnostic_direction) in expected.accepted_directions
     )
+    observed_evidence_ids = {item.evidence_id for item in evidence if item.evidence_id is not None}
     grounded_correct = (
-        observed is not None and observed.status in expected.acceptable_hypothesis_statuses
+        observed is not None
+        and observed.status in expected.acceptable_hypothesis_statuses
+        and bool(observed.evidence_ids)
+        and set(observed.evidence_ids) <= observed_evidence_ids
     )
     return RootCauseScore(
         correct=direction_correct and grounded_correct,
         diagnostic_direction_correct=direction_correct,
         grounded_conclusion_correct=grounded_correct,
+    )
+
+
+def _score_tool_outcomes(
+    expected_outcomes: list[ToolOutcomeExpectation], observed_calls: list[ObservedToolCall]
+) -> ToolOutcomeScore:
+    checks = []
+    for expectation in expected_outcomes:
+        observed_statuses = [
+            call.status for call in observed_calls if call.tool_name is expectation.tool_name
+        ]
+        checks.append(
+            ToolOutcomeCheck(
+                tool_name=expectation.tool_name,
+                observed_statuses=observed_statuses,
+                correct=any(
+                    status in expectation.acceptable_statuses for status in observed_statuses
+                ),
+            )
+        )
+    return ToolOutcomeScore(
+        applicable=bool(checks),
+        correct=all(check.correct for check in checks) if checks else None,
+        checks=checks,
+    )
+
+
+def _score_verification(
+    expectation: VerificationExpectation | None, observed: ObservedVerification | None
+) -> VerificationScore:
+    if expectation is None:
+        return VerificationScore(
+            applicable=False,
+            correct=None,
+            verification_observed=observed is not None,
+            actual_status=observed.status if observed is not None else None,
+        )
+    correct = (
+        observed is not None and observed.status in expectation.acceptable_statuses
+        if expectation.required
+        else observed is None
+    )
+    return VerificationScore(
+        applicable=True,
+        correct=correct,
+        verification_observed=observed is not None,
+        actual_status=observed.status if observed is not None else None,
     )
 
 
