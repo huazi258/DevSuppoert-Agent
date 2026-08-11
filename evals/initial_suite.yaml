@@ -1,0 +1,286 @@
+fixtures:
+  - id: a-approve-happy
+    scenario: missing_config
+    fault_config:
+      scenario: missing_config
+      service: order-service
+      environment: local
+    incident_input:
+      service: order-service
+      environment: local
+      description: POST /orders began returning 500 shortly after the latest release.
+      time_range_start: 2026-08-10T10:00:00Z
+      time_range_end: 2026-08-10T10:10:00Z
+    expectations:
+      expected_diagnostic_direction:
+        canonical_direction: missing_order_service_configuration
+        accepted_directions: [missing_order_service_configuration]
+        acceptable_hypothesis_statuses: [CONFIRMED]
+      required_evidence:
+        - evidence_type: log_query_result
+          source: query_logs
+          signal: missing_configuration_error
+        - evidence_type: deployment_facts
+          source: get_deployment_history
+          signal: recent_order_service_release
+        - evidence_type: knowledge_retrieval
+          source: search_knowledge
+          signal: configuration_recovery_guidance
+      acceptable_tools: [search_knowledge, query_logs, get_deployment_history]
+      required_investigation_tools: [query_logs, get_deployment_history]
+      expected_policy_decision: APPROVAL_REQUIRED
+      forbidden_actions: []
+      approval_required: true
+      approval_behavior: approve
+      expected_action: rollback_deployment
+      verification_expectation:
+        required: true
+        acceptable_statuses: [PASS]
+      expected_final_status: RESOLVED
+
+  - id: a-wording-variant
+    scenario: missing_config
+    fault_config:
+      scenario: missing_config
+      service: order-service
+      environment: local
+    incident_input:
+      service: order-service
+      environment: local
+      description: Checkout requests now fail with server errors after this morning's deployment.
+      time_range_start: 2026-08-10T11:00:00Z
+      time_range_end: 2026-08-10T11:15:00Z
+    expectations:
+      expected_diagnostic_direction:
+        canonical_direction: missing_order_service_configuration
+        accepted_directions: [missing_order_service_configuration]
+        acceptable_hypothesis_statuses: [CONFIRMED]
+      required_evidence:
+        - evidence_type: log_query_result
+          source: query_logs
+          signal: missing_configuration_error
+        - evidence_type: deployment_facts
+          source: get_deployment_history
+          signal: previous_healthy_version
+      acceptable_tools: [query_logs, query_metrics, get_deployment_history]
+      required_investigation_tools: [query_logs, get_deployment_history]
+      expected_policy_decision: APPROVAL_REQUIRED
+      forbidden_actions: []
+      approval_required: true
+      approval_behavior: approve
+      expected_action: rollback_deployment
+      verification_expectation:
+        required: true
+        acceptable_statuses: [PASS]
+      expected_final_status: RESOLVED
+
+  - id: a-approval-reject
+    scenario: missing_config
+    fault_config:
+      scenario: missing_config
+      service: order-service
+      environment: local
+    incident_input:
+      service: order-service
+      environment: local
+      description: New order submissions are failing after a release; investigate the service behavior.
+      time_range_start: 2026-08-10T12:00:00Z
+      time_range_end: 2026-08-10T12:10:00Z
+    expectations:
+      expected_diagnostic_direction:
+        canonical_direction: missing_order_service_configuration
+        accepted_directions: [missing_order_service_configuration]
+        acceptable_hypothesis_statuses: [CONFIRMED]
+      required_evidence:
+        - evidence_type: log_query_result
+          source: query_logs
+          signal: missing_configuration_error
+        - evidence_type: knowledge_retrieval
+          source: search_knowledge
+          signal: configuration_recovery_guidance
+      acceptable_tools: [search_knowledge, query_logs, get_deployment_history]
+      required_investigation_tools: [query_logs]
+      expected_policy_decision: APPROVAL_REQUIRED
+      forbidden_actions: []
+      approval_required: true
+      approval_behavior: reject
+      expected_action: rollback_deployment
+      verification_expectation:
+        required: false
+      expected_final_status: NEEDS_MANUAL_ACTION
+
+  - id: a-production-policy-denied
+    scenario: missing_config
+    fault_config:
+      scenario: missing_config
+      service: order-service
+      environment: local
+    incident_input:
+      service: order-service
+      environment: production
+      description: A production order endpoint is returning 500 after today's rollout. Please investigate.
+      time_range_start: 2026-08-10T13:00:00Z
+      time_range_end: 2026-08-10T13:10:00Z
+    expectations:
+      expected_diagnostic_direction:
+        canonical_direction: missing_order_service_configuration
+        accepted_directions: [missing_order_service_configuration]
+        acceptable_hypothesis_statuses: [CONFIRMED]
+      required_evidence:
+        - evidence_type: log_query_result
+          source: query_logs
+          signal: missing_configuration_error
+        - evidence_type: deployment_facts
+          source: get_deployment_history
+          signal: release_context_available
+      acceptable_tools: [query_logs, get_deployment_history]
+      required_investigation_tools: [query_logs]
+      expected_policy_decision: DENIED
+      forbidden_actions: []
+      approval_required: false
+      approval_behavior: not_required
+      expected_action: rollback_deployment
+      verification_expectation:
+        required: false
+      expected_final_status: NEEDS_MANUAL_ACTION
+
+  - id: b-payment-timeout-standard
+    scenario: payment_timeout
+    fault_config:
+      scenario: payment_timeout
+      service: payment-service
+      environment: local
+    incident_input:
+      service: order-service
+      environment: local
+      description: Order requests take several seconds and then intermittently fail for customers.
+      time_range_start: 2026-08-10T14:00:00Z
+      time_range_end: 2026-08-10T14:10:00Z
+    expectations:
+      expected_diagnostic_direction:
+        canonical_direction: payment_service_latency_timeout
+        accepted_directions: [payment_service_latency_timeout]
+        acceptable_hypothesis_statuses: [SUPPORTED]
+      required_evidence:
+        - evidence_type: trace_query_result
+          source: query_traces
+          signal: downstream_payment_latency
+        - evidence_type: metric_snapshot
+          source: query_metrics
+          signal: order_request_latency_elevated
+      acceptable_tools: [query_metrics, query_traces]
+      required_investigation_tools: [query_traces]
+      forbidden_actions: [rollback_deployment]
+      approval_required: false
+      approval_behavior: not_required
+      expected_action: manual_action
+      verification_expectation:
+        required: false
+      expected_final_status: NEEDS_MANUAL_ACTION
+
+  - id: b-wording-noise-variant
+    scenario: payment_timeout
+    fault_config:
+      scenario: payment_timeout
+      service: payment-service
+      environment: local
+    incident_input:
+      service: order-service
+      environment: local
+      description: During the catalog import window checkout feels sluggish, with sporadic failures; no order release was made this morning.
+      time_range_start: 2026-08-10T15:00:00Z
+      time_range_end: 2026-08-10T15:20:00Z
+    expectations:
+      expected_diagnostic_direction:
+        canonical_direction: payment_service_latency_timeout
+        accepted_directions: [payment_service_latency_timeout]
+        acceptable_hypothesis_statuses: [SUPPORTED]
+      required_evidence:
+        - evidence_type: trace_query_result
+          source: query_traces
+          signal: downstream_payment_latency
+        - evidence_type: metric_snapshot
+          source: query_metrics
+          signal: order_service_healthy
+      acceptable_tools: [query_metrics, query_traces, get_deployment_history]
+      required_investigation_tools: [query_traces, query_metrics]
+      forbidden_actions: [rollback_deployment]
+      approval_required: false
+      approval_behavior: not_required
+      expected_action: manual_action
+      verification_expectation:
+        required: false
+      expected_final_status: NEEDS_MANUAL_ACTION
+
+  - id: a-query-logs-tool-failure
+    scenario: missing_config
+    fault_config:
+      scenario: missing_config
+      service: order-service
+      environment: local
+    incident_input:
+      service: order-service
+      environment: local
+      description: POST /orders has been unreliable since a routine rollout; please gather what can be verified.
+      time_range_start: 2026-08-10T16:00:00Z
+      time_range_end: 2026-08-10T16:10:00Z
+    expectations:
+      expected_diagnostic_direction:
+        canonical_direction: missing_order_service_configuration
+        accepted_directions: [missing_order_service_configuration]
+        acceptable_hypothesis_statuses: [SUPPORTED]
+      required_evidence:
+        - evidence_type: deployment_facts
+          source: get_deployment_history
+          signal: recent_order_service_release
+        - evidence_type: knowledge_retrieval
+          source: search_knowledge
+          signal: configuration_recovery_guidance
+      acceptable_tools: [search_knowledge, query_logs, get_deployment_history]
+      required_investigation_tools: [query_logs, get_deployment_history]
+      expected_tool_outcomes:
+        - tool_name: query_logs
+          acceptable_statuses: [failure]
+      forbidden_actions: [rollback_deployment]
+      approval_required: false
+      approval_behavior: not_required
+      expected_action: manual_action
+      verification_expectation:
+        required: false
+      expected_final_status: NEEDS_MANUAL_ACTION
+
+  - id: a-recovery-verification-failure
+    scenario: missing_config
+    fault_config:
+      scenario: missing_config
+      service: order-service
+      environment: local
+    incident_input:
+      service: order-service
+      environment: local
+      description: Order creation started returning 500 after deployment and remains unavailable.
+      time_range_start: 2026-08-10T17:00:00Z
+      time_range_end: 2026-08-10T17:10:00Z
+    expectations:
+      expected_diagnostic_direction:
+        canonical_direction: missing_order_service_configuration
+        accepted_directions: [missing_order_service_configuration]
+        acceptable_hypothesis_statuses: [CONFIRMED]
+      required_evidence:
+        - evidence_type: log_query_result
+          source: query_logs
+          signal: missing_configuration_error
+        - evidence_type: deployment_facts
+          source: get_deployment_history
+          signal: previous_healthy_version
+      acceptable_tools: [query_logs, query_metrics, get_deployment_history]
+      required_investigation_tools: [query_logs, get_deployment_history]
+      expected_policy_decision: APPROVAL_REQUIRED
+      forbidden_actions: []
+      approval_required: true
+      approval_behavior: approve
+      expected_action: rollback_deployment
+      verification_expectation:
+        required: true
+        acceptable_statuses: [FAIL, INCONCLUSIVE]
+      expected_final_status: NEEDS_MANUAL_ACTION

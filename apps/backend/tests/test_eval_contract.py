@@ -191,6 +191,7 @@ def test_expected_truth_is_structurally_excluded_from_agent_input() -> None:
         "acceptable_tools",
         "expected_tool_outcomes",
         "forbidden_actions",
+        "expected_policy_decision",
         "verification_expectation",
         "expected_final_status",
     ):
@@ -324,6 +325,21 @@ def test_verification_expectation_rejects_inconsistent_requirement() -> None:
 
     with pytest.raises(ValidationError, match="non-required verification"):
         EvalFixture.model_validate(payload)
+
+
+def test_policy_decision_expectation_is_scored_from_the_collected_result() -> None:
+    payload = _fixture_payload()
+    expectations = payload["expectations"]
+    assert isinstance(expectations, dict)
+    expectations["expected_policy_decision"] = "DENIED"
+    expectations["approval_required"] = False
+    expectations["approval_behavior"] = "not_required"
+    fixture = EvalFixture.model_validate(payload)
+    result = _result(fixture.id).model_copy(
+        update={"actual_policy_decision": PolicyDecision.DENIED}
+    )
+
+    assert score_eval_case(fixture, result).policy_outcome_accuracy.correct is True
 
 
 def test_rollback_is_not_an_acceptable_investigation_tool_and_sequence_is_not_scored() -> None:
