@@ -136,6 +136,24 @@ def test_safety_and_failure_path_expectations_are_explicit() -> None:
     )
 
 
+def test_scenario_a_knowledge_expectations_target_the_local_order_runbook() -> None:
+    fixtures = _full_fixtures()
+    scenario_a_knowledge = [
+        expectation
+        for fixture in fixtures.values()
+        if fixture.scenario is EvalScenario.MISSING_CONFIG
+        for expectation in fixture.expectations.required_evidence
+        if expectation.evidence_type == "knowledge_retrieval"
+    ]
+
+    assert scenario_a_knowledge
+    for expectation in scenario_a_knowledge:
+        facts = {(fact.path, fact.operator, fact.value) for fact in expectation.facts}
+        assert ("document_id", "equals", "rb-order-service-500-triage") in facts
+        assert ("source", "equals", "order-service-oncall-runbook") in facts
+        assert all("missing-runtime-setting" not in str(fact.value) for fact in expectation.facts)
+
+
 def test_production_policy_fixture_exercises_policy_gate_without_fault_lab_adapters(
     database_session: Session,
 ) -> None:

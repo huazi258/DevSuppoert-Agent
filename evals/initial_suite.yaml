@@ -36,9 +36,12 @@ fixtures:
         - evidence_type: knowledge_retrieval
           source: search_knowledge
           facts:
-            - path: citation.source
-              operator: contains
-              value: missing-runtime-setting
+            - path: document_id
+              operator: equals
+              value: rb-order-service-500-triage
+            - path: source
+              operator: equals
+              value: order-service-oncall-runbook
       acceptable_tools: [search_knowledge, query_logs, get_deployment_history]
       required_investigation_tools: [query_logs, get_deployment_history]
       expected_policy_decision: APPROVAL_REQUIRED
@@ -128,9 +131,12 @@ fixtures:
         - evidence_type: knowledge_retrieval
           source: search_knowledge
           facts:
-            - path: citation.source
-              operator: contains
-              value: missing-runtime-setting
+            - path: document_id
+              operator: equals
+              value: rb-order-service-500-triage
+            - path: source
+              operator: equals
+              value: order-service-oncall-runbook
       acceptable_tools: [search_knowledge, query_logs, get_deployment_history]
       required_investigation_tools: [query_logs]
       expected_policy_decision: APPROVAL_REQUIRED
@@ -288,9 +294,12 @@ fixtures:
         - evidence_type: knowledge_retrieval
           source: search_knowledge
           facts:
-            - path: citation.source
-              operator: contains
-              value: missing-runtime-setting
+            - path: document_id
+              operator: equals
+              value: rb-order-service-500-triage
+            - path: source
+              operator: equals
+              value: order-service-oncall-runbook
       acceptable_tools: [search_knowledge, query_logs, get_deployment_history]
       required_investigation_tools: [query_logs, get_deployment_history]
       expected_tool_outcomes:

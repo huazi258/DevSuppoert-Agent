@@ -374,11 +374,15 @@ def test_key_evidence_recall_matches_production_evidence_data_shapes() -> None:
             "source": "search_knowledge",
             "facts": [
                 {
-                    "path": "citation.source",
-                    "operator": "contains",
-                    "value": "missing-runtime-setting",
+                    "path": "document_id",
+                    "operator": "equals",
+                    "value": "rb-order-service-500-triage",
                 },
-                {"path": "section", "operator": "exists"},
+                {
+                    "path": "source",
+                    "operator": "equals",
+                    "value": "order-service-oncall-runbook",
+                },
             ],
         },
     ]
@@ -424,8 +428,12 @@ def test_key_evidence_recall_matches_production_evidence_data_shapes() -> None:
                     evidence_type="knowledge_retrieval",
                     source="search_knowledge",
                     facts={
-                        "section": "Recovery",
-                        "citation": {"source": "missing-runtime-setting-2025-02.md"},
+                        "document_id": "rb-order-service-500-triage",
+                        "source": "order-service-oncall-runbook",
+                        "section": "分支排查",
+                        "citation": {
+                            "document_reference": "knowledge/runbooks/order-service-500-triage.md"
+                        },
                     },
                     evidence_id=evidence_ids[4],
                 ),
