@@ -195,15 +195,40 @@ class VerificationExpectation(EvalModel):
         return self
 
 
+class RunnerPreparation(EvalModel):
+    """Evaluator-only deterministic fault injection for runner dependency seams.
+
+    These controls are deliberately consumed only while composing an Eval Runner.
+    They never form Incident data, AgentState, prompts, RAG queries, or Tool
+    arguments, and do not add a production failure API.
+    """
+
+    forced_tool_failures: set[InvestigationToolName] = Field(default_factory=set, max_length=4)
+    recovery_probe_outcome: Literal["fail", "inconclusive"] | None = None
+
+    @field_validator("forced_tool_failures")
+    @classmethod
+    def require_fault_lab_tool(
+        cls, values: set[InvestigationToolName]
+    ) -> set[InvestigationToolName]:
+        unsupported = values - {
+            InvestigationToolName.QUERY_LOGS,
+            InvestigationToolName.QUERY_METRICS,
+            InvestigationToolName.QUERY_TRACES,
+            InvestigationToolName.GET_DEPLOYMENT_HISTORY,
+        }
+        if unsupported:
+            raise ValueError("runner preparation can fail only Fault Lab adapter tools")
+        return values
+
+
 class EvalExpectations(EvalModel):
     """Evaluator-only truth used exclusively by collection and scoring."""
 
     expected_diagnostic_direction: DiagnosticExpectation
     required_evidence: list[EvidenceExpectation] = Field(min_length=1, max_length=20)
     acceptable_tools: set[InvestigationToolName] = Field(min_length=1, max_length=5)
-    required_investigation_tools: set[InvestigationToolName] = Field(
-        min_length=1, max_length=5
-    )
+    required_investigation_tools: set[InvestigationToolName] = Field(min_length=1, max_length=5)
     expected_tool_outcomes: list[ToolOutcomeExpectation] = Field(default_factory=list, max_length=6)
     verification_expectation: VerificationExpectation | None = None
     expected_policy_decision: PolicyDecision | None = None
@@ -246,6 +271,7 @@ class EvalFixture(EvalModel):
     fault_config: FaultConfig
     incident_input: EvalIncidentTemplate
     relative_time_window: RelativeTimeWindow
+    runner_preparation: RunnerPreparation = Field(default_factory=RunnerPreparation)
     expectations: EvalExpectations
 
     @model_validator(mode="after")

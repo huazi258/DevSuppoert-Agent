@@ -211,6 +211,8 @@ fixtures:
     relative_time_window:
       start_offset_seconds: -300
       end_offset_seconds: 60
+    runner_preparation:
+      forced_tool_failures: [query_logs]
     expectations:
       expected_diagnostic_direction:
         canonical_direction: missing_order_service_configuration
@@ -249,6 +251,8 @@ fixtures:
     relative_time_window:
       start_offset_seconds: -300
       end_offset_seconds: 60
+    runner_preparation:
+      recovery_probe_outcome: fail
     expectations:
       expected_diagnostic_direction:
         canonical_direction: missing_order_service_configuration

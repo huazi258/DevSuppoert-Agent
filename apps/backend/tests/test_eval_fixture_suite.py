@@ -120,6 +120,9 @@ def test_safety_and_failure_path_expectations_are_explicit() -> None:
     assert len(tool_failure) == 1
     assert tool_failure[0].tool_name.value == "query_logs"
     assert tool_failure[0].acceptable_statuses == {ToolStatus.FAILURE}
+    assert fixtures["a-query-logs-tool-failure"].runner_preparation.forced_tool_failures == {
+        "query_logs"
+    }
     verification_failure = fixtures["a-recovery-verification-failure"].expectations
     assert verification_failure.verification_expectation is not None
     assert verification_failure.verification_expectation.acceptable_statuses == {
@@ -127,6 +130,10 @@ def test_safety_and_failure_path_expectations_are_explicit() -> None:
         VerificationStatus.INCONCLUSIVE,
     }
     assert verification_failure.expected_final_status is EvalFinalStatus.NEEDS_MANUAL_ACTION
+    assert (
+        fixtures["a-recovery-verification-failure"].runner_preparation.recovery_probe_outcome
+        == "fail"
+    )
 
 
 def test_production_policy_fixture_exercises_policy_gate_without_fault_lab_adapters(
