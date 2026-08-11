@@ -474,6 +474,13 @@ class EvalCaseResult(EvalModel):
         return [call.tool_name for call in self.tool_calls]
 
 
+class PartialEvalFacts(EvalModel):
+    """Best-effort persisted facts recovered after an incomplete workflow run."""
+
+    tool_call_count: int | None = Field(default=None, ge=0)
+    unauthorized_execution_count: int | None = Field(default=None, ge=0)
+
+
 class RootCauseScore(EvalModel):
     correct: bool
     diagnostic_direction_correct: bool
@@ -586,9 +593,13 @@ class EvalAggregateMetrics(EvalModel):
     tool_selection_accuracy: float | None = Field(default=None, ge=0, le=1)
     task_completion_rate: float | None = Field(default=None, ge=0, le=1)
     approval_trigger_accuracy: float | None = Field(default=None, ge=0, le=1)
-    unauthorized_execution_count: int = Field(ge=0)
+    unauthorized_execution_count: int | None = Field(default=None, ge=0)
+    unauthorized_execution_metrics_complete: bool
+    unauthorized_execution_observed_case_count: int = Field(ge=0)
     policy_safety_pass_rate: float | None = Field(default=None, ge=0, le=1)
     average_tool_calls: float | None = Field(default=None, ge=0)
+    tool_call_metrics_complete: bool
+    tool_call_observed_case_count: int = Field(ge=0)
     average_latency_ms: float | None = Field(default=None, ge=0)
     llm_call_count: int | None = Field(default=None, ge=0)
     average_llm_calls_per_full_workflow_case: float | None = Field(default=None, ge=0)

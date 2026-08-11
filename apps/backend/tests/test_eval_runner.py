@@ -14,6 +14,7 @@ import pytest
 from sqlalchemy.orm import Session
 
 from devsupport_backend.agent.state import (
+    ActionType,
     AgentStage,
     EvidenceContext,
     HypothesisContext,
@@ -31,6 +32,7 @@ from devsupport_backend.evals.contracts import (
     EvalScore,
     EvidenceRecallScore,
     ObservedToolCall,
+    PartialEvalFacts,
     PolicyOutcomeScore,
     PolicySafetyFixture,
     RootCauseScore,
@@ -49,9 +51,10 @@ from devsupport_backend.evals.runner import (
     _create_incident,
     _ForcedLogsAdapter,
     _persist_and_collect_result,
+    _recover_partial_workflow_facts,
     aggregate_eval_outputs,
 )
-from devsupport_backend.models import Incident
+from devsupport_backend.models import Action, Incident
 from devsupport_backend.tools.logs import LogsAdapterError
 from devsupport_backend.tools.schemas import QueryLogsInput, ToolStatus
 
@@ -371,6 +374,10 @@ def test_suite_aggregate_retains_failed_full_workflows_and_separates_policy_safe
         latency_ms=30.0,
         llm_call_count=2,
         llm_total_latency_ms=8.0,
+        partial_facts=PartialEvalFacts(
+            tool_call_count=3,
+            unauthorized_execution_count=1,
+        ),
         error="TIMEOUT",
     )
     policy_safety = EvalRunOutput(
@@ -394,13 +401,99 @@ def test_suite_aggregate_retains_failed_full_workflows_and_separates_policy_safe
     assert aggregate.tool_selection_accuracy == 0.5
     assert aggregate.task_completion_rate == 0.5
     assert aggregate.approval_trigger_accuracy == 0.5
-    assert aggregate.unauthorized_execution_count == 2
+    assert aggregate.unauthorized_execution_count == 3
+    assert aggregate.unauthorized_execution_metrics_complete is True
+    assert aggregate.unauthorized_execution_observed_case_count == 2
     assert aggregate.policy_safety_pass_rate == 1.0
-    assert aggregate.average_tool_calls == 2.0
+    assert aggregate.average_tool_calls == 3.5
+    assert aggregate.tool_call_metrics_complete is True
+    assert aggregate.tool_call_observed_case_count == 2
     assert aggregate.average_latency_ms == 20.0
     assert aggregate.llm_call_count == 5
     assert aggregate.average_llm_calls_per_full_workflow_case == 2.5
     assert aggregate.token_usage is None
+
+
+def test_partial_facts_recover_checkpoint_tool_calls_and_unauthorized_execution(
+    database_session: Session,
+) -> None:
+    incident = Incident(
+        id=uuid4(),
+        service="order-service",
+        environment="local",
+        status="NEEDS_MANUAL_ACTION",
+        description="A runtime failure was observed.",
+        time_range_start=RUN_STARTED_AT - timedelta(minutes=5),
+        time_range_end=RUN_STARTED_AT,
+        thread_id="partial-facts-thread",
+    )
+    database_session.add(incident)
+    database_session.add(
+        Action(
+            incident_id=incident.id,
+            action_type=ActionType.ROLLBACK_DEPLOYMENT.value,
+            status="EXECUTED",
+            parameters={"environment": "local"},
+            executed_at=RUN_STARTED_AT,
+        )
+    )
+    database_session.commit()
+    state = create_initial_agent_state(incident)
+    state.update({"tool_call_count": 3, "current_stage": AgentStage.NEEDS_MANUAL_ACTION})
+
+    class CheckpointReader:
+        def get_state(self, thread_id: str):
+            assert thread_id == incident.thread_id
+            return state
+
+    partial = _recover_partial_workflow_facts(
+        incident.id,
+        incident.thread_id,
+        state_reader=CheckpointReader(),  # type: ignore[arg-type]
+        session_factory=lambda: nullcontext(database_session),  # type: ignore[arg-type]
+    )
+
+    assert partial.tool_call_count == 3
+    assert partial.unauthorized_execution_count == 1
+
+
+def test_aggregate_marks_unrecovered_partial_metrics_unavailable() -> None:
+    completed = EvalRunOutput(
+        fixture_id="aggregate-completed",
+        execution_scope=EvalExecutionScope.FULL_WORKFLOW,
+        incident_id=uuid4(),
+        thread_id="aggregate-completed-thread",
+        final_outcome="NEEDS_MANUAL_ACTION",
+        score=_aggregate_score(tool_call_count=4, latency_ms=10.0),
+        result=_aggregate_result(tool_call_count=4, latency_ms=10.0),
+        passed=True,
+        latency_ms=10.0,
+    )
+    incomplete = EvalRunOutput(
+        fixture_id="aggregate-incomplete",
+        execution_scope=EvalExecutionScope.FULL_WORKFLOW,
+        incident_id=uuid4(),
+        thread_id="aggregate-incomplete-thread",
+        final_outcome=None,
+        score=None,
+        result=None,
+        passed=False,
+        latency_ms=30.0,
+        partial_facts=PartialEvalFacts(),
+        error="TIMEOUT",
+    )
+
+    aggregate = aggregate_eval_outputs([completed, incomplete])
+
+    machine_output = incomplete.machine_output()
+    assert machine_output["tool_call_count"] is None
+    assert machine_output["unauthorized_execution_count"] is None
+    assert aggregate.average_tool_calls is None
+    assert aggregate.tool_call_metrics_complete is False
+    assert aggregate.tool_call_observed_case_count == 1
+    assert aggregate.unauthorized_execution_count is None
+    assert aggregate.unauthorized_execution_metrics_complete is False
+    assert aggregate.unauthorized_execution_observed_case_count == 1
 
 
 def test_observed_llm_client_preserves_completion_input_and_records_latency(
@@ -533,6 +626,10 @@ def test_timeout_returns_machine_failure_preserves_incident_and_cleans_up(
     fault_lab = TrackingFaultLab()
     monkeypatch.setattr(
         "devsupport_backend.evals.runner.multiprocessing.get_context", lambda _: FakeContext()
+    )
+    monkeypatch.setattr(
+        "devsupport_backend.evals.runner._recover_partial_workflow_facts",
+        lambda *_: PartialEvalFacts(),
     )
 
     output = EvaluationRunner(fault_lab=fault_lab).run_case(fixture)
