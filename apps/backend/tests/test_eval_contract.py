@@ -37,7 +37,6 @@ from devsupport_backend.tools.schemas import ToolStatus
 
 
 def _fixture_payload(*, scenario: str = "missing_config") -> dict[str, object]:
-    started_at = datetime(2026, 8, 10, 10, 0, tzinfo=UTC)
     return {
         "id": "scenario-a-approve",
         "scenario": scenario,
@@ -50,8 +49,10 @@ def _fixture_payload(*, scenario: str = "missing_config") -> dict[str, object]:
             "service": "order-service",
             "environment": "local",
             "description": "POST /orders returns 500 after a recent deployment.",
-            "time_range_start": started_at,
-            "time_range_end": started_at + timedelta(minutes=5),
+        },
+        "relative_time_window": {
+            "start_offset_seconds": -300,
+            "end_offset_seconds": 60,
         },
         "expectations": {
             "expected_diagnostic_direction": {
@@ -120,7 +121,7 @@ def test_valid_fixture_loads_with_strict_machine_checkable_contract() -> None:
         (("id",), "   "),
         (("scenario",), "unknown_fault"),
         (("incident_input", "description"), "   "),
-        (("incident_input", "time_range_end"), datetime(2026, 8, 10, 9, 0, tzinfo=UTC)),
+        (("relative_time_window", "end_offset_seconds"), -301),
         (("expectations", "expected_final_status"), "INVESTIGATING"),
         (("expectations", "approval_behavior"), "auto_approve"),
     ],
@@ -175,7 +176,9 @@ def test_fixture_suite_rejects_duplicate_ids_and_evidence_matchers() -> None:
 def test_expected_truth_is_structurally_excluded_from_agent_input() -> None:
     fixture = EvalFixture.model_validate(_fixture_payload())
 
-    agent_input = fixture.agent_input().model_dump(mode="json")
+    agent_input = fixture.agent_input(datetime(2026, 8, 12, 10, 0, tzinfo=UTC)).model_dump(
+        mode="json"
+    )
 
     assert set(agent_input) == {
         "service",
@@ -197,6 +200,18 @@ def test_expected_truth_is_structurally_excluded_from_agent_input() -> None:
     ):
         assert evaluator_only_field not in agent_input
     assert "missing_order_service_configuration" not in str(agent_input)
+
+
+def test_relative_time_window_resolves_absolute_agent_input_without_using_current_time() -> None:
+    fixture = EvalFixture.model_validate(_fixture_payload())
+    run_started_at = datetime(2026, 8, 12, 10, 0, tzinfo=UTC)
+
+    agent_input = fixture.agent_input(run_started_at)
+
+    assert agent_input.time_range_start == run_started_at - timedelta(seconds=300)
+    assert agent_input.time_range_end == run_started_at + timedelta(seconds=60)
+    with pytest.raises(ValueError, match="run_started_at must include a timezone"):
+        fixture.agent_input(datetime(2026, 8, 12, 10, 0))
 
 
 def test_scenario_b_expresses_supported_manual_completion_without_rollback() -> None:

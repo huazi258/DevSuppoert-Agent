@@ -8,9 +8,10 @@ becoming Agent input by construction.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
+from typing import Literal
 from uuid import UUID
 
 import yaml
@@ -53,6 +54,13 @@ class EvalFinalStatus(StrEnum):
 
     RESOLVED = "RESOLVED"
     NEEDS_MANUAL_ACTION = "NEEDS_MANUAL_ACTION"
+
+
+class EvalExecutionScope(StrEnum):
+    """The production boundary a future runner is allowed to exercise for one case."""
+
+    FULL_WORKFLOW = "full_workflow"
+    POLICY_GATE_SAFETY = "policy_gate_safety"
 
 
 class InvestigationToolName(StrEnum):
@@ -98,6 +106,36 @@ class EvalIncidentInput(EvalModel):
         if self.time_range_start > self.time_range_end:
             raise ValueError("time_range_start must be before or equal to time_range_end")
         return self
+
+
+class EvalIncidentTemplate(EvalModel):
+    """Stable fixture input before the runner resolves its relative time window."""
+
+    service: str = Field(min_length=1, max_length=100)
+    environment: str = Field(min_length=1, max_length=50)
+    description: str = Field(min_length=1, max_length=10_000)
+
+
+class RelativeTimeWindow(EvalModel):
+    """Evaluator-only offsets resolved against the future run start time."""
+
+    start_offset_seconds: int = Field(ge=-86_400, le=86_400)
+    end_offset_seconds: int = Field(ge=-86_400, le=86_400)
+
+    @model_validator(mode="after")
+    def validate_offset_range(self) -> "RelativeTimeWindow":
+        if self.start_offset_seconds > self.end_offset_seconds:
+            raise ValueError("start_offset_seconds must be before or equal to end_offset_seconds")
+        return self
+
+    def resolve(self, run_started_at: datetime) -> tuple[datetime, datetime]:
+        """Return the timezone-aware absolute window that may be sent to the Agent."""
+        if run_started_at.tzinfo is None or run_started_at.utcoffset() is None:
+            raise ValueError("run_started_at must include a timezone")
+        return (
+            run_started_at + timedelta(seconds=self.start_offset_seconds),
+            run_started_at + timedelta(seconds=self.end_offset_seconds),
+        )
 
 
 class EvidenceExpectation(EvalModel):
@@ -203,9 +241,11 @@ class EvalFixture(EvalModel):
     """One V0 Eval Case, partitioned between Agent input and evaluator truth."""
 
     id: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    execution_scope: Literal[EvalExecutionScope.FULL_WORKFLOW] = EvalExecutionScope.FULL_WORKFLOW
     scenario: EvalScenario
     fault_config: FaultConfig
-    incident_input: EvalIncidentInput
+    incident_input: EvalIncidentTemplate
+    relative_time_window: RelativeTimeWindow
     expectations: EvalExpectations
 
     @model_validator(mode="after")
@@ -214,15 +254,59 @@ class EvalFixture(EvalModel):
             raise ValueError("fault_config.scenario must match scenario")
         return self
 
-    def agent_input(self) -> EvalIncidentInput:
-        """Return a deep copy of the only data permitted to reach the Agent."""
-        return self.incident_input.model_copy(deep=True)
+    def agent_input(self, run_started_at: datetime) -> EvalIncidentInput:
+        """Resolve and return the only data permitted to reach the Agent."""
+        time_range_start, time_range_end = self.relative_time_window.resolve(run_started_at)
+        return EvalIncidentInput(
+            **self.incident_input.model_dump(),
+            time_range_start=time_range_start,
+            time_range_end=time_range_end,
+        )
+
+
+class PolicySafetyExpectation(EvalModel):
+    """Expected outcome of a direct Policy Gate safety evaluation, not an Agent run."""
+
+    proposed_action: ActionType
+    expected_policy_decision: PolicyDecision
+    approval_required: bool = False
+    action_created: bool = False
+    verification_required: bool = False
+
+    @model_validator(mode="after")
+    def validate_production_denial_scope(self) -> "PolicySafetyExpectation":
+        if self.proposed_action is not ActionType.ROLLBACK_DEPLOYMENT:
+            raise ValueError("policy safety expectations must exercise rollback_deployment")
+        if self.expected_policy_decision is not PolicyDecision.DENIED:
+            raise ValueError("policy safety expectations must be DENIED")
+        if self.approval_required or self.action_created or self.verification_required:
+            raise ValueError("DENIED policy safety expectations must not create follow-on workflow")
+        return self
+
+
+class PolicySafetyFixture(EvalModel):
+    """A directly executable Policy Gate safety case that does not call Fault Lab adapters."""
+
+    id: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    execution_scope: Literal[EvalExecutionScope.POLICY_GATE_SAFETY]
+    incident_input: EvalIncidentTemplate
+    relative_time_window: RelativeTimeWindow
+    policy_expectations: PolicySafetyExpectation
+
+    def agent_input(self, run_started_at: datetime) -> EvalIncidentInput:
+        """Resolve the Incident shape while keeping policy expectations evaluator-only."""
+        time_range_start, time_range_end = self.relative_time_window.resolve(run_started_at)
+        return EvalIncidentInput(
+            **self.incident_input.model_dump(),
+            time_range_start=time_range_start,
+            time_range_end=time_range_end,
+        )
 
 
 class EvalFixtureSuite(EvalModel):
     """A future fixture collection with IDs guaranteed unique before any run starts."""
 
-    fixtures: list[EvalFixture] = Field(min_length=1, max_length=20)
+    fixtures: list[EvalFixture | PolicySafetyFixture] = Field(min_length=1, max_length=20)
 
     @model_validator(mode="after")
     def require_unique_fixture_ids(self) -> "EvalFixtureSuite":
