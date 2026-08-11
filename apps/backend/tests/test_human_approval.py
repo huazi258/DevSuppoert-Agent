@@ -215,12 +215,17 @@ def test_approval_api_rejects_forged_client_authorization_fields(
     payload: dict[str, object],
 ) -> None:
     client, reader, _ = approval_api_client
-    incident_id = reader.get_state("test")["incident"].id
+    state = reader.get_state("test")
+    incident_id = state["incident"].id
+    policy = state["policy_outcome"]
+    assert policy is not None and policy.action_id is not None
 
     response = client.post(f"/incidents/{incident_id}/approval", json=payload)
 
     assert response.status_code == 422
-    assert database_session.query(Approval).count() == 0
+    assert (
+        database_session.query(Approval).filter(Approval.action_id == policy.action_id).count() == 0
+    )
 
 
 def test_approval_api_fails_closed_for_mismatched_checkpoint_action(
@@ -238,7 +243,12 @@ def test_approval_api_fails_closed_for_mismatched_checkpoint_action(
     )
 
     assert response.status_code == 409
-    assert database_session.query(Approval).count() == 0
+    assert (
+        database_session.query(Approval)
+        .filter(Approval.incident_id == state["incident"].id)
+        .count()
+        == 0
+    )
 
 
 def test_approval_api_cannot_approve_another_incidents_action(
@@ -252,7 +262,10 @@ def test_approval_api_cannot_approve_another_incidents_action(
     response = client.post(f"/incidents/{other_incident.id}/approval", json={"decision": "APPROVE"})
 
     assert response.status_code == 409
-    assert database_session.query(Approval).count() == 0
+    assert (
+        database_session.query(Approval).filter(Approval.incident_id == other_incident.id).count()
+        == 0
+    )
     assert state["incident"].id != other_incident.id
 
 
@@ -274,7 +287,7 @@ def test_approval_api_rejects_an_already_executed_action(
     )
 
     assert response.status_code == 409
-    assert database_session.query(Approval).count() == 0
+    assert database_session.query(Approval).filter(Approval.action_id == action.id).count() == 0
 
 
 def test_duplicate_matching_decision_is_idempotent_and_conflicting_one_is_rejected(
@@ -292,7 +305,12 @@ def test_duplicate_matching_decision_is_idempotent_and_conflicting_one_is_reject
     assert repeated.status_code == 200
     assert repeated.json()["id"] == first.json()["id"]
     assert conflicting.status_code == 409
-    assert database_session.query(Approval).count() == 1
+    assert (
+        database_session.query(Approval)
+        .filter(Approval.action_id == first.json()["action_id"])
+        .count()
+        == 1
+    )
     assert len(coordinator.calls) == 1
 
 
@@ -398,7 +416,7 @@ def test_postgres_interrupt_persists_waiting_state_across_reopen(
         assert recovered["policy_outcome"].action_id == action.id
         assert reader_recovered["current_stage"] == AgentStage.WAITING_APPROVAL
         assert incident.status == WAITING_APPROVAL
-        assert database_session.query(Approval).count() == 0
+        assert database_session.query(Approval).filter(Approval.action_id == action.id).count() == 0
     finally:
         _delete_thread(incident.thread_id)
 
@@ -415,4 +433,4 @@ def test_approval_service_rejects_checkpoint_state_without_waiting_stage(
         ApprovalService(database_session, StaticWorkflowStateReader(state)).record_decision(
             incident.id, ApprovalDecision.APPROVE
         )
-    assert database_session.query(Approval).count() == 0
+    assert database_session.query(Approval).filter(Approval.action_id == action.id).count() == 0

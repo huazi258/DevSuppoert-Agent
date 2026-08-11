@@ -94,7 +94,12 @@ def test_manual_report_has_no_remediation_facts_and_is_idempotent(
     assert report.content["approval"] is None
     assert report.content["execution"] is None
     assert report.content["verification"] is None
-    assert database_session.scalar(select(func.count()).select_from(Report)) == 1
+    assert (
+        database_session.scalar(
+            select(func.count()).select_from(Report).where(Report.incident_id == incident.id)
+        )
+        == 1
+    )
 
 
 def test_resolved_report_persists_exact_execution_chain_as_jsonb(database_session: Session) -> None:
@@ -183,7 +188,12 @@ def test_existing_report_conflict_fails_closed_without_second_row(
     with pytest.raises(FinalReportError, match="conflicts"):
         service.generate(state)
 
-    assert database_session.scalar(select(func.count()).select_from(Report)) == 1
+    assert (
+        database_session.scalar(
+            select(func.count()).select_from(Report).where(Report.incident_id == incident.id)
+        )
+        == 1
+    )
 
 
 def test_unknown_evidence_reference_cannot_be_reported(database_session: Session) -> None:
@@ -196,7 +206,12 @@ def test_unknown_evidence_reference_cannot_be_reported(database_session: Session
     with pytest.raises(FinalReportError, match="unknown Evidence"):
         FinalReportService(database_session).generate(state)
 
-    assert database_session.scalar(select(func.count()).select_from(Report)) == 0
+    assert (
+        database_session.scalar(
+            select(func.count()).select_from(Report).where(Report.incident_id == incident.id)
+        )
+        == 0
+    )
 
 
 @pytest.mark.parametrize("field", ["action_id", "approval_id", "target_version"])

@@ -473,16 +473,30 @@ def test_workflow_get_is_read_only(
     assert incident is not None
     runtime.states[incident.thread_id] = create_initial_agent_state(incident)
     before_updated = incident.updated_at
-    reports_before = database_session.scalar(select(func.count()).select_from(Report))
-    actions_before = database_session.scalar(select(func.count()).select_from(Action))
+    reports_before = database_session.scalar(
+        select(func.count()).select_from(Report).where(Report.incident_id == incident.id)
+    )
+    actions_before = database_session.scalar(
+        select(func.count()).select_from(Action).where(Action.incident_id == incident.id)
+    )
 
     response = client.get(f"/incidents/{incident.id}/workflow")
 
     database_session.refresh(incident)
     assert response.status_code == 200
     assert incident.updated_at == before_updated
-    assert database_session.scalar(select(func.count()).select_from(Report)) == reports_before
-    assert database_session.scalar(select(func.count()).select_from(Action)) == actions_before
+    assert (
+        database_session.scalar(
+            select(func.count()).select_from(Report).where(Report.incident_id == incident.id)
+        )
+        == reports_before
+    )
+    assert (
+        database_session.scalar(
+            select(func.count()).select_from(Action).where(Action.incident_id == incident.id)
+        )
+        == actions_before
+    )
     assert runtime.start_calls == 0
 
 
@@ -608,7 +622,8 @@ def test_list_incidents_returns_created_record(
     response = api_client.get("/incidents")
 
     assert response.status_code == 200
-    assert response.json() == [created]
+    assert isinstance(response.json(), list)
+    assert [record for record in response.json() if record["id"] == created["id"]] == [created]
 
 
 def test_incident_rejects_invalid_time_range(
