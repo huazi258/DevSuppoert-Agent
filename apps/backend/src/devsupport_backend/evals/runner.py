@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing
 import os
 import subprocess
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from queue import Empty
 from time import perf_counter
 from typing import Protocol
 from uuid import UUID, uuid4
@@ -346,36 +348,81 @@ class EvaluationRunner:
         self, fixture: EvalFixture, run_started_at: datetime, started: float
     ) -> EvalRunOutput:
         self._fault_lab.reset()
-        self._fault_lab.inject(fixture)
-        self._fault_lab.generate_failure_signal(fixture)
-        agent_input = fixture.agent_input(run_started_at)
-        with self._session_factory() as session, open_postgres_checkpointer() as checkpointer:
-            incident = _create_incident(session, agent_input)
-            workflow = WorkflowService(
-                _build_runner_graph(session, checkpointer, fixture.runner_preparation)
-            )
-            WorkflowConsoleService(session, _RunnerWorkflowRuntime(workflow)).start(incident.id)
-            state = workflow.get_state(incident.thread_id)
-            state = self._handle_approval(session, workflow, incident, fixture, state)
-            result = _persist_and_collect_result(
-                session,
-                fixture,
-                incident,
-                state,
-                latency_ms=_elapsed_ms(started),
-            )
-        score = score_eval_case(fixture, result)
-        return EvalRunOutput(
-            fixture_id=fixture.id,
-            execution_scope=fixture.execution_scope,
-            incident_id=result.incident_id,
-            thread_id=result.thread_id,
-            final_outcome=result.actual_final_status.value,
-            score=score,
-            result=result,
-            passed=_score_passed(score),
-            latency_ms=result.latency_ms,
+        context = multiprocessing.get_context("spawn")
+        queue = context.Queue()
+        process = context.Process(
+            target=_full_workflow_child,
+            args=(fixture, run_started_at, queue),
         )
+        incident_id: UUID | None = None
+        thread_id: str | None = None
+        output: EvalRunOutput | None = None
+        cleanup_error: str | None = None
+        try:
+            process.start()
+            process.join(fixture.runner_preparation.case_timeout_seconds)
+            for message in _drain_child_messages(queue):
+                if message[0] == "incident":
+                    incident_id = UUID(message[1])
+                    thread_id = message[2]
+                elif message[0] == "output":
+                    output = message[1]
+                elif message[0] == "error":
+                    output = EvalRunOutput(
+                        fixture_id=fixture.id,
+                        execution_scope=fixture.execution_scope,
+                        incident_id=incident_id,
+                        thread_id=thread_id,
+                        final_outcome=None,
+                        score=None,
+                        result=None,
+                        passed=False,
+                        latency_ms=_elapsed_ms(started),
+                        error=message[1],
+                    )
+            if process.is_alive():
+                process.terminate()
+                process.join()
+                output = EvalRunOutput(
+                    fixture_id=fixture.id,
+                    execution_scope=fixture.execution_scope,
+                    incident_id=incident_id,
+                    thread_id=thread_id,
+                    final_outcome=None,
+                    score=None,
+                    result=None,
+                    passed=False,
+                    latency_ms=_elapsed_ms(started),
+                    error=(
+                        "TIMEOUT: workflow exceeded "
+                        f"{fixture.runner_preparation.case_timeout_seconds} seconds"
+                    ),
+                )
+            if output is None:
+                output = EvalRunOutput(
+                    fixture_id=fixture.id,
+                    execution_scope=fixture.execution_scope,
+                    incident_id=incident_id,
+                    thread_id=thread_id,
+                    final_outcome=None,
+                    score=None,
+                    result=None,
+                    passed=False,
+                    latency_ms=_elapsed_ms(started),
+                    error="Eval runner child exited without machine-readable output",
+                )
+        finally:
+            try:
+                self._fault_lab.reset()
+            except Exception as error:
+                cleanup_error = f"Fault Lab cleanup failed: {type(error).__name__}: {error}"
+        if cleanup_error is not None:
+            output = replace(
+                output,
+                passed=False,
+                error="; ".join(filter(None, (output.error, cleanup_error))),
+            )
+        return output
 
     def _handle_approval(
         self,
@@ -450,6 +497,73 @@ class EvaluationRunner:
 class _UnexpectedDeploymentAdapter:
     def query(self, tool_input):
         raise AssertionError("policy_gate_safety must not access Fault Lab adapters")
+
+
+def _full_workflow_child(fixture: EvalFixture, run_started_at: datetime, queue) -> None:
+    """Own all workflow work in one killable process so timeout leaves no background graph."""
+    started = perf_counter()
+    try:
+        fault_lab = LiveFaultLabController()
+        fault_lab.inject(fixture)
+        fault_lab.generate_failure_signal(fixture)
+        output = _execute_full_workflow(
+            fixture,
+            run_started_at,
+            started,
+            on_incident=lambda incident: queue.put(
+                ("incident", str(incident.id), incident.thread_id)
+            ),
+        )
+        queue.put(("output", output))
+    except Exception as error:
+        queue.put(("error", f"{type(error).__name__}: {error}"))
+
+
+def _drain_child_messages(queue) -> list[tuple]:
+    messages: list[tuple] = []
+    while True:
+        try:
+            messages.append(queue.get(timeout=0.2))
+        except Empty:
+            return messages
+
+
+def _execute_full_workflow(
+    fixture: EvalFixture,
+    run_started_at: datetime,
+    started: float,
+    *,
+    on_incident: Callable[[Incident], None],
+) -> EvalRunOutput:
+    agent_input = fixture.agent_input(run_started_at)
+    with SessionLocal() as session, open_postgres_checkpointer() as checkpointer:
+        incident = _create_incident(session, agent_input)
+        on_incident(incident)
+        workflow = WorkflowService(
+            _build_runner_graph(session, checkpointer, fixture.runner_preparation)
+        )
+        WorkflowConsoleService(session, _RunnerWorkflowRuntime(workflow)).start(incident.id)
+        state = workflow.get_state(incident.thread_id)
+        state = EvaluationRunner()._handle_approval(session, workflow, incident, fixture, state)
+        result = _persist_and_collect_result(
+            session,
+            fixture,
+            incident,
+            state,
+            latency_ms=_elapsed_ms(started),
+        )
+    score = score_eval_case(fixture, result)
+    return EvalRunOutput(
+        fixture_id=fixture.id,
+        execution_scope=fixture.execution_scope,
+        incident_id=result.incident_id,
+        thread_id=result.thread_id,
+        final_outcome=result.actual_final_status.value,
+        score=score,
+        result=result,
+        passed=_score_passed(score),
+        latency_ms=result.latency_ms,
+    )
 
 
 def _build_runner_graph(session: Session, checkpointer, preparation: RunnerPreparation):
@@ -683,21 +797,9 @@ def _observed_evidence(item: Evidence) -> ObservedEvidence:
     return ObservedEvidence(
         evidence_type=item.evidence_type,
         source=item.source,
-        signal=_evidence_signal(item),
+        facts=item.data,
         evidence_id=item.id,
     )
-
-
-def _evidence_signal(item: Evidence) -> str:
-    signal = item.data.get("signal")
-    if isinstance(signal, str) and signal.strip():
-        return _normalize_direction(signal)
-    patterns = item.data.get("error_patterns")
-    if isinstance(patterns, list) and patterns and isinstance(patterns[0], dict):
-        pattern = patterns[0].get("pattern")
-        if isinstance(pattern, str) and pattern.strip():
-            return _normalize_direction(pattern)
-    return _normalize_direction(item.content)
 
 
 def _observed_execution(state: AgentState, action: Action | None) -> ObservedExecution | None:

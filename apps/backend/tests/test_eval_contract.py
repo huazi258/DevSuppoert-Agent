@@ -57,14 +57,20 @@ def _fixture_payload(*, scenario: str = "missing_config") -> dict[str, object]:
         "expectations": {
             "expected_diagnostic_direction": {
                 "canonical_direction": "missing_order_service_configuration",
-                "accepted_directions": ["missing_order_service_configuration"],
+                "accepted_term_groups": [["missing", "configuration"]],
                 "acceptable_hypothesis_statuses": ["CONFIRMED"],
             },
             "required_evidence": [
                 {
                     "evidence_type": "log_pattern",
                     "source": "query_logs",
-                    "signal": "configuration_missing",
+                    "facts": [
+                        {
+                            "path": "error_patterns[].pattern",
+                            "operator": "contains",
+                            "value": "MissingRequiredConfiguration",
+                        }
+                    ],
                 }
             ],
             "acceptable_tools": ["query_logs", "get_deployment_history"],
@@ -86,7 +92,7 @@ def _result(fixture_id: str) -> EvalCaseResult:
         thread_id="eval-thread",
         actual_final_status=EvalFinalStatus.RESOLVED,
         strongest_hypothesis=ObservedHypothesis(
-            diagnostic_direction="missing_order_service_configuration",
+            diagnostic_direction="The deployed service is missing required configuration.",
             status=HypothesisStatus.CONFIRMED,
             evidence_ids=[evidence_id],
         ),
@@ -94,7 +100,7 @@ def _result(fixture_id: str) -> EvalCaseResult:
             ObservedEvidence(
                 evidence_type="log_pattern",
                 source="query_logs",
-                signal="configuration_missing",
+                facts={"error_patterns": [{"pattern": "MissingRequiredConfiguration"}]},
                 evidence_id=evidence_id,
             )
         ],
@@ -223,7 +229,7 @@ def test_scenario_b_expresses_supported_manual_completion_without_rollback() -> 
         {
             "expected_diagnostic_direction": {
                 "canonical_direction": "payment_service_latency_timeout",
-                "accepted_directions": ["payment_service_latency_timeout"],
+                "accepted_term_groups": [["payment", "timeout"]],
                 "acceptable_hypothesis_statuses": ["SUPPORTED"],
             },
             "acceptable_tools": ["query_metrics", "query_traces"],
@@ -243,7 +249,7 @@ def test_scenario_b_expresses_supported_manual_completion_without_rollback() -> 
         thread_id="scenario-b-thread",
         actual_final_status=EvalFinalStatus.NEEDS_MANUAL_ACTION,
         strongest_hypothesis=ObservedHypothesis(
-            diagnostic_direction="payment_service_latency_timeout",
+            diagnostic_direction="Payment-service latency is causing downstream timeouts.",
             status=HypothesisStatus.SUPPORTED,
             evidence_ids=[evidence_id],
         ),
@@ -251,7 +257,7 @@ def test_scenario_b_expresses_supported_manual_completion_without_rollback() -> 
             ObservedEvidence(
                 evidence_type="trace_summary",
                 source="query_traces",
-                signal="payment_service_timeout",
+                facts={"traces": [{"slowest_span": {"service": "payment-service"}}]},
                 evidence_id=evidence_id,
             )
         ],
@@ -290,6 +296,144 @@ def test_root_cause_scoring_requires_real_supporting_evidence_ids() -> None:
         }
     )
     assert score_eval_case(fixture, unknown_evidence_id).root_cause_accuracy.correct is False
+
+
+def test_diagnostic_term_groups_match_natural_language_without_matching_wrong_direction() -> None:
+    fixture = EvalFixture.model_validate(_fixture_payload())
+    correct = _result(fixture.id)
+    correct = correct.model_copy(
+        update={
+            "strongest_hypothesis": correct.strongest_hypothesis.model_copy(
+                update={
+                    "diagnostic_direction": "Required configuration is missing after rollout.",
+                    "root_cause": "A missing runtime setting blocks order processing.",
+                }
+            )
+        }
+    )
+    wrong = correct.model_copy(
+        update={
+            "strongest_hypothesis": correct.strongest_hypothesis.model_copy(
+                update={
+                    "diagnostic_direction": "The payment dependency has a timeout.",
+                    "root_cause": "Downstream payment latency is elevated.",
+                }
+            )
+        }
+    )
+
+    assert score_eval_case(fixture, correct).root_cause_accuracy.correct is True
+    assert score_eval_case(fixture, wrong).root_cause_accuracy.correct is False
+
+
+def test_key_evidence_recall_matches_production_evidence_data_shapes() -> None:
+    payload = _fixture_payload()
+    expectations = payload["expectations"]
+    assert isinstance(expectations, dict)
+    expectations["required_evidence"] = [
+        {
+            "evidence_type": "log_query_result",
+            "source": "query_logs",
+            "facts": [
+                {
+                    "path": "error_patterns[].pattern",
+                    "operator": "contains",
+                    "value": "MissingRequiredConfiguration",
+                }
+            ],
+        },
+        {
+            "evidence_type": "metric_snapshot",
+            "source": "query_metrics",
+            "facts": [{"path": "metrics.error_count", "operator": "gte", "value": 1}],
+        },
+        {
+            "evidence_type": "trace_query_result",
+            "source": "query_traces",
+            "facts": [
+                {
+                    "path": "traces[].slowest_span.service",
+                    "operator": "equals",
+                    "value": "payment-service",
+                }
+            ],
+        },
+        {
+            "evidence_type": "deployment_facts",
+            "source": "get_deployment_history",
+            "facts": [
+                {
+                    "path": "deployments[].previous_version",
+                    "operator": "equals",
+                    "value": "v1.0.0",
+                }
+            ],
+        },
+        {
+            "evidence_type": "knowledge_retrieval",
+            "source": "search_knowledge",
+            "facts": [
+                {
+                    "path": "citation.source",
+                    "operator": "contains",
+                    "value": "missing-runtime-setting",
+                },
+                {"path": "section", "operator": "exists"},
+            ],
+        },
+    ]
+    fixture = EvalFixture.model_validate(payload)
+    evidence_ids = [uuid4() for _ in range(5)]
+    result = _result(fixture.id).model_copy(
+        update={
+            "strongest_hypothesis": ObservedHypothesis(
+                diagnostic_direction="Required configuration is missing.",
+                status=HypothesisStatus.CONFIRMED,
+                evidence_ids=evidence_ids,
+            ),
+            "evidence": [
+                ObservedEvidence(
+                    evidence_type="log_query_result",
+                    source="query_logs",
+                    facts={"error_patterns": [{"pattern": "MissingRequiredConfiguration"}]},
+                    evidence_id=evidence_ids[0],
+                ),
+                ObservedEvidence(
+                    evidence_type="metric_snapshot",
+                    source="query_metrics",
+                    facts={"metrics": {"error_count": 1, "health_status": "ok"}},
+                    evidence_id=evidence_ids[1],
+                ),
+                ObservedEvidence(
+                    evidence_type="trace_query_result",
+                    source="query_traces",
+                    facts={"traces": [{"slowest_span": {"service": "payment-service"}}]},
+                    evidence_id=evidence_ids[2],
+                ),
+                ObservedEvidence(
+                    evidence_type="deployment_facts",
+                    source="get_deployment_history",
+                    facts={
+                        "deployments": [
+                            {"current_version": "v1.1.0", "previous_version": "v1.0.0"}
+                        ]
+                    },
+                    evidence_id=evidence_ids[3],
+                ),
+                ObservedEvidence(
+                    evidence_type="knowledge_retrieval",
+                    source="search_knowledge",
+                    facts={
+                        "section": "Recovery",
+                        "citation": {"source": "missing-runtime-setting-2025-02.md"},
+                    },
+                    evidence_id=evidence_ids[4],
+                ),
+            ],
+        }
+    )
+
+    assert score_eval_case(fixture, result).key_evidence_recall.recall == 1
 
 
 def test_tool_outcome_and_verification_expectations_are_scored_deterministically() -> None:

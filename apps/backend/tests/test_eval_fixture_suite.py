@@ -204,7 +204,10 @@ def test_each_fixture_keeps_evaluator_truth_out_of_agent_input_and_description()
             assert all(tool.value not in description for tool in expectations.acceptable_tools)
             assert all(action.value not in description for action in expectations.forbidden_actions)
             assert all(
-                evidence.signal not in description for evidence in expectations.required_evidence
+                str(fact.value).lower() not in description
+                for evidence in expectations.required_evidence
+                for fact in evidence.facts
+                if isinstance(fact.value, str)
             )
         else:
             expected_decision = fixture.policy_expectations.expected_policy_decision.value.lower()

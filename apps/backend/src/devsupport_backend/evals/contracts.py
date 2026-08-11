@@ -139,38 +139,56 @@ class RelativeTimeWindow(EvalModel):
 
 
 class EvidenceExpectation(EvalModel):
-    """Stable semantic evidence matcher, independent of runtime Evidence UUIDs."""
+    """Evaluator matcher over the actual structured fields retained by Evidence."""
 
     evidence_type: str = Field(min_length=1, max_length=100)
     source: str = Field(min_length=1, max_length=100)
-    signal: str = Field(min_length=1, max_length=200)
+    facts: list["EvidenceFactExpectation"] = Field(min_length=1, max_length=10)
 
     @property
-    def key(self) -> tuple[str, str, str]:
-        return (self.evidence_type, self.source, self.signal)
+    def key(self) -> tuple[str, str, tuple[tuple[str, str, object | None], ...]]:
+        return (
+            self.evidence_type,
+            self.source,
+            tuple((item.path, item.operator, item.value) for item in self.facts),
+        )
+
+
+class EvidenceFactExpectation(EvalModel):
+    """One deterministic predicate over production ``EvidenceContext.data`` facts."""
+
+    path: str = Field(min_length=1, max_length=200, pattern=r"^[a-zA-Z0-9_.\[\]]+$")
+    operator: Literal["equals", "contains", "gte", "exists"]
+    value: str | int | float | bool | None = None
+
+    @model_validator(mode="after")
+    def validate_operator_value(self) -> "EvidenceFactExpectation":
+        if self.operator == "exists":
+            if self.value is not None:
+                raise ValueError("exists fact expectation must not define value")
+        elif self.value is None:
+            raise ValueError("fact expectation must define value")
+        elif self.operator == "gte" and (
+            not isinstance(self.value, (int, float)) or isinstance(self.value, bool)
+        ):
+            raise ValueError("gte fact expectation requires a numeric value")
+        return self
 
 
 class DiagnosticExpectation(EvalModel):
-    """Expected direction and allowed grounded hypothesis conclusions."""
+    """Fixture-owned deterministic terms for matching natural-language conclusions."""
 
     canonical_direction: str = Field(min_length=1, max_length=200)
-    accepted_directions: set[str] = Field(min_length=1, max_length=20)
+    accepted_term_groups: list[set[str]] = Field(min_length=1, max_length=10)
     acceptable_hypothesis_statuses: set[HypothesisStatus] = Field(min_length=1, max_length=4)
 
-    @field_validator("accepted_directions")
+    @field_validator("accepted_term_groups")
     @classmethod
-    def normalize_directions(cls, values: set[str]) -> set[str]:
-        normalized = {_normalize_identifier(value) for value in values}
-        if not normalized or "" in normalized:
-            raise ValueError("accepted_directions must not contain blank values")
-        return normalized
-
-    @model_validator(mode="after")
-    def include_canonical_direction(self) -> "DiagnosticExpectation":
-        canonical = _normalize_identifier(self.canonical_direction)
-        if canonical not in self.accepted_directions:
-            raise ValueError("accepted_directions must include canonical_direction")
-        return self
+    def require_non_blank_terms(cls, groups: list[set[str]]) -> list[set[str]]:
+        normalized_groups = [{_normalize_identifier(term) for term in group} for group in groups]
+        if any(not group or "" in group for group in normalized_groups):
+            raise ValueError("accepted_term_groups must contain non-blank terms")
+        return normalized_groups
 
 
 class ToolOutcomeExpectation(EvalModel):
@@ -205,6 +223,7 @@ class RunnerPreparation(EvalModel):
 
     forced_tool_failures: set[InvestigationToolName] = Field(default_factory=set, max_length=4)
     recovery_probe_outcome: Literal["fail", "inconclusive"] | None = None
+    case_timeout_seconds: int = Field(default=120, ge=10, le=300)
 
     @field_validator("forced_tool_failures")
     @classmethod
@@ -343,16 +362,12 @@ class EvalFixtureSuite(EvalModel):
 
 
 class ObservedEvidence(EvalModel):
-    """Runtime evidence projection mapped to the stable matcher fields."""
+    """Persisted production evidence projection used by evaluator-only matchers."""
 
     evidence_type: str = Field(min_length=1, max_length=100)
     source: str = Field(min_length=1, max_length=100)
-    signal: str = Field(min_length=1, max_length=200)
+    facts: dict[str, object] = Field(default_factory=dict)
     evidence_id: UUID | None = None
-
-    @property
-    def key(self) -> tuple[str, str, str]:
-        return (self.evidence_type, self.source, self.signal)
 
 
 class ObservedHypothesis(EvalModel):
@@ -622,10 +637,20 @@ def _score_root_cause(
     observed: ObservedHypothesis | None,
     evidence: list[ObservedEvidence],
 ) -> RootCauseScore:
+    observed_text = " ".join(
+        value
+        for value in (
+            observed.diagnostic_direction if observed is not None else None,
+            observed.root_cause if observed is not None else None,
+        )
+        if value is not None
+    )
     direction_correct = (
         observed is not None
-        and observed.diagnostic_direction is not None
-        and _normalize_identifier(observed.diagnostic_direction) in expected.accepted_directions
+        and any(
+            all(term in _normalize_identifier(observed_text) for term in group)
+            for group in expected.accepted_term_groups
+        )
     )
     observed_evidence_ids = {item.evidence_id for item in evidence if item.evidence_id is not None}
     grounded_correct = (
@@ -701,13 +726,58 @@ def _score_policy_outcome(
 def _score_evidence(
     required: list[EvidenceExpectation], observed: list[ObservedEvidence]
 ) -> EvidenceRecallScore:
-    observed_keys = {item.key for item in observed}
-    covered = sum(expectation.key in observed_keys for expectation in required)
+    covered = sum(
+        any(_matches_evidence(expectation, item) for item in observed) for expectation in required
+    )
     return EvidenceRecallScore(
         covered=covered,
         required=len(required),
         recall=covered / len(required),
     )
+
+
+def _matches_evidence(expectation: EvidenceExpectation, observed: ObservedEvidence) -> bool:
+    return (
+        expectation.evidence_type == observed.evidence_type
+        and expectation.source == observed.source
+        and all(_matches_fact(fact, observed.facts) for fact in expectation.facts)
+    )
+
+
+def _matches_fact(expectation: EvidenceFactExpectation, facts: dict[str, object]) -> bool:
+    values = _fact_values(facts, expectation.path.split("."))
+    if expectation.operator == "exists":
+        return bool(values)
+    if expectation.operator == "equals":
+        return any(value == expectation.value for value in values)
+    if expectation.operator == "contains":
+        expected = _normalize_identifier(str(expectation.value))
+        return any(
+            expected in _normalize_identifier(value) for value in values if isinstance(value, str)
+        )
+    if expectation.operator == "gte":
+        assert isinstance(expectation.value, (int, float))
+        return any(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and value >= expectation.value
+            for value in values
+        )
+    raise ValueError(f"Unsupported evidence matcher operator: {expectation.operator}")
+
+
+def _fact_values(value: object, path: list[str]) -> list[object]:
+    if not path:
+        return [value]
+    segment, *remaining = path
+    if segment.endswith("[]"):
+        key = segment[:-2]
+        if not isinstance(value, dict) or not isinstance(value.get(key), list):
+            return []
+        return [nested for item in value[key] for nested in _fact_values(item, remaining)]
+    if not isinstance(value, dict) or segment not in value:
+        return []
+    return _fact_values(value[segment], remaining)
 
 
 def _score_tools(expectations: EvalExpectations, result: EvalCaseResult) -> ToolSelectionScore:

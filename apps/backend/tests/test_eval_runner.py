@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from queue import Queue
 from uuid import uuid4
 
 import pytest
@@ -226,7 +227,13 @@ def test_persisted_collection_constructs_and_scores_eval_case_result(
         evidence_type="log_query_result",
         source="query_logs",
         summary="Observed missing configuration failure.",
-        data={"signal": "missing_configuration_error"},
+        data={
+            "match_count": 1,
+            "error_patterns": [
+                {"pattern": "MissingRequiredConfiguration", "count": 1}
+            ],
+            "sample_count": 1,
+        },
     )
     hypothesis = HypothesisContext(
         summary="missing_order_service_configuration",
@@ -274,3 +281,65 @@ def test_case_failure_is_reported_as_not_passed() -> None:
     assert output.score is None
     assert output.error is not None
     assert "missing local services" in output.error
+
+
+def test_timeout_returns_machine_failure_preserves_incident_and_cleans_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _full_fixture("a-approve-happy").model_copy(
+        update={
+            "runner_preparation": _full_fixture("a-approve-happy")
+            .runner_preparation.model_copy(update={"case_timeout_seconds": 10})
+        }
+    )
+    incident_id = uuid4()
+
+    class TrackingFaultLab:
+        def __init__(self) -> None:
+            self.resets = 0
+
+        def reset(self) -> None:
+            self.resets += 1
+
+        def inject(self, fixture: EvalFixture) -> None:
+            raise AssertionError("child owns injection")
+
+        def generate_failure_signal(self, fixture: EvalFixture) -> None:
+            raise AssertionError("child owns signal generation")
+
+    class LoopingProcess:
+        def __init__(self, *, args, **_: object) -> None:
+            self._queue = args[2]
+            self._alive = True
+
+        def start(self) -> None:
+            self._queue.put(("incident", str(incident_id), "timeout-thread"))
+
+        def join(self, timeout: object = None) -> None:
+            return None
+
+        def is_alive(self) -> bool:
+            return self._alive
+
+        def terminate(self) -> None:
+            self._alive = False
+
+    class FakeContext:
+        def Queue(self):
+            return Queue()
+
+        def Process(self, **kwargs):
+            return LoopingProcess(**kwargs)
+
+    fault_lab = TrackingFaultLab()
+    monkeypatch.setattr(
+        "devsupport_backend.evals.runner.multiprocessing.get_context", lambda _: FakeContext()
+    )
+
+    output = EvaluationRunner(fault_lab=fault_lab).run_case(fixture)
+
+    assert output.passed is False
+    assert output.incident_id == incident_id
+    assert output.thread_id == "timeout-thread"
+    assert output.error == "TIMEOUT: workflow exceeded 10 seconds"
+    assert fault_lab.resets == 2

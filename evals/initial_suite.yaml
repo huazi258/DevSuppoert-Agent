@@ -15,18 +15,30 @@ fixtures:
     expectations:
       expected_diagnostic_direction:
         canonical_direction: missing_order_service_configuration
-        accepted_directions: [missing_order_service_configuration]
+        accepted_term_groups:
+          - [missing, configuration]
+          - [payment_timeout, missing]
+          - [required, setting, missing]
         acceptable_hypothesis_statuses: [CONFIRMED]
       required_evidence:
         - evidence_type: log_query_result
           source: query_logs
-          signal: missing_configuration_error
+          facts:
+            - path: error_patterns[].pattern
+              operator: contains
+              value: MissingRequiredConfiguration
         - evidence_type: deployment_facts
           source: get_deployment_history
-          signal: recent_order_service_release
+          facts:
+            - path: deployments[].current_version
+              operator: equals
+              value: v1.1.0
         - evidence_type: knowledge_retrieval
           source: search_knowledge
-          signal: configuration_recovery_guidance
+          facts:
+            - path: citation.source
+              operator: contains
+              value: missing-runtime-setting
       acceptable_tools: [search_knowledge, query_logs, get_deployment_history]
       required_investigation_tools: [query_logs, get_deployment_history]
       expected_policy_decision: APPROVAL_REQUIRED
@@ -55,15 +67,24 @@ fixtures:
     expectations:
       expected_diagnostic_direction:
         canonical_direction: missing_order_service_configuration
-        accepted_directions: [missing_order_service_configuration]
+        accepted_term_groups:
+          - [missing, configuration]
+          - [payment_timeout, missing]
+          - [required, setting, missing]
         acceptable_hypothesis_statuses: [CONFIRMED]
       required_evidence:
         - evidence_type: log_query_result
           source: query_logs
-          signal: missing_configuration_error
+          facts:
+            - path: error_patterns[].pattern
+              operator: contains
+              value: MissingRequiredConfiguration
         - evidence_type: deployment_facts
           source: get_deployment_history
-          signal: previous_healthy_version
+          facts:
+            - path: deployments[].previous_version
+              operator: equals
+              value: v1.0.0
       acceptable_tools: [query_logs, query_metrics, get_deployment_history]
       required_investigation_tools: [query_logs, get_deployment_history]
       expected_policy_decision: APPROVAL_REQUIRED
@@ -92,15 +113,24 @@ fixtures:
     expectations:
       expected_diagnostic_direction:
         canonical_direction: missing_order_service_configuration
-        accepted_directions: [missing_order_service_configuration]
+        accepted_term_groups:
+          - [missing, configuration]
+          - [payment_timeout, missing]
+          - [required, setting, missing]
         acceptable_hypothesis_statuses: [CONFIRMED]
       required_evidence:
         - evidence_type: log_query_result
           source: query_logs
-          signal: missing_configuration_error
+          facts:
+            - path: error_patterns[].pattern
+              operator: contains
+              value: MissingRequiredConfiguration
         - evidence_type: knowledge_retrieval
           source: search_knowledge
-          signal: configuration_recovery_guidance
+          facts:
+            - path: citation.source
+              operator: contains
+              value: missing-runtime-setting
       acceptable_tools: [search_knowledge, query_logs, get_deployment_history]
       required_investigation_tools: [query_logs]
       expected_policy_decision: APPROVAL_REQUIRED
@@ -144,15 +174,27 @@ fixtures:
     expectations:
       expected_diagnostic_direction:
         canonical_direction: payment_service_latency_timeout
-        accepted_directions: [payment_service_latency_timeout]
+        accepted_term_groups:
+          - [payment, timeout]
+          - [payment, latency]
+          - [downstream, payment, slow]
         acceptable_hypothesis_statuses: [SUPPORTED]
       required_evidence:
         - evidence_type: trace_query_result
           source: query_traces
-          signal: downstream_payment_latency
+          facts:
+            - path: traces[].slowest_span.service
+              operator: equals
+              value: payment-service
+            - path: traces[].slowest_span.duration_ms
+              operator: gte
+              value: 3000
         - evidence_type: metric_snapshot
           source: query_metrics
-          signal: order_request_latency_elevated
+          facts:
+            - path: metrics.error_count
+              operator: gte
+              value: 1
       acceptable_tools: [query_metrics, query_traces]
       required_investigation_tools: [query_traces]
       forbidden_actions: [rollback_deployment]
@@ -179,15 +221,30 @@ fixtures:
     expectations:
       expected_diagnostic_direction:
         canonical_direction: payment_service_latency_timeout
-        accepted_directions: [payment_service_latency_timeout]
+        accepted_term_groups:
+          - [payment, timeout]
+          - [payment, latency]
+          - [downstream, payment, slow]
         acceptable_hypothesis_statuses: [SUPPORTED]
       required_evidence:
         - evidence_type: trace_query_result
           source: query_traces
-          signal: downstream_payment_latency
+          facts:
+            - path: traces[].slowest_span.service
+              operator: equals
+              value: payment-service
+            - path: traces[].slowest_span.duration_ms
+              operator: gte
+              value: 3000
         - evidence_type: metric_snapshot
           source: query_metrics
-          signal: order_service_healthy
+          facts:
+            - path: metrics.health_status
+              operator: equals
+              value: ok
+            - path: metrics.error_count
+              operator: gte
+              value: 1
       acceptable_tools: [query_metrics, query_traces, get_deployment_history]
       required_investigation_tools: [query_traces, query_metrics]
       forbidden_actions: [rollback_deployment]
@@ -216,15 +273,24 @@ fixtures:
     expectations:
       expected_diagnostic_direction:
         canonical_direction: missing_order_service_configuration
-        accepted_directions: [missing_order_service_configuration]
+        accepted_term_groups:
+          - [missing, configuration]
+          - [payment_timeout, missing]
+          - [required, setting, missing]
         acceptable_hypothesis_statuses: [SUPPORTED]
       required_evidence:
         - evidence_type: deployment_facts
           source: get_deployment_history
-          signal: recent_order_service_release
+          facts:
+            - path: deployments[].current_version
+              operator: equals
+              value: v1.1.0
         - evidence_type: knowledge_retrieval
           source: search_knowledge
-          signal: configuration_recovery_guidance
+          facts:
+            - path: citation.source
+              operator: contains
+              value: missing-runtime-setting
       acceptable_tools: [search_knowledge, query_logs, get_deployment_history]
       required_investigation_tools: [query_logs, get_deployment_history]
       expected_tool_outcomes:
@@ -256,15 +322,24 @@ fixtures:
     expectations:
       expected_diagnostic_direction:
         canonical_direction: missing_order_service_configuration
-        accepted_directions: [missing_order_service_configuration]
+        accepted_term_groups:
+          - [missing, configuration]
+          - [payment_timeout, missing]
+          - [required, setting, missing]
         acceptable_hypothesis_statuses: [CONFIRMED]
       required_evidence:
         - evidence_type: log_query_result
           source: query_logs
-          signal: missing_configuration_error
+          facts:
+            - path: error_patterns[].pattern
+              operator: contains
+              value: MissingRequiredConfiguration
         - evidence_type: deployment_facts
           source: get_deployment_history
-          signal: previous_healthy_version
+          facts:
+            - path: deployments[].previous_version
+              operator: equals
+              value: v1.0.0
       acceptable_tools: [query_logs, query_metrics, get_deployment_history]
       required_investigation_tools: [query_logs, get_deployment_history]
       expected_policy_decision: APPROVAL_REQUIRED
