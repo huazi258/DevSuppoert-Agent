@@ -24,6 +24,7 @@ from devsupport_backend.agent.state import (
     PolicyOutcome,
     PolicyReasonCode,
     ReportOutcome,
+    ToolHistoryEntry,
     create_initial_agent_state,
 )
 from devsupport_backend.agent.workflow import (
@@ -33,6 +34,7 @@ from devsupport_backend.agent.workflow import (
     build_production_investigation_graph,
 )
 from devsupport_backend.models import Incident, Report
+from devsupport_backend.tools.registry import ToolName
 from devsupport_backend.tools.schemas import (
     MetricSnapshot,
     QueryMetricsOutput,
@@ -364,6 +366,29 @@ def test_default_limits_allow_five_investigation_rounds_with_initial_retrieval_b
     assert limits.max_rounds == 5
     assert limits.max_tool_calls == 6
     assert limits.max_rounds + 1 == limits.max_tool_calls
+
+
+def test_initial_evidence_batch_skips_intermediate_llm_update_after_first_runtime_probe() -> None:
+    state = _build_initial_state()
+    state.update(
+        {
+            "current_stage": AgentStage.HYPOTHESIS_UPDATE,
+            "tool_history": [
+                ToolHistoryEntry(
+                    tool_name=ToolName.SEARCH_KNOWLEDGE,
+                    tool_arguments={"query": "catalog errors"},
+                    status=ToolStatus.SUCCESS,
+                ),
+                ToolHistoryEntry(
+                    tool_name=ToolName.QUERY_LOGS,
+                    tool_arguments={"service": "catalog-service", "environment": "local"},
+                    status=ToolStatus.SUCCESS,
+                ),
+            ],
+        }
+    )
+
+    assert workflow_module._should_collect_complementary_initial_probe(state) is True
 
 
 def test_workflow_service_default_budget_reaches_five_round_terminalization(

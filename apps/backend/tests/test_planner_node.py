@@ -9,7 +9,11 @@ from uuid import uuid4
 import pytest
 
 from devsupport_backend.agent.llm import LLMError
-from devsupport_backend.agent.nodes.planner import PlanningError, investigation_planner_node
+from devsupport_backend.agent.nodes.planner import (
+    PlanningError,
+    deterministic_initial_evidence_plan,
+    investigation_planner_node,
+)
 from devsupport_backend.agent.state import (
     AgentStage,
     AgentState,
@@ -21,7 +25,7 @@ from devsupport_backend.agent.state import (
 )
 from devsupport_backend.models import Incident
 from devsupport_backend.tools.registry import ToolName, tool_registry
-from devsupport_backend.tools.schemas import ToolStatus
+from devsupport_backend.tools.schemas import ToolError, ToolStatus
 
 
 class FakeLLMClient:
@@ -285,3 +289,59 @@ def test_planner_skips_llm_outside_planning_stage() -> None:
 
     assert updated is state
     assert client.user_prompt is None
+
+
+def test_initial_evidence_plan_uses_complementary_probes_without_scenario_truth() -> None:
+    state, evidence, _ = build_planning_state()
+    state["incident"] = state["incident"].model_copy(
+        update={
+            "service": "order-service",
+            "environment": "local",
+            "description": "Order requests are slow and intermittently time out.",
+        }
+    )
+
+    traces_plan = deterministic_initial_evidence_plan(state)
+
+    assert traces_plan is not None
+    assert traces_plan.tool_name is ToolName.QUERY_TRACES
+    state["tool_history"].append(
+        ToolHistoryEntry(
+            tool_name=ToolName.QUERY_TRACES,
+            tool_arguments=traces_plan.tool_arguments,
+            status=ToolStatus.SUCCESS,
+            evidence_ids=[evidence.id],
+        )
+    )
+
+    metrics_plan = deterministic_initial_evidence_plan(state)
+
+    assert metrics_plan is not None
+    assert metrics_plan.tool_name is ToolName.QUERY_METRICS
+    assert metrics_plan.tool_arguments == {"service": "order-service", "environment": "local"}
+
+
+def test_initial_evidence_plan_uses_logs_and_deployment_for_error_symptoms() -> None:
+    state, evidence, _ = build_planning_state()
+    state["incident"] = state["incident"].model_copy(
+        update={"service": "order-service", "environment": "local"}
+    )
+
+    logs_plan = deterministic_initial_evidence_plan(state)
+
+    assert logs_plan is not None
+    assert logs_plan.tool_name is ToolName.QUERY_LOGS
+    state["tool_history"].append(
+        ToolHistoryEntry(
+            tool_name=ToolName.QUERY_LOGS,
+            tool_arguments=logs_plan.tool_arguments,
+            status=ToolStatus.FAILURE,
+            error=ToolError(code="adapter_unavailable", message="logs are unavailable"),
+        )
+    )
+
+    deployment_plan = deterministic_initial_evidence_plan(state)
+
+    assert deployment_plan is not None
+    assert deployment_plan.tool_name is ToolName.GET_DEPLOYMENT_HISTORY
+    assert deployment_plan.tool_arguments == {"service": "order-service", "environment": "local"}

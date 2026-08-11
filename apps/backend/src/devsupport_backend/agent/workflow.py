@@ -14,7 +14,10 @@ from devsupport_backend.agent.llm import LLMClient
 from devsupport_backend.agent.nodes.hypothesis_generation import hypothesis_generation_node
 from devsupport_backend.agent.nodes.hypothesis_update import hypothesis_update_node
 from devsupport_backend.agent.nodes.intake import intake_node
-from devsupport_backend.agent.nodes.planner import investigation_planner_node
+from devsupport_backend.agent.nodes.planner import (
+    deterministic_initial_evidence_plan,
+    investigation_planner_node,
+)
 from devsupport_backend.agent.nodes.retrieval import retrieval_node
 from devsupport_backend.agent.nodes.tool_execution import (
     ToolExecutionDependencies,
@@ -120,11 +123,13 @@ def build_investigation_graph(
     )
     graph.add_node(
         "investigation_planning",
-        lambda state: investigation_planner_node(state, dependencies.llm_client),
+        lambda state: _investigation_planning_node(state, dependencies.llm_client),
     )
     graph.add_node(
         "tool_execution",
-        lambda state: tool_execution_node(state, dependencies.tool_execution),
+        lambda state: _tool_execution_with_initial_evidence_batch(
+            state, dependencies.tool_execution
+        ),
     )
     graph.add_node(
         "hypothesis_update",
@@ -287,6 +292,39 @@ def evidence_evaluation_node(
             else state["current_stage"]
         ),
     }
+
+
+def _investigation_planning_node(state: AgentState, llm_client: LLMClient) -> AgentState:
+    """Use bounded first-pass evidence collection before falling back to the LLM planner."""
+    initial_plan = deterministic_initial_evidence_plan(state)
+    if initial_plan is None:
+        return investigation_planner_node(state, llm_client)
+    return {
+        **state,
+        "current_goal": initial_plan.investigation_goal,
+        "pending_tool_call": initial_plan,
+        "current_stage": AgentStage.TOOL_EXECUTION,
+    }
+
+
+def _tool_execution_with_initial_evidence_batch(
+    state: AgentState, dependencies: ToolExecutionDependencies
+) -> AgentState:
+    """Collect the complementary initial probe before spending an LLM update call."""
+    updated = tool_execution_node(state, dependencies)
+    if not _should_collect_complementary_initial_probe(updated):
+        return updated
+    return {**updated, "current_stage": AgentStage.INVESTIGATION_PLANNING}
+
+
+def _should_collect_complementary_initial_probe(state: AgentState) -> bool:
+    if state["current_stage"] is not AgentStage.HYPOTHESIS_UPDATE:
+        return False
+    history = state["tool_history"]
+    if not history or history[0].tool_name.value != "search_knowledge":
+        return False
+    runtime_tools = [item.tool_name.value for item in history[1:]]
+    return len(runtime_tools) == 1 and runtime_tools[0] in {"query_logs", "query_traces"}
 
 
 def _hypothesis_update_round_node(state: AgentState, llm_client: LLMClient) -> AgentState:

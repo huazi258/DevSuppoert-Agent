@@ -13,6 +13,12 @@ from devsupport_backend.agent.structured_output import (
     parse_structured_json,
 )
 from devsupport_backend.tools.registry import ToolName, tool_registry
+from devsupport_backend.tools.schemas import (
+    GetDeploymentHistoryInput,
+    QueryLogsInput,
+    QueryMetricsInput,
+    QueryTracesInput,
+)
 
 
 class PlanningError(RuntimeError):
@@ -41,6 +47,9 @@ READ_ONLY_INVESTIGATION_TOOLS = frozenset(
 )
 """The fixed Tool subset that may be planned during investigation."""
 
+_LATENCY_TERMS = ("slow", "sluggish", "latency", "timeout", "timed out", "seconds")
+"""Generic symptoms that justify traces before an error-log-first investigation."""
+
 
 def investigation_planner_node(state: AgentState, llm_client: LLMClient) -> AgentState:
     """Plan one safe next check without executing a Tool or changing investigation facts."""
@@ -63,6 +72,77 @@ def investigation_planner_node(state: AgentState, llm_client: LLMClient) -> Agen
         "pending_tool_call": pending_tool_call,
         "current_stage": AgentStage.TOOL_EXECUTION,
     }
+
+
+def deterministic_initial_evidence_plan(state: AgentState) -> PendingToolCall | None:
+    """Choose two bounded complementary local probes before an LLM planner round-trip."""
+    if (
+        state["current_stage"] is not AgentStage.INVESTIGATION_PLANNING
+        or state["incident"].environment != "local"
+    ):
+        return None
+    history = state["tool_history"]
+    if not history or history[0].tool_name is not ToolName.SEARCH_KNOWLEDGE:
+        return None
+    runtime_tools = [
+        item.tool_name for item in history if item.tool_name is not ToolName.SEARCH_KNOWLEDGE
+    ]
+    if not runtime_tools:
+        tool_name = (
+            ToolName.QUERY_TRACES
+            if _has_latency_symptom(state["incident"].description)
+            else ToolName.QUERY_LOGS
+        )
+    elif len(runtime_tools) == 1 and runtime_tools[0] is ToolName.QUERY_TRACES:
+        tool_name = ToolName.QUERY_METRICS
+    elif len(runtime_tools) == 1 and runtime_tools[0] is ToolName.QUERY_LOGS:
+        tool_name = ToolName.GET_DEPLOYMENT_HISTORY
+    else:
+        return None
+    return _initial_probe(state, tool_name)
+
+
+def _has_latency_symptom(description: str) -> bool:
+    normalized = description.casefold()
+    return any(term in normalized for term in _LATENCY_TERMS)
+
+
+def _initial_probe(state: AgentState, tool_name: ToolName) -> PendingToolCall:
+    incident = state["incident"]
+    if tool_name is ToolName.QUERY_LOGS:
+        tool_input = QueryLogsInput(
+            service=incident.service,
+            environment=incident.environment,
+            time_range_start=incident.time_range_start,
+            time_range_end=incident.time_range_end,
+            level="ERROR",
+            limit=100,
+        )
+        goal = "Collect bounded error logs for the reported incident window."
+    elif tool_name is ToolName.QUERY_TRACES:
+        tool_input = QueryTracesInput(
+            service=incident.service,
+            environment=incident.environment,
+            time_range_start=incident.time_range_start,
+            time_range_end=incident.time_range_end,
+            limit=100,
+        )
+        goal = "Collect bounded traces for the reported latency and failure window."
+    elif tool_name is ToolName.QUERY_METRICS:
+        tool_input = QueryMetricsInput(service=incident.service, environment=incident.environment)
+        goal = "Collect a current metric snapshot to complement the observed traces."
+    else:
+        tool_input = GetDeploymentHistoryInput(
+            service=incident.service,
+            environment=incident.environment,
+        )
+        goal = "Collect the current and previous deployment facts for the affected service."
+    return PendingToolCall(
+        investigation_goal=goal,
+        tool_name=tool_name,
+        tool_arguments=tool_input.model_dump(mode="json"),
+        reason="Use a bounded complementary runtime probe before further hypothesis updates.",
+    )
 
 
 def _parse_plan(raw_output: str) -> PlannerOutput:

@@ -58,7 +58,7 @@ def hypothesis_update_node(state: AgentState, llm_client: LLMClient) -> AgentSta
     except LLMError as error:
         raise HypothesisUpdateError(f"hypothesis update provider failed: {error}") from error
 
-    updates = _parse_output(raw_output)
+    updates = _parse_output(raw_output, state)
     hypotheses = _validated_updated_hypotheses(state, updates)
     return {
         **state,
@@ -67,14 +67,54 @@ def hypothesis_update_node(state: AgentState, llm_client: LLMClient) -> AgentSta
     }
 
 
-def _parse_output(raw_output: str) -> HypothesisUpdateOutput:
-    """Reject malformed or incomplete LLM output before any state can change."""
+def _parse_output(raw_output: str, state: AgentState) -> HypothesisUpdateOutput:
+    """Reject malformed output after resolving only unambiguous supplied UUID prefixes."""
     try:
-        return HypothesisUpdateOutput.model_validate(parse_structured_json(raw_output))
+        payload = parse_structured_json(raw_output)
+        return HypothesisUpdateOutput.model_validate(_expand_known_uuid_prefixes(payload, state))
     except (StructuredOutputParseError, ValidationError) as error:
         raise HypothesisUpdateError(
             f"hypothesis update output validation failed: {error}"
         ) from error
+
+
+def _expand_known_uuid_prefixes(payload: object, state: AgentState) -> object:
+    """Map an LLM's unambiguous UUID prefix only to IDs present in current state."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("updates"), list):
+        return payload
+    known_ids = {
+        *(str(hypothesis.id) for hypothesis in state["hypotheses"]),
+        *(str(evidence.id) for evidence in state["evidence"]),
+    }
+    normalized_updates: list[object] = []
+    for item in payload["updates"]:
+        if not isinstance(item, dict):
+            normalized_updates.append(item)
+            continue
+        normalized = dict(item)
+        for field in ("hypothesis_id",):
+            if isinstance(normalized.get(field), str):
+                normalized[field] = _expand_uuid_prefix(normalized[field], known_ids)
+        for field in ("supporting_evidence_ids", "contradicting_evidence_ids"):
+            values = normalized.get(field)
+            if isinstance(values, list):
+                normalized[field] = [
+                    _expand_uuid_prefix(value, known_ids) if isinstance(value, str) else value
+                    for value in values
+                ]
+        normalized_updates.append(normalized)
+    return {**payload, "updates": normalized_updates}
+
+
+def _expand_uuid_prefix(value: str, known_ids: set[str]) -> str:
+    """Return the sole full state UUID matching an eight-character-or-longer prefix."""
+    normalized = value.casefold()
+    matches = [
+        candidate
+        for candidate in known_ids
+        if len(normalized) >= 8 and candidate.startswith(normalized)
+    ]
+    return matches[0] if len(matches) == 1 else value
 
 
 def _validated_updated_hypotheses(
@@ -161,7 +201,8 @@ _SYSTEM_PROMPT = "\n".join(
         "it as the root cause.",
         "REJECTED means current evidence clearly contradicts the hypothesis.",
         "CONFIRMED means current evidence is sufficient to treat the hypothesis as the confirmed "
-        "root-cause hypothesis.",
+        "root-cause hypothesis. Use CONFIRMED only when direct runtime facts identify a specific "
+        "failure mechanism and a separate current signal corroborates it; otherwise use SUPPORTED.",
         "Use only supplied hypothesis and evidence IDs. Do not create hypotheses.",
         "Do not provide a final conclusion, proposed action, or execute a Tool.",
     )

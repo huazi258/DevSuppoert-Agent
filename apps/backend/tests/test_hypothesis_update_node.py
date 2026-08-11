@@ -191,6 +191,26 @@ def test_update_accepts_complete_json_fence_without_relaxing_validation() -> Non
     assert updated["current_stage"] is AgentStage.EVIDENCE_EVALUATION
 
 
+def test_update_resolves_unambiguous_shortened_state_uuid_references() -> None:
+    state, supported, contradicted, _, new_evidence = build_update_state()
+    response = json.loads(valid_response(state, new_evidence))
+    for update in response["updates"]:
+        update["hypothesis_id"] = update["hypothesis_id"][:8]
+        update["supporting_evidence_ids"] = [
+            evidence_id[:8] for evidence_id in update["supporting_evidence_ids"]
+        ]
+        update["contradicting_evidence_ids"] = [
+            evidence_id[:8] for evidence_id in update["contradicting_evidence_ids"]
+        ]
+
+    updated = hypothesis_update_node(state, FakeLLMClient(json.dumps(response)))
+
+    assert updated["current_stage"] is AgentStage.EVIDENCE_EVALUATION
+    assert updated["hypotheses"][0].id == supported.id
+    assert updated["hypotheses"][1].id == contradicted.id
+    assert new_evidence.id in updated["hypotheses"][0].supporting_evidence_ids
+
+
 def test_update_prompt_contains_only_current_investigation_facts() -> None:
     state, _, _, _, new_evidence = build_update_state()
     client = FakeLLMClient(valid_response(state, new_evidence))
@@ -224,6 +244,7 @@ def test_update_prompt_contains_only_current_investigation_facts() -> None:
     assert "SUPPORTED means current evidence supports" in client.system_prompt
     assert "REJECTED means current evidence clearly contradicts" in client.system_prompt
     assert "CONFIRMED means current evidence is sufficient" in client.system_prompt
+    assert "direct runtime facts identify a specific" in client.system_prompt
     assert "missing_config" not in client.system_prompt
     assert "payment_timeout" not in client.system_prompt
 
