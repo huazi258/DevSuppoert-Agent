@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import sys
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -20,8 +22,21 @@ from devsupport_backend.agent.state import (
     create_initial_agent_state,
 )
 from devsupport_backend.evals.contracts import (
+    ApprovalTriggerScore,
+    EfficiencyMetrics,
+    EvalCaseResult,
+    EvalExecutionScope,
+    EvalFinalStatus,
     EvalFixture,
+    EvalScore,
+    EvidenceRecallScore,
+    ObservedToolCall,
+    PolicyOutcomeScore,
     PolicySafetyFixture,
+    RootCauseScore,
+    ToolOutcomeScore,
+    ToolSelectionScore,
+    VerificationScore,
     load_eval_fixture_suite,
     score_eval_case,
 )
@@ -29,9 +44,12 @@ from devsupport_backend.evals.runner import (
     EvalRunnerError,
     EvalRunOutput,
     EvaluationRunner,
+    LLMObservability,
+    ObservedLLMClient,
     _create_incident,
     _ForcedLogsAdapter,
     _persist_and_collect_result,
+    aggregate_eval_outputs,
 )
 from devsupport_backend.models import Incident
 from devsupport_backend.tools.logs import LogsAdapterError
@@ -283,6 +301,186 @@ def test_case_failure_is_reported_as_not_passed() -> None:
     assert "missing local services" in output.error
 
 
+def _aggregate_score(*, tool_call_count: int, latency_ms: float) -> EvalScore:
+    return EvalScore(
+        fixture_id="aggregate-case",
+        root_cause_accuracy=RootCauseScore(
+            correct=True,
+            diagnostic_direction_correct=True,
+            grounded_conclusion_correct=True,
+        ),
+        key_evidence_recall=EvidenceRecallScore(covered=2, required=2, recall=1.0),
+        tool_selection_accuracy=ToolSelectionScore(
+            correct=True,
+            acceptable_tools_only=True,
+            required_tools_covered=True,
+            forbidden_action_observed=False,
+        ),
+        tool_outcome_accuracy=ToolOutcomeScore(applicable=False, correct=None),
+        task_completion=True,
+        approval_trigger_accuracy=ApprovalTriggerScore(correct=True, approval_created=True),
+        policy_outcome_accuracy=PolicyOutcomeScore(applicable=False, correct=None),
+        verification_accuracy=VerificationScore(
+            applicable=False,
+            correct=None,
+            verification_observed=False,
+        ),
+        unauthorized_execution_count=2,
+        efficiency=EfficiencyMetrics(tool_call_count=tool_call_count, latency_ms=latency_ms),
+    )
+
+
+def _aggregate_result(*, tool_call_count: int, latency_ms: float) -> EvalCaseResult:
+    return EvalCaseResult(
+        fixture_id="aggregate-case",
+        incident_id=uuid4(),
+        thread_id="aggregate-thread",
+        actual_final_status=EvalFinalStatus.NEEDS_MANUAL_ACTION,
+        tool_calls=[
+            ObservedToolCall(tool_name="query_logs", status=ToolStatus.SUCCESS)
+            for _ in range(tool_call_count)
+        ],
+        tool_call_count=tool_call_count,
+        latency_ms=latency_ms,
+    )
+
+
+def test_suite_aggregate_retains_failed_full_workflows_and_separates_policy_safety() -> None:
+    successful_full = EvalRunOutput(
+        fixture_id="aggregate-success",
+        execution_scope=EvalExecutionScope.FULL_WORKFLOW,
+        incident_id=uuid4(),
+        thread_id="aggregate-success-thread",
+        final_outcome="NEEDS_MANUAL_ACTION",
+        score=_aggregate_score(tool_call_count=4, latency_ms=10.0),
+        result=_aggregate_result(tool_call_count=4, latency_ms=10.0),
+        passed=True,
+        latency_ms=10.0,
+        llm_call_count=3,
+        llm_total_latency_ms=15.0,
+    )
+    timed_out_full = EvalRunOutput(
+        fixture_id="aggregate-timeout",
+        execution_scope=EvalExecutionScope.FULL_WORKFLOW,
+        incident_id=uuid4(),
+        thread_id="aggregate-timeout-thread",
+        final_outcome=None,
+        score=None,
+        result=None,
+        passed=False,
+        latency_ms=30.0,
+        llm_call_count=2,
+        llm_total_latency_ms=8.0,
+        error="TIMEOUT",
+    )
+    policy_safety = EvalRunOutput(
+        fixture_id="aggregate-policy-safety",
+        execution_scope=EvalExecutionScope.POLICY_GATE_SAFETY,
+        incident_id=uuid4(),
+        thread_id=None,
+        final_outcome="DENIED",
+        score=None,
+        result=None,
+        passed=True,
+        latency_ms=5.0,
+    )
+
+    aggregate = aggregate_eval_outputs([successful_full, timed_out_full, policy_safety])
+
+    assert aggregate.full_workflow_case_count == 2
+    assert aggregate.policy_safety_case_count == 1
+    assert aggregate.root_cause_accuracy == 0.5
+    assert aggregate.key_evidence_recall == 0.5
+    assert aggregate.tool_selection_accuracy == 0.5
+    assert aggregate.task_completion_rate == 0.5
+    assert aggregate.approval_trigger_accuracy == 0.5
+    assert aggregate.unauthorized_execution_count == 2
+    assert aggregate.policy_safety_pass_rate == 1.0
+    assert aggregate.average_tool_calls == 2.0
+    assert aggregate.average_latency_ms == 20.0
+    assert aggregate.llm_call_count == 5
+    assert aggregate.average_llm_calls_per_full_workflow_case == 2.5
+    assert aggregate.token_usage is None
+
+
+def test_observed_llm_client_preserves_completion_input_and_records_latency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class Delegate:
+        def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+            calls.append((system_prompt, user_prompt))
+            return "unchanged completion"
+
+    timestamps = iter((100.0, 100.25))
+    monkeypatch.setattr(
+        "devsupport_backend.evals.runner.perf_counter", lambda: next(timestamps)
+    )
+
+    def unavailable_parent_observer(_: int, __: float) -> None:
+        raise RuntimeError("parent queue unavailable")
+
+    observability = LLMObservability(observer=unavailable_parent_observer)
+
+    response = ObservedLLMClient(Delegate(), observability).complete(
+        system_prompt="trusted system prompt", user_prompt="incident context"
+    )
+
+    assert response == "unchanged completion"
+    assert calls == [("trusted system prompt", "incident context")]
+    assert observability.llm_call_count == 1
+    assert observability.llm_total_latency_ms == 250.0
+
+
+def test_suite_cli_outputs_case_results_and_aggregate(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    full_output = EvalRunOutput(
+        fixture_id="cli-full",
+        execution_scope=EvalExecutionScope.FULL_WORKFLOW,
+        incident_id=uuid4(),
+        thread_id="cli-thread",
+        final_outcome="NEEDS_MANUAL_ACTION",
+        score=_aggregate_score(tool_call_count=1, latency_ms=5.0),
+        result=_aggregate_result(tool_call_count=1, latency_ms=5.0),
+        passed=True,
+        latency_ms=5.0,
+        llm_call_count=1,
+    )
+    safety_output = EvalRunOutput(
+        fixture_id="cli-safety",
+        execution_scope=EvalExecutionScope.POLICY_GATE_SAFETY,
+        incident_id=uuid4(),
+        thread_id=None,
+        final_outcome="DENIED",
+        score=None,
+        result=None,
+        passed=True,
+        latency_ms=1.0,
+    )
+
+    class CliRunner:
+        def run_suite(self, suite: object, *, case_id: str | None = None) -> list[EvalRunOutput]:
+            assert case_id is None
+            return [full_output, safety_output]
+
+    monkeypatch.setattr("devsupport_backend.evals.runner.EvaluationRunner", CliRunner)
+    monkeypatch.setattr(
+        "devsupport_backend.evals.runner.load_eval_fixture_suite", lambda _: object()
+    )
+    monkeypatch.setattr(sys, "argv", ["eval-runner"])
+
+    from devsupport_backend.evals.runner import main
+
+    main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [case["fixture_id"] for case in payload["cases"]] == ["cli-full", "cli-safety"]
+    assert payload["aggregate"]["full_workflow_case_count"] == 1
+    assert payload["aggregate"]["policy_safety_case_count"] == 1
+
+
 def test_timeout_returns_machine_failure_preserves_incident_and_cleans_up(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -314,6 +512,7 @@ def test_timeout_returns_machine_failure_preserves_incident_and_cleans_up(
 
         def start(self) -> None:
             self._queue.put(("incident", str(incident_id), "timeout-thread"))
+            self._queue.put(("llm", 2, 12.5))
 
         def join(self, timeout: object = None) -> None:
             return None
@@ -342,4 +541,6 @@ def test_timeout_returns_machine_failure_preserves_incident_and_cleans_up(
     assert output.incident_id == incident_id
     assert output.thread_id == "timeout-thread"
     assert output.error == "TIMEOUT: workflow exceeded 10 seconds"
+    assert output.llm_call_count == 2
+    assert output.llm_total_latency_ms == 12.5
     assert fault_lab.resets == 2

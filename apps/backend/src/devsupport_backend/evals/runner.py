@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from devsupport_backend.action_execution import ActionExecutionService
 from devsupport_backend.agent.evidence_evaluator import LLMEvidenceEvaluator
-from devsupport_backend.agent.llm import OpenAICompatibleLLMClient
+from devsupport_backend.agent.llm import LLMClient, OpenAICompatibleLLMClient
 from devsupport_backend.agent.nodes.tool_execution import ToolExecutionDependencies
 from devsupport_backend.agent.persistence import open_postgres_checkpointer
 from devsupport_backend.agent.policy import PolicyGateService
@@ -52,6 +52,7 @@ from devsupport_backend.config import settings
 from devsupport_backend.database import SessionLocal
 from devsupport_backend.evals.contracts import (
     ApprovalBehavior,
+    EvalAggregateMetrics,
     EvalCaseResult,
     EvalExecutionScope,
     EvalFixture,
@@ -101,6 +102,40 @@ DEFAULT_SUITE_PATH = Path(__file__).resolve().parents[5] / "evals" / "initial_su
 
 class EvalRunnerError(RuntimeError):
     """A case could not run to a scoreable terminal outcome."""
+
+
+@dataclass
+class LLMObservability:
+    """Evaluator-only completion counters; no prompt, response, or token fabrication."""
+
+    observer: Callable[[int, float], None] | None = None
+    llm_call_count: int = 0
+    llm_total_latency_ms: float = 0.0
+
+    def record(self, elapsed_ms: float) -> None:
+        self.llm_call_count += 1
+        self.llm_total_latency_ms += elapsed_ms
+        if self.observer is not None:
+            try:
+                self.observer(self.llm_call_count, self.llm_total_latency_ms)
+            except Exception:
+                # Observability loss must never change a production LLM completion.
+                pass
+
+
+class ObservedLLMClient:
+    """Delegate unchanged LLM calls while collecting evaluator-only timing facts."""
+
+    def __init__(self, delegate: LLMClient, observability: LLMObservability) -> None:
+        self._delegate = delegate
+        self._observability = observability
+
+    def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+        started = perf_counter()
+        try:
+            return self._delegate.complete(system_prompt=system_prompt, user_prompt=user_prompt)
+        finally:
+            self._observability.record(_elapsed_ms(started))
 
 
 class FaultLabController(Protocol):
@@ -284,6 +319,8 @@ class EvalRunOutput:
     result: EvalCaseResult | None
     passed: bool
     latency_ms: float
+    llm_call_count: int | None = None
+    llm_total_latency_ms: float | None = None
     error: str | None = None
 
     def machine_output(self) -> dict[str, object]:
@@ -296,9 +333,73 @@ class EvalRunOutput:
             "score": self.score.model_dump(mode="json") if self.score else None,
             "tool_call_count": self.result.tool_call_count if self.result else 0,
             "latency_ms": self.latency_ms,
+            "llm_call_count": self.llm_call_count,
+            "llm_total_latency_ms": self.llm_total_latency_ms,
+            "token_usage": (
+                self.result.token_usage.model_dump(mode="json")
+                if self.result is not None and self.result.token_usage is not None
+                else None
+            ),
             "passed": self.passed,
             "error": self.error,
         }
+
+
+def aggregate_eval_outputs(outputs: list[EvalRunOutput]) -> EvalAggregateMetrics:
+    """Aggregate every full-workflow attempt, including timeout and execution failures."""
+    full = [item for item in outputs if item.execution_scope is EvalExecutionScope.FULL_WORKFLOW]
+    safety = [
+        item for item in outputs if item.execution_scope is EvalExecutionScope.POLICY_GATE_SAFETY
+    ]
+    total = len(full)
+
+    def average(values: list[float]) -> float | None:
+        return sum(values) / len(values) if values else None
+
+    def score_value(attribute: str) -> int:
+        return sum(
+            bool(getattr(item.score, attribute).correct) if item.score is not None else False
+            for item in full
+        )
+
+    evidence_recall_total = sum(
+        item.score.key_evidence_recall.recall if item.score is not None else 0 for item in full
+    )
+    task_completion_total = sum(
+        item.score.task_completion if item.score is not None else False for item in full
+    )
+    unauthorized_execution_count = sum(
+        item.score.unauthorized_execution_count if item.score is not None else 0 for item in full
+    )
+    total_llm_calls = sum(item.llm_call_count or 0 for item in full)
+
+    return EvalAggregateMetrics(
+        full_workflow_case_count=total,
+        policy_safety_case_count=len(safety),
+        root_cause_accuracy=(score_value("root_cause_accuracy") / total if total else None),
+        key_evidence_recall=(evidence_recall_total / total if total else None),
+        tool_selection_accuracy=(score_value("tool_selection_accuracy") / total if total else None),
+        task_completion_rate=(task_completion_total / total if total else None),
+        approval_trigger_accuracy=(
+            score_value("approval_trigger_accuracy") / total if total else None
+        ),
+        unauthorized_execution_count=unauthorized_execution_count,
+        policy_safety_pass_rate=(
+            sum(item.passed for item in safety) / len(safety) if safety else None
+        ),
+        average_tool_calls=average(
+            [
+                float(item.result.tool_call_count) if item.result is not None else 0.0
+                for item in full
+            ]
+        ),
+        average_latency_ms=average([item.latency_ms for item in full]),
+        llm_call_count=total_llm_calls,
+        average_llm_calls_per_full_workflow_case=(
+            total_llm_calls / total if total else None
+        ),
+        token_usage=None,
+    )
 
 
 class EvaluationRunner:
@@ -341,6 +442,12 @@ class EvaluationRunner:
                 result=None,
                 passed=False,
                 latency_ms=_elapsed_ms(started),
+                llm_call_count=(
+                    0 if fixture.execution_scope is EvalExecutionScope.FULL_WORKFLOW else None
+                ),
+                llm_total_latency_ms=(
+                    0.0 if fixture.execution_scope is EvalExecutionScope.FULL_WORKFLOW else None
+                ),
                 error=f"{type(error).__name__}: {error}",
             )
 
@@ -356,15 +463,20 @@ class EvaluationRunner:
         )
         incident_id: UUID | None = None
         thread_id: str | None = None
+        llm_call_count = 0
+        llm_total_latency_ms = 0.0
         output: EvalRunOutput | None = None
         cleanup_error: str | None = None
-        try:
-            process.start()
-            process.join(fixture.runner_preparation.case_timeout_seconds)
+
+        def collect_child_messages() -> None:
+            nonlocal incident_id, thread_id, llm_call_count, llm_total_latency_ms, output
             for message in _drain_child_messages(queue):
                 if message[0] == "incident":
                     incident_id = UUID(message[1])
                     thread_id = message[2]
+                elif message[0] == "llm":
+                    llm_call_count = message[1]
+                    llm_total_latency_ms = message[2]
                 elif message[0] == "output":
                     output = message[1]
                 elif message[0] == "error":
@@ -378,11 +490,19 @@ class EvaluationRunner:
                         result=None,
                         passed=False,
                         latency_ms=_elapsed_ms(started),
+                        llm_call_count=llm_call_count,
+                        llm_total_latency_ms=llm_total_latency_ms,
                         error=message[1],
                     )
+
+        try:
+            process.start()
+            process.join(fixture.runner_preparation.case_timeout_seconds)
+            collect_child_messages()
             if process.is_alive():
                 process.terminate()
                 process.join()
+                collect_child_messages()
                 output = EvalRunOutput(
                     fixture_id=fixture.id,
                     execution_scope=fixture.execution_scope,
@@ -393,6 +513,8 @@ class EvaluationRunner:
                     result=None,
                     passed=False,
                     latency_ms=_elapsed_ms(started),
+                    llm_call_count=llm_call_count,
+                    llm_total_latency_ms=llm_total_latency_ms,
                     error=(
                         "TIMEOUT: workflow exceeded "
                         f"{fixture.runner_preparation.case_timeout_seconds} seconds"
@@ -409,6 +531,8 @@ class EvaluationRunner:
                     result=None,
                     passed=False,
                     latency_ms=_elapsed_ms(started),
+                    llm_call_count=llm_call_count,
+                    llm_total_latency_ms=llm_total_latency_ms,
                     error="Eval runner child exited without machine-readable output",
                 )
         finally:
@@ -513,6 +637,7 @@ def _full_workflow_child(fixture: EvalFixture, run_started_at: datetime, queue) 
             on_incident=lambda incident: queue.put(
                 ("incident", str(incident.id), incident.thread_id)
             ),
+            llm_observer=lambda count, latency: queue.put(("llm", count, latency)),
         )
         queue.put(("output", output))
     except Exception as error:
@@ -534,13 +659,15 @@ def _execute_full_workflow(
     started: float,
     *,
     on_incident: Callable[[Incident], None],
+    llm_observer: Callable[[int, float], None],
 ) -> EvalRunOutput:
     agent_input = fixture.agent_input(run_started_at)
     with SessionLocal() as session, open_postgres_checkpointer() as checkpointer:
         incident = _create_incident(session, agent_input)
         on_incident(incident)
+        observability = LLMObservability(observer=llm_observer)
         workflow = WorkflowService(
-            _build_runner_graph(session, checkpointer, fixture.runner_preparation)
+            _build_runner_graph(session, checkpointer, fixture.runner_preparation, observability)
         )
         WorkflowConsoleService(session, _RunnerWorkflowRuntime(workflow)).start(incident.id)
         state = workflow.get_state(incident.thread_id)
@@ -551,6 +678,8 @@ def _execute_full_workflow(
             incident,
             state,
             latency_ms=_elapsed_ms(started),
+            llm_call_count=observability.llm_call_count,
+            llm_total_latency_ms=observability.llm_total_latency_ms,
         )
     score = score_eval_case(fixture, result)
     return EvalRunOutput(
@@ -563,12 +692,21 @@ def _execute_full_workflow(
         result=result,
         passed=_score_passed(score),
         latency_ms=result.latency_ms,
+        llm_call_count=result.llm_call_count,
+        llm_total_latency_ms=result.llm_total_latency_ms,
     )
 
 
-def _build_runner_graph(session: Session, checkpointer, preparation: RunnerPreparation):
+def _build_runner_graph(
+    session: Session,
+    checkpointer,
+    preparation: RunnerPreparation,
+    observability: LLMObservability,
+):
     """Compose the real graph with evaluator-only adapter seams for deterministic failures."""
-    llm_client = OpenAICompatibleLLMClient.from_settings(settings)
+    llm_client = ObservedLLMClient(
+        OpenAICompatibleLLMClient.from_settings(settings), observability
+    )
     embedding_client = OpenAICompatibleEmbeddingClient.from_settings(settings)
     rag_service = RAGService(session, embedding_client)
     logs = FaultLabLogsAdapter.from_settings()
@@ -659,6 +797,8 @@ def _persist_and_collect_result(
     state: AgentState,
     *,
     latency_ms: float,
+    llm_call_count: int | None = None,
+    llm_total_latency_ms: float | None = None,
 ) -> EvalCaseResult:
     """Persist runtime projections, then collect the score input from persisted records."""
     _persist_state_observations(session, incident, state)
@@ -719,6 +859,8 @@ def _persist_and_collect_result(
             ObservedVerification(status=verification.status) if verification else None
         ),
         latency_ms=latency_ms,
+        llm_call_count=llm_call_count,
+        llm_total_latency_ms=llm_total_latency_ms,
     )
 
 
@@ -847,7 +989,16 @@ def main() -> None:
     args = parser.parse_args()
     suite = load_eval_fixture_suite(args.suite)
     outputs = EvaluationRunner().run_suite(suite, case_id=args.case_id)
-    print(json.dumps([output.machine_output() for output in outputs], ensure_ascii=False))
+    machine_cases = [output.machine_output() for output in outputs]
+    payload: object = (
+        machine_cases[0]
+        if args.case_id is not None
+        else {
+            "cases": machine_cases,
+            "aggregate": aggregate_eval_outputs(outputs).model_dump(mode="json"),
+        }
+    )
+    print(json.dumps(payload, ensure_ascii=False))
     if not all(output.passed for output in outputs):
         raise SystemExit(1)
 

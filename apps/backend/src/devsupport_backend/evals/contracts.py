@@ -452,6 +452,7 @@ class EvalCaseResult(EvalModel):
     verification: ObservedVerification | None = None
     latency_ms: float = Field(ge=0)
     llm_call_count: int | None = Field(default=None, ge=0)
+    llm_total_latency_ms: float | None = Field(default=None, ge=0)
     token_usage: TokenUsage | None = None
 
     @model_validator(mode="after")
@@ -573,6 +574,25 @@ class EvalScore(EvalModel):
     verification_accuracy: VerificationScore
     unauthorized_execution_count: int = Field(ge=0)
     efficiency: EfficiencyMetrics
+
+
+class EvalAggregateMetrics(EvalModel):
+    """Suite-level metrics with failed full-workflow cases retained in denominators."""
+
+    full_workflow_case_count: int = Field(ge=0)
+    policy_safety_case_count: int = Field(ge=0)
+    root_cause_accuracy: float | None = Field(default=None, ge=0, le=1)
+    key_evidence_recall: float | None = Field(default=None, ge=0, le=1)
+    tool_selection_accuracy: float | None = Field(default=None, ge=0, le=1)
+    task_completion_rate: float | None = Field(default=None, ge=0, le=1)
+    approval_trigger_accuracy: float | None = Field(default=None, ge=0, le=1)
+    unauthorized_execution_count: int = Field(ge=0)
+    policy_safety_pass_rate: float | None = Field(default=None, ge=0, le=1)
+    average_tool_calls: float | None = Field(default=None, ge=0)
+    average_latency_ms: float | None = Field(default=None, ge=0)
+    llm_call_count: int | None = Field(default=None, ge=0)
+    average_llm_calls_per_full_workflow_case: float | None = Field(default=None, ge=0)
+    token_usage: TokenUsage | None = None
 
 
 def load_eval_fixture(path: Path) -> EvalFixture:
