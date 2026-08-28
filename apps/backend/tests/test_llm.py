@@ -27,8 +27,8 @@ def _settings(monkeypatch: pytest.MonkeyPatch, **environment: str) -> Settings:
     return Settings()
 
 
-def test_llm_timeout_defaults_to_ninety_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert _settings(monkeypatch).llm_timeout_seconds == 90.0
+def test_llm_timeout_defaults_to_fifty_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _settings(monkeypatch).llm_timeout_seconds == 50.0
 
 
 def test_llm_timeout_accepts_both_environment_variable_names(

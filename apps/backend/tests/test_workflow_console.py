@@ -449,7 +449,7 @@ def test_retry_available_requires_exact_failed_preapproval_task(database_session
     assert "safe_error" not in response.model_dump(mode="json")
 
 
-def test_eligible_retries_persist_usage_before_attempt_and_accumulate(
+def test_first_eligible_retry_persists_usage_and_second_retry_is_budget_denied(
     database_session: Session,
 ) -> None:
     incident = _incident(database_session, status="INVESTIGATING")
@@ -465,11 +465,13 @@ def test_eligible_retries_persist_usage_before_attempt_and_accumulate(
     service = WorkflowConsoleService(database_session, runtime)
 
     service.retry(incident.id)
-    service.retry(incident.id)
+    assert service.read(incident.id).retry_available is False
+    with pytest.raises(WorkflowConflictError, match="not eligible"):
+        service.retry(incident.id)
 
-    assert runtime.retry_usage_calls == 2
-    assert runtime.retry_calls == 2
-    assert state["workflow_retry_count"] == 2
+    assert runtime.retry_usage_calls == 1
+    assert runtime.retry_calls == 1
+    assert state["workflow_retry_count"] == 1
 
 
 def test_retry_failure_keeps_usage_and_ineligible_retry_does_not_consume_it(
@@ -493,6 +495,11 @@ def test_retry_failure_keeps_usage_and_ineligible_retry_does_not_consume_it(
 
     assert runtime.retry_usage_calls == 1
     assert state["workflow_retry_count"] == 1
+    assert service.read(incident.id).retry_available is False
+    with pytest.raises(WorkflowConflictError, match="not eligible"):
+        service.retry(incident.id)
+    assert runtime.retry_calls == 1
+    assert runtime.retry_usage_calls == 1
     runtime.failure = WorkflowFailure(
         failed_node="policy_gate",
         safe_error="Persisted workflow task failed",

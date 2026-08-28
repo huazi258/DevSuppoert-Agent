@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session
 
 import devsupport_backend.agent.nodes.tool_execution as execution_module
 import devsupport_backend.agent.workflow as workflow_module
+from devsupport_backend.agent.budget import InvestigationBudget
+from devsupport_backend.agent.evidence_evaluator import LLMEvidenceEvaluator
 from devsupport_backend.agent.nodes.tool_execution import ToolExecutionDependencies
 from devsupport_backend.agent.runtime import WorkflowService
 from devsupport_backend.agent.state import (
@@ -50,6 +52,7 @@ class WorkflowFakeLLM:
         self.generation_calls = 0
         self.planning_calls = 0
         self.update_calls = 0
+        self.evaluation_calls = 0
         self.resolution_calls = 0
 
     def complete(self, *, system_prompt: str, user_prompt: str) -> str:
@@ -104,6 +107,14 @@ class WorkflowFakeLLM:
                         }
                         for index, hypothesis in enumerate(context["hypotheses"])
                     ]
+                }
+            )
+        if system_prompt.startswith("Evaluate whether"):
+            self.evaluation_calls += 1
+            return json.dumps(
+                {
+                    "decision": "NEEDS_MANUAL_ACTION",
+                    "reason": "The controlled test evaluator requests manual action.",
                 }
             )
         if system_prompt.startswith("Generate one structured"):
@@ -283,7 +294,7 @@ def _failed_metrics_output() -> QueryMetricsOutput:
 
 def _workflow_dependencies(
     llm_client: WorkflowFakeLLM,
-    evaluator: FakeEvaluator,
+    evaluator: FakeEvaluator | LLMEvidenceEvaluator,
     *,
     policy_gate: FakePolicyGate | None = None,
     approval_wait: FakeApprovalWait | RecordingApprovalWait | None = None,
@@ -314,8 +325,9 @@ def _run_workflow(
     monkeypatch: pytest.MonkeyPatch,
     *,
     tool_outputs: list[QueryMetricsOutput],
-    evaluator: FakeEvaluator,
+    evaluator: FakeEvaluator | LLMEvidenceEvaluator,
     limits: InvestigationLoopLimits | None = None,
+    budget: InvestigationBudget | None = None,
     policy_gate: FakePolicyGate | None = None,
     final_report: RecordingFinalReport | None = None,
     manual_terminalizer: RecordingManualTerminalizer | None = None,
@@ -345,6 +357,7 @@ def _run_workflow(
             manual_terminalizer=manual_terminalizer,
         ),
         limits=limits,
+        budget=budget,
     )
     return graph.invoke(_build_initial_state()), llm_client, (retrieval_calls, tool_calls)
 
@@ -413,7 +426,8 @@ def test_workflow_service_default_budget_reaches_five_round_terminalization(
             FakeEvaluator([EvaluationDecision.CONTINUE] * 5),
             final_report=report,
             manual_terminalizer=terminalizer,
-        )
+        ),
+        budget=InvestigationBudget(max_llm_calls=20),
     )
     incident = Incident(
         id=uuid4(),
@@ -585,6 +599,160 @@ def test_limit_stops_future_planning_and_tools_with_manual_action(
     assert llm_client.resolution_calls == 0
     assert evaluator.calls == 1
     assert calls == (1, 1)
+
+
+def test_llm_budget_allows_the_last_call_then_terminalizes_before_the_next(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    terminalizer = RecordingManualTerminalizer()
+    report = RecordingFinalReport()
+
+    result, llm_client, calls = _run_workflow(
+        monkeypatch,
+        tool_outputs=[_successful_metrics_output()],
+        evaluator=FakeEvaluator([EvaluationDecision.CONCLUDE]),
+        budget=InvestigationBudget(max_llm_calls=1),
+        final_report=report,
+        manual_terminalizer=terminalizer,
+    )
+
+    assert result["llm_call_count"] == 1
+    assert result["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
+    assert result["current_stage"] is AgentStage.NEEDS_MANUAL_ACTION
+    assert llm_client.generation_calls == 1
+    assert llm_client.update_calls == 0
+    assert terminalizer.calls == 1
+    assert report.calls == 1
+    assert calls == (1, 0)
+
+
+def test_llm_budget_blocks_the_ninth_call_without_invoking_the_delegate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(workflow_module, "retrieval_node", _fake_retrieval)
+    monkeypatch.setattr(execution_module, "query_metrics", lambda *_: _successful_metrics_output())
+    terminalizer = RecordingManualTerminalizer()
+    report = RecordingFinalReport()
+    llm_client = WorkflowFakeLLM()
+    graph = build_investigation_graph(
+        _workflow_dependencies(
+            llm_client,
+            FakeEvaluator([EvaluationDecision.CONCLUDE]),
+            final_report=report,
+            manual_terminalizer=terminalizer,
+        ),
+        budget=InvestigationBudget(max_llm_calls=8),
+    )
+    state = _build_initial_state()
+    state["llm_call_count"] = 8
+
+    result = graph.invoke(state)
+
+    assert result["llm_call_count"] == 8
+    assert result["current_stage"] is AgentStage.NEEDS_MANUAL_ACTION
+    assert llm_client.generation_calls == 0
+    assert terminalizer.calls == 1
+    assert report.calls == 1
+
+
+def test_llm_budget_allows_the_eighth_call_before_blocking_the_ninth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    terminalizer = RecordingManualTerminalizer()
+    report = RecordingFinalReport()
+    monkeypatch.setattr(workflow_module, "retrieval_node", _fake_retrieval)
+    llm_client = WorkflowFakeLLM()
+    graph = build_investigation_graph(
+        _workflow_dependencies(
+            llm_client,
+            FakeEvaluator([EvaluationDecision.CONCLUDE]),
+            final_report=report,
+            manual_terminalizer=terminalizer,
+        ),
+        budget=InvestigationBudget(max_llm_calls=8),
+    )
+    state = _build_initial_state()
+    state["llm_call_count"] = 7
+
+    result = graph.invoke(state)
+
+    assert result["llm_call_count"] == 8
+    assert result["current_stage"] is AgentStage.NEEDS_MANUAL_ACTION
+    assert llm_client.generation_calls == 1
+    assert llm_client.planning_calls == 0
+    assert terminalizer.calls == 1
+    assert report.calls == 1
+
+
+def test_llm_budget_blocks_the_production_evidence_evaluator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    terminalizer = RecordingManualTerminalizer()
+    report = RecordingFinalReport()
+
+    result, llm_client, _ = _run_workflow(
+        monkeypatch,
+        tool_outputs=[_successful_metrics_output()],
+        evaluator=LLMEvidenceEvaluator(WorkflowFakeLLM()),
+        budget=InvestigationBudget(max_llm_calls=3),
+        final_report=report,
+        manual_terminalizer=terminalizer,
+    )
+
+    assert result["llm_call_count"] == 3
+    assert result["current_stage"] is AgentStage.NEEDS_MANUAL_ACTION
+    assert llm_client.generation_calls == 1
+    assert llm_client.update_calls == 1
+    assert llm_client.evaluation_calls == 0
+    assert terminalizer.calls == 1
+    assert report.calls == 1
+
+
+def test_llm_budget_blocks_resolution_proposal_after_conclusion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    terminalizer = RecordingManualTerminalizer()
+    report = RecordingFinalReport()
+
+    result, llm_client, _ = _run_workflow(
+        monkeypatch,
+        tool_outputs=[_successful_metrics_output()],
+        evaluator=FakeEvaluator([EvaluationDecision.CONCLUDE]),
+        budget=InvestigationBudget(max_llm_calls=2),
+        final_report=report,
+        manual_terminalizer=terminalizer,
+    )
+
+    assert result["llm_call_count"] == 2
+    assert result["current_stage"] is AgentStage.NEEDS_MANUAL_ACTION
+    assert llm_client.resolution_calls == 0
+    assert terminalizer.calls == 1
+    assert report.calls == 1
+
+
+def test_deterministic_initial_plan_does_not_consume_or_trigger_llm_budget() -> None:
+    state = _build_initial_state()
+    state["incident"] = state["incident"].model_copy(update={"environment": "local"})
+    state["current_stage"] = AgentStage.INVESTIGATION_PLANNING
+    state["llm_call_count"] = 8
+    state["tool_history"] = [
+        ToolHistoryEntry(
+            tool_name=ToolName.SEARCH_KNOWLEDGE,
+            tool_arguments={"query": "catalog errors"},
+            status=ToolStatus.SUCCESS,
+        )
+    ]
+    llm_client = WorkflowFakeLLM()
+
+    result = workflow_module._investigation_planning_node(
+        state,
+        llm_client,
+        InvestigationBudget(max_llm_calls=8),
+    )
+
+    assert result["current_stage"] is AgentStage.TOOL_EXECUTION
+    assert result["llm_call_count"] == 8
+    assert llm_client.planning_calls == 0
 
 
 @pytest.mark.parametrize(

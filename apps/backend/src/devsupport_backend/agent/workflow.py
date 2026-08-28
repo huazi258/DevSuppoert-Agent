@@ -130,9 +130,10 @@ def build_investigation_graph(
     """Compile the bounded Day 3 graph with an optional externally owned checkpointer."""
     if limits is not None and budget is not None:
         raise ValueError("pass either limits or budget, not both")
-    loop_limits = limits or InvestigationLoopLimits.from_budget(
-        budget or DEFAULT_INVESTIGATION_BUDGET
+    effective_budget = budget or (
+        limits.budget if limits is not None else DEFAULT_INVESTIGATION_BUDGET
     )
+    loop_limits = limits or InvestigationLoopLimits.from_budget(effective_budget)
     accounting_llm_client = UsageAccountingLLMClient(dependencies.llm_client)
     evaluator = dependencies.evaluator
     if isinstance(evaluator, LLMEvidenceEvaluator):
@@ -155,8 +156,11 @@ def build_investigation_graph(
         "hypothesis_generation",
         observe_investigation_node(
             "hypothesis_generation",
-            _account_llm_usage_node(
-                lambda state: hypothesis_generation_node(state, dependencies.llm_client)
+            _enforce_llm_budget_node(
+                _account_llm_usage_node(
+                    lambda state: hypothesis_generation_node(state, dependencies.llm_client)
+                ),
+                effective_budget,
             ),
             observer,
         ),
@@ -172,7 +176,9 @@ def build_investigation_graph(
         observe_investigation_node(
             "investigation_planning",
             _account_llm_usage_node(
-                lambda state: _investigation_planning_node(state, dependencies.llm_client)
+                lambda state: _investigation_planning_node(
+                    state, dependencies.llm_client, effective_budget
+                )
             ),
             observer,
         ),
@@ -191,8 +197,11 @@ def build_investigation_graph(
         "hypothesis_update",
         observe_investigation_node(
             "hypothesis_update",
-            _account_llm_usage_node(
-                lambda state: _hypothesis_update_round_node(state, dependencies.llm_client)
+            _enforce_llm_budget_node(
+                _account_llm_usage_node(
+                    lambda state: _hypothesis_update_round_node(state, dependencies.llm_client)
+                ),
+                effective_budget,
             ),
             observer,
         ),
@@ -201,8 +210,13 @@ def build_investigation_graph(
         "evidence_evaluation",
         observe_investigation_node(
             "evidence_evaluation",
-            _account_llm_usage_node(
-                lambda state: evidence_evaluation_node(state, dependencies.evaluator, loop_limits)
+            _enforce_llm_budget_node(
+                _account_llm_usage_node(
+                    lambda state: evidence_evaluation_node(
+                        state, dependencies.evaluator, loop_limits
+                    )
+                ),
+                effective_budget,
             ),
             observer,
         ),
@@ -211,8 +225,11 @@ def build_investigation_graph(
         "resolution_proposal",
         observe_investigation_node(
             "resolution_proposal",
-            _account_llm_usage_node(
-                lambda state: resolution_proposal_node(state, dependencies.llm_client)
+            _enforce_llm_budget_node(
+                _account_llm_usage_node(
+                    lambda state: resolution_proposal_node(state, dependencies.llm_client)
+                ),
+                effective_budget,
             ),
             observer,
         ),
@@ -291,8 +308,12 @@ def build_investigation_graph(
     )
     graph.add_conditional_edges(
         "hypothesis_generation",
-        _route_after_hypothesis_generation,
-        {"planning_guard": "planning_guard", "end": END},
+        lambda state: _route_after_hypothesis_generation(state, has_terminal_report),
+        {
+            "planning_guard": "planning_guard",
+            "manual_terminalization": "manual_terminalization",
+            "end": END,
+        },
     )
     graph.add_conditional_edges(
         "planning_guard",
@@ -305,8 +326,12 @@ def build_investigation_graph(
     )
     graph.add_conditional_edges(
         "investigation_planning",
-        _route_after_planning,
-        {"tool_execution": "tool_execution", "end": END},
+        lambda state: _route_after_planning(state, has_terminal_report),
+        {
+            "tool_execution": "tool_execution",
+            "manual_terminalization": "manual_terminalization",
+            "end": END,
+        },
     )
     graph.add_conditional_edges(
         "tool_execution",
@@ -315,8 +340,12 @@ def build_investigation_graph(
     )
     graph.add_conditional_edges(
         "hypothesis_update",
-        _route_after_hypothesis_update,
-        {"evidence_evaluation": "evidence_evaluation", "end": END},
+        lambda state: _route_after_hypothesis_update(state, has_terminal_report),
+        {
+            "evidence_evaluation": "evidence_evaluation",
+            "manual_terminalization": "manual_terminalization",
+            "end": END,
+        },
     )
     graph.add_conditional_edges(
         "evidence_evaluation",
@@ -328,7 +357,15 @@ def build_investigation_graph(
             "end": END,
         },
     )
-    graph.add_edge("resolution_proposal", "policy_gate")
+    graph.add_conditional_edges(
+        "resolution_proposal",
+        lambda state: _route_after_resolution_proposal(state, has_terminal_report),
+        {
+            "policy_gate": "policy_gate",
+            "manual_terminalization": "manual_terminalization",
+            "end": END,
+        },
+    )
     graph.add_conditional_edges(
         "policy_gate",
         lambda state: _route_after_policy_gate(state, has_terminal_report),
@@ -394,10 +431,16 @@ def evidence_evaluation_node(
     }
 
 
-def _investigation_planning_node(state: AgentState, llm_client: LLMClient) -> AgentState:
+def _investigation_planning_node(
+    state: AgentState,
+    llm_client: LLMClient,
+    budget: InvestigationBudget,
+) -> AgentState:
     """Use bounded first-pass evidence collection before falling back to the LLM planner."""
     initial_plan = deterministic_initial_evidence_plan(state)
     if initial_plan is None:
+        if _llm_budget_exhausted(state, budget):
+            return _llm_budget_exhausted_state(state)
         return investigation_planner_node(state, llm_client)
     return {
         **state,
@@ -456,6 +499,29 @@ def _account_llm_usage_node(
     return accounted_node
 
 
+def _enforce_llm_budget_node(
+    node: Callable[[AgentState], AgentState],
+    budget: InvestigationBudget,
+) -> Callable[[AgentState], AgentState]:
+    """Route exhausted LLM-backed nodes through the existing manual terminal path."""
+
+    def budgeted_node(state: AgentState) -> AgentState:
+        if _llm_budget_exhausted(state, budget):
+            return _llm_budget_exhausted_state(state)
+        return node(state)
+
+    return budgeted_node
+
+
+def _llm_budget_exhausted(state: AgentState, budget: InvestigationBudget) -> bool:
+    limit = budget.max_llm_calls
+    return limit is not None and state.get("llm_call_count", 0) >= limit
+
+
+def _llm_budget_exhausted_state(state: AgentState) -> AgentState:
+    return {**state, "evaluation_decision": EvaluationDecision.NEEDS_MANUAL_ACTION}
+
+
 def _planning_guard_node(state: AgentState, limits: InvestigationLoopLimits) -> AgentState:
     """Stop before calling Planner when a business safety limit has already been reached."""
     if state["current_stage"] == AgentStage.INVESTIGATION_PLANNING and _limits_reached(
@@ -485,7 +551,11 @@ def _route_after_retrieval(state: AgentState) -> str:
     )
 
 
-def _route_after_hypothesis_generation(state: AgentState) -> str:
+def _route_after_hypothesis_generation(
+    state: AgentState, terminal_report_enabled: bool = False
+) -> str:
+    if state["evaluation_decision"] == EvaluationDecision.NEEDS_MANUAL_ACTION:
+        return "manual_terminalization" if terminal_report_enabled else "end"
     return (
         "planning_guard"
         if state["current_stage"] == AgentStage.INVESTIGATION_PLANNING
@@ -503,7 +573,9 @@ def _route_after_planning_guard(state: AgentState, terminal_report_enabled: bool
     )
 
 
-def _route_after_planning(state: AgentState) -> str:
+def _route_after_planning(state: AgentState, terminal_report_enabled: bool = False) -> str:
+    if state["evaluation_decision"] == EvaluationDecision.NEEDS_MANUAL_ACTION:
+        return "manual_terminalization" if terminal_report_enabled else "end"
     return "tool_execution" if state["current_stage"] == AgentStage.TOOL_EXECUTION else "end"
 
 
@@ -515,7 +587,11 @@ def _route_after_tool_execution(state: AgentState) -> str:
     return "end"
 
 
-def _route_after_hypothesis_update(state: AgentState) -> str:
+def _route_after_hypothesis_update(
+    state: AgentState, terminal_report_enabled: bool = False
+) -> str:
+    if state["evaluation_decision"] == EvaluationDecision.NEEDS_MANUAL_ACTION:
+        return "manual_terminalization" if terminal_report_enabled else "end"
     return (
         "evidence_evaluation"
         if state["current_stage"] == AgentStage.EVIDENCE_EVALUATION
@@ -531,6 +607,14 @@ def _route_after_evidence_evaluation(
     if state["evaluation_decision"] == EvaluationDecision.CONCLUDE:
         return "resolution_proposal"
     return "manual_terminalization" if terminal_report_enabled else "end"
+
+
+def _route_after_resolution_proposal(
+    state: AgentState, terminal_report_enabled: bool = False
+) -> str:
+    if state["evaluation_decision"] == EvaluationDecision.NEEDS_MANUAL_ACTION:
+        return "manual_terminalization" if terminal_report_enabled else "end"
+    return "policy_gate" if state["current_stage"] == AgentStage.CONCLUSION else "end"
 
 
 def _route_after_policy_gate(state: AgentState, terminal_report_enabled: bool = False) -> str:

@@ -37,7 +37,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("LLM_BASE_URL", "DEVSUPPORT_LLM_BASE_URL"),
     )
     llm_timeout_seconds: float = Field(
-        default=90.0,
+        default=50.0,
         gt=0,
         validation_alias=AliasChoices(
             "LLM_TIMEOUT_SECONDS", "DEVSUPPORT_LLM_TIMEOUT_SECONDS"

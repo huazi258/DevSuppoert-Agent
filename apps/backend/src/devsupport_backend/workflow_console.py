@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from devsupport_backend.action_execution import ActionExecutionParameters
+from devsupport_backend.agent.budget import DEFAULT_INVESTIGATION_BUDGET, InvestigationBudget
 from devsupport_backend.agent.evidence_evaluator import LLMEvidenceEvaluator
 from devsupport_backend.agent.llm import OpenAICompatibleLLMClient
 from devsupport_backend.agent.nodes.tool_execution import ToolExecutionDependencies
@@ -216,9 +217,15 @@ class PostgresWorkflowRuntime:
 class WorkflowConsoleService:
     """Own start conflict protection and read-only public workflow projection."""
 
-    def __init__(self, session: Session, runtime: WorkflowRuntime) -> None:
+    def __init__(
+        self,
+        session: Session,
+        runtime: WorkflowRuntime,
+        budget: InvestigationBudget = DEFAULT_INVESTIGATION_BUDGET,
+    ) -> None:
         self._session = session
         self._runtime = runtime
+        self._budget = budget
 
     def read(self, incident_id: UUID) -> WorkflowResponse:
         incident = self._get_incident(incident_id)
@@ -353,9 +360,15 @@ class WorkflowConsoleService:
             or state["execution_outcome"] is not None
             or state["verification_outcome"] is not None
             or state["current_stage"] in _POST_APPROVAL_OR_TERMINAL_STAGES
+            or _retry_budget_exhausted(state, self._budget)
         ):
             return False
         return True
+
+
+def _retry_budget_exhausted(state: AgentState, budget: InvestigationBudget) -> bool:
+    limit = budget.max_workflow_retries
+    return limit is not None and state.get("workflow_retry_count", 0) >= limit
 
 
 def project_workflow_response(

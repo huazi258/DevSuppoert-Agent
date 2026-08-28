@@ -16,12 +16,17 @@ from devsupport_backend.agent.budget import (
     UsageAccountingLLMClient,
 )
 from devsupport_backend.agent.runtime import WorkflowService
-from devsupport_backend.agent.state import AgentState, create_initial_agent_state
+from devsupport_backend.agent.state import (
+    AgentState,
+    EvaluationDecision,
+    create_initial_agent_state,
+)
 from devsupport_backend.agent.workflow import (
     DEFAULT_MAX_INVESTIGATION_ROUNDS,
     DEFAULT_MAX_TOOL_CALLS,
     InvestigationLoopLimits,
     _account_llm_usage_node,
+    _enforce_llm_budget_node,
 )
 from devsupport_backend.models import Incident
 
@@ -70,14 +75,14 @@ def test_budget_rejects_non_positive_configured_limits(kwargs: dict[str, object]
         InvestigationBudget(**kwargs)  # type: ignore[arg-type]
 
 
-def test_budget_retains_existing_enforced_defaults_and_leaves_new_limits_unset() -> None:
+def test_budget_freezes_initial_v1_discrete_limits_and_leaves_active_time_unset() -> None:
     budget = DEFAULT_INVESTIGATION_BUDGET
     limits = InvestigationLoopLimits()
 
     assert budget.max_rounds == DEFAULT_MAX_INVESTIGATION_ROUNDS == 5
     assert budget.max_tool_calls == DEFAULT_MAX_TOOL_CALLS == 6
-    assert budget.max_llm_calls is None
-    assert budget.max_workflow_retries is None
+    assert budget.max_llm_calls == 8
+    assert budget.max_workflow_retries == 1
     assert budget.max_active_execution_seconds is None
     assert limits.budget == budget
 
@@ -211,3 +216,38 @@ def test_llm_usage_initializes_a_pre_budget_checkpoint_counter() -> None:
 
     assert delegate.calls == 1
     assert result["llm_call_count"] == 1
+
+
+def test_llm_budget_is_enforced_after_checkpoint_resume() -> None:
+    incident = _incident()
+    delegate = RecordingLLM()
+    llm_client = UsageAccountingLLMClient(delegate)
+    graph = StateGraph(AgentState)
+
+    def pause(state: AgentState) -> AgentState:
+        interrupt("pause before budgeted call")
+        return state
+
+    def invoke_llm(state: AgentState) -> AgentState:
+        llm_client.complete(system_prompt="system", user_prompt="resume")
+        return state
+
+    graph.add_node("pause", pause)
+    graph.add_node(
+        "invoke_llm",
+        _enforce_llm_budget_node(invoke_llm, InvestigationBudget(max_llm_calls=1)),
+    )
+    graph.add_edge(START, "pause")
+    graph.add_edge("pause", "invoke_llm")
+    graph.add_edge("invoke_llm", END)
+    compiled_graph = graph.compile(checkpointer=InMemorySaver())
+    service = WorkflowService(compiled_graph)
+    state = create_initial_agent_state(incident)
+    state["llm_call_count"] = 1
+
+    compiled_graph.invoke(state, WorkflowService.config_for(incident.thread_id))
+    result = service.resume(incident.thread_id, {"continue": True})
+
+    assert delegate.calls == 0
+    assert result["llm_call_count"] == 1
+    assert result["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
