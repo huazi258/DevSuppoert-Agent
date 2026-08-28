@@ -272,6 +272,9 @@ class _InvestigationObservabilityCollector:
         workflow_returned = any(
             event.phase == "workflow_returned" for event in self.lifecycle_events
         )
+        workflow_execution_completed = any(
+            event.phase == "workflow_execution_completed" for event in self.lifecycle_events
+        )
         return InvestigationObservability(
             node_calls=self.node_calls,
             node_stats=_timing_stats(
@@ -286,6 +289,7 @@ class _InvestigationObservabilityCollector:
             active_llm_call_node_at_timeout=active_llm_node if timed_out else None,
             lifecycle_events=self.lifecycle_events,
             workflow_returned_before_timeout=workflow_returned,
+            workflow_execution_completed_before_timeout=workflow_execution_completed,
             last_eval_phase_at_timeout=(
                 self.lifecycle_events[-1].phase if timed_out and self.lifecycle_events else None
             ),
@@ -294,7 +298,7 @@ class _InvestigationObservabilityCollector:
             ),
             timeout_classification=(
                 "eval_post_processing_timeout"
-                if timed_out and workflow_returned
+                if timed_out and workflow_execution_completed
                 else "workflow_timeout"
                 if timed_out
                 else None
@@ -307,6 +311,8 @@ class _InvestigationObservabilityCollector:
         if "workflow_started" not in completed:
             return None
         if "workflow_returned" not in completed:
+            return "workflow_execution"
+        if "workflow_execution_completed" not in completed:
             return "workflow_execution"
         if "result_persisted" not in completed:
             return "result_persistence"
@@ -1078,6 +1084,7 @@ def _execute_full_workflow(
         _notify_eval_lifecycle(lifecycle_observer, "workflow_returned")
         state = workflow.get_state(incident.thread_id)
         state = EvaluationRunner()._handle_approval(session, workflow, incident, fixture, state)
+        _notify_eval_lifecycle(lifecycle_observer, "workflow_execution_completed")
         result = _persist_and_collect_result(
             session,
             fixture,

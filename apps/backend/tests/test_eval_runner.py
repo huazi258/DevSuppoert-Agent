@@ -549,6 +549,7 @@ def test_timeout_observability_retains_completed_and_in_flight_events() -> None:
     assert observability.active_node_at_timeout == "investigation_planning"
     assert observability.active_llm_call_node_at_timeout == "investigation_planning"
     assert observability.workflow_returned_before_timeout is False
+    assert observability.workflow_execution_completed_before_timeout is False
     assert observability.last_eval_phase_at_timeout == "workflow_started"
     assert observability.active_eval_phase_at_timeout == "workflow_execution"
     assert observability.timeout_classification == "workflow_timeout"
@@ -561,12 +562,13 @@ def test_timeout_observability_retains_completed_and_in_flight_events() -> None:
     assert observability.llm_calls[0].duration_ms == 12.5
 
 
-def test_completed_observability_keeps_full_node_timing_without_active_state() -> None:
+def test_not_required_lifecycle_keeps_full_node_timing_without_active_state() -> None:
     collector = _InvestigationObservabilityCollector()
 
     for message in (
         ("eval_phase", "workflow_started"),
         ("eval_phase", "workflow_returned"),
+        ("eval_phase", "workflow_execution_completed"),
         ("eval_phase", "result_persisted"),
         ("eval_phase", "result_collected"),
         ("eval_phase", "scoring_completed"),
@@ -584,9 +586,11 @@ def test_completed_observability_keeps_full_node_timing_without_active_state() -
     assert observability.active_node_at_timeout is None
     assert observability.active_llm_call_node_at_timeout is None
     assert observability.workflow_returned_before_timeout is True
+    assert observability.workflow_execution_completed_before_timeout is True
     assert [event.phase for event in observability.lifecycle_events] == [
         "workflow_started",
         "workflow_returned",
+        "workflow_execution_completed",
         "result_persisted",
         "result_collected",
         "scoring_completed",
@@ -608,6 +612,7 @@ def test_timeout_observability_classifies_post_workflow_output_preparation() -> 
     for phase in (
         "workflow_started",
         "workflow_returned",
+        "workflow_execution_completed",
         "result_persisted",
         "result_collected",
         "scoring_completed",
@@ -617,9 +622,25 @@ def test_timeout_observability_classifies_post_workflow_output_preparation() -> 
     observability = collector.snapshot(timed_out=True)
 
     assert observability.workflow_returned_before_timeout is True
+    assert observability.workflow_execution_completed_before_timeout is True
     assert observability.last_eval_phase_at_timeout == "scoring_completed"
     assert observability.active_eval_phase_at_timeout == "output_preparation"
     assert observability.timeout_classification == "eval_post_processing_timeout"
+
+
+def test_timeout_observability_keeps_resume_in_workflow_execution() -> None:
+    collector = _InvestigationObservabilityCollector()
+
+    for phase in ("workflow_started", "workflow_returned"):
+        assert collector.accept(("eval_phase", phase))
+
+    observability = collector.snapshot(timed_out=True)
+
+    assert observability.workflow_returned_before_timeout is True
+    assert observability.workflow_execution_completed_before_timeout is False
+    assert observability.last_eval_phase_at_timeout == "workflow_returned"
+    assert observability.active_eval_phase_at_timeout == "workflow_execution"
+    assert observability.timeout_classification == "workflow_timeout"
 
 
 def test_lifecycle_marker_queue_failure_is_discarded() -> None:
@@ -756,6 +777,7 @@ def test_timeout_returns_machine_failure_preserves_incident_and_cleans_up(
     assert output.observability.active_node_at_timeout == "hypothesis_generation"
     assert output.observability.active_llm_call_node_at_timeout == "hypothesis_generation"
     assert output.observability.workflow_returned_before_timeout is False
+    assert output.observability.workflow_execution_completed_before_timeout is False
     assert output.observability.active_eval_phase_at_timeout == "workflow_execution"
     assert output.observability.timeout_classification == "workflow_timeout"
     assert output.machine_output()["investigation_observability"] is not None

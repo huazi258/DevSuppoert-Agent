@@ -462,6 +462,7 @@ class TimingStats(EvalModel):
 EvalLifecyclePhase = Literal[
     "workflow_started",
     "workflow_returned",
+    "workflow_execution_completed",
     "result_persisted",
     "result_collected",
     "scoring_completed",
@@ -496,6 +497,7 @@ class InvestigationObservability(EvalModel):
     active_llm_call_node_at_timeout: str | None = Field(default=None, max_length=100)
     lifecycle_events: list[EvalLifecycleEvent] = Field(default_factory=list, max_length=20)
     workflow_returned_before_timeout: bool = False
+    workflow_execution_completed_before_timeout: bool = False
     last_eval_phase_at_timeout: EvalLifecyclePhase | None = None
     active_eval_phase_at_timeout: EvalActivePhase | None = None
     timeout_classification: EvalTimeoutClassification | None = None
