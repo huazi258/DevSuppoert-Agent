@@ -451,7 +451,7 @@ def _account_llm_usage_node(
             updated = node(state)
         if usage.call_count == 0:
             return updated
-        return {**updated, "llm_call_count": state["llm_call_count"] + usage.call_count}
+        return {**updated, "llm_call_count": state.get("llm_call_count", 0) + usage.call_count}
 
     return accounted_node
 

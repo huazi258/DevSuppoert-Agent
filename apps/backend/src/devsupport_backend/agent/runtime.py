@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from langgraph.checkpoint.base import ERROR, BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
@@ -74,10 +75,26 @@ class WorkflowService:
 
     def record_retry_attempt(self, thread_id: str) -> None:
         """Durably consume one authorized retry attempt before continuing the failed task."""
-        state = self.get_state(thread_id)
-        self._graph.update_state(
-            self.config_for(thread_id),
-            {"workflow_retry_count": state["workflow_retry_count"] + 1},
+        snapshot = self._graph.get_state(self.config_for(thread_id))
+        checkpointer = self._graph.checkpointer
+        if not isinstance(checkpointer, BaseCheckpointSaver):
+            raise ValueError("workflow retry usage requires a persistent checkpointer")
+        failed_tasks = [task for task in snapshot.tasks if task.error is not None]
+        if len(failed_tasks) != 1 or not failed_tasks[0].id:
+            raise ValueError("workflow retry usage requires exactly one failed task")
+        failed_task = failed_tasks[0]
+        updated_config = self._graph.update_state(
+            snapshot.config,
+            {"workflow_retry_count": snapshot.values.get("workflow_retry_count", 0) + 1},
+        )
+        updated_snapshot = self._graph.get_state(updated_config)
+        continued_tasks = [task for task in updated_snapshot.tasks if task.name == failed_task.name]
+        if len(continued_tasks) != 1 or not continued_tasks[0].id:
+            raise ValueError("workflow retry usage could not preserve the failed task")
+        checkpointer.put_writes(
+            updated_snapshot.config,
+            [(ERROR, failed_task.error)],
+            continued_tasks[0].id,
         )
 
     def resume(self, thread_id: str, payload: object) -> AgentState:

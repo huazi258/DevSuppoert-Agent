@@ -121,16 +121,21 @@ def test_deterministic_node_does_not_consume_llm_usage() -> None:
 def test_retry_usage_is_persisted_before_a_later_retry_invocation() -> None:
     incident = _incident()
     graph = StateGraph(AgentState)
-    graph.add_node("checkpoint", lambda state: state)
-    graph.add_edge(START, "checkpoint")
-    graph.add_edge("checkpoint", END)
+
+    def fails(state: AgentState) -> AgentState:
+        del state
+        raise RuntimeError("controlled")
+
+    graph.add_node("fails", fails)
+    graph.add_edge(START, "fails")
+    graph.add_edge("fails", END)
     service = WorkflowService(graph.compile(checkpointer=InMemorySaver()))
 
-    service.start(incident)
-    service.record_retry_attempt(incident.thread_id)
+    with pytest.raises(RuntimeError, match="controlled"):
+        service.start(incident)
     service.record_retry_attempt(incident.thread_id)
 
-    assert service.get_state(incident.thread_id)["workflow_retry_count"] == 2
+    assert service.get_state(incident.thread_id)["workflow_retry_count"] == 1
 
 
 def test_failed_llm_attempt_does_not_reset_prior_checkpointed_usage() -> None:
@@ -182,3 +187,27 @@ def test_llm_usage_resumes_from_checkpoint_without_resetting() -> None:
     assert delegate.calls == 1
     assert result["llm_call_count"] == 3
     assert service.get_state(incident.thread_id)["llm_call_count"] == 3
+
+
+def test_llm_usage_initializes_a_pre_budget_checkpoint_counter() -> None:
+    incident = _incident()
+    delegate = RecordingLLM()
+    llm_client = UsageAccountingLLMClient(delegate)
+    graph = StateGraph(AgentState)
+
+    def invoke_once(state: AgentState) -> AgentState:
+        llm_client.complete(system_prompt="system", user_prompt="legacy")
+        return state
+
+    graph.add_node("invoke_once", _account_llm_usage_node(invoke_once))
+    graph.add_edge(START, "invoke_once")
+    graph.add_edge("invoke_once", END)
+    state = create_initial_agent_state(incident)
+    del state["llm_call_count"]
+
+    result = graph.compile(checkpointer=InMemorySaver()).invoke(
+        state, WorkflowService.config_for(incident.thread_id)
+    )
+
+    assert delegate.calls == 1
+    assert result["llm_call_count"] == 1

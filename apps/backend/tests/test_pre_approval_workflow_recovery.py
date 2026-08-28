@@ -24,6 +24,7 @@ from devsupport_backend.agent.state import (
     create_initial_agent_state,
 )
 from devsupport_backend.agent.workflow import InvestigationLoopLimits
+from devsupport_backend.workflow_console import PostgresWorkflowRuntime
 
 
 class RecoveryState(TypedDict):
@@ -194,13 +195,14 @@ class _RecoveryIncident:
 class _SequencedPlannerLLM:
     """Return a controlled provider failure followed by one valid Planner response."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, failing_calls: frozenset[int] = frozenset({1})) -> None:
         self.calls = 0
+        self._failing_calls = failing_calls
 
     def complete(self, *, system_prompt: str, user_prompt: str) -> str:
         del system_prompt, user_prompt
         self.calls += 1
-        if self.calls == 1:
+        if self.calls in self._failing_calls:
             raise LLMError("controlled planner provider failure")
         return json.dumps(
             {
@@ -254,7 +256,9 @@ def _durable_agent_state_retry_graph(
     return graph.compile(checkpointer=checkpointer)
 
 
-def test_postgres_recompiled_agent_state_retry_executes_restored_failed_planner() -> None:
+def test_postgres_retry_usage_update_preserves_failed_planner_continuation(
+    database_session,
+) -> None:
     """A restored string stage must run the actual Planner and route to Tool Executor."""
 
     thread_id = str(uuid4())
@@ -263,6 +267,7 @@ def test_postgres_recompiled_agent_state_retry_executes_restored_failed_planner(
     calls = {"planning_guard": 0, "planning": 0, "tool_execution": 0}
     state = create_initial_agent_state(_RecoveryIncident(id=uuid4()))
     state["current_stage"] = AgentStage.INVESTIGATION_PLANNING
+    del state["workflow_retry_count"]
 
     try:
         with open_postgres_checkpointer() as first_checkpointer:
@@ -283,6 +288,17 @@ def test_postgres_recompiled_agent_state_retry_executes_restored_failed_planner(
                 for task in failed_snapshot.tasks
             )
 
+        runtime = PostgresWorkflowRuntime(database_session)
+        runtime.record_retry_attempt(thread_id)
+
+        recorded_state = runtime.get_state(thread_id)
+        recorded_failure = runtime.get_failure(thread_id)
+        assert recorded_state is not None
+        assert recorded_state["workflow_retry_count"] == 1
+        assert recorded_failure is not None
+        assert recorded_failure.failed_node == "investigation_planning"
+        assert calls == {"planning_guard": 1, "planning": 1, "tool_execution": 0}
+
         with open_postgres_checkpointer() as second_checkpointer:
             second_graph = _durable_agent_state_retry_graph(
                 checkpointer=second_checkpointer,
@@ -295,7 +311,69 @@ def test_postgres_recompiled_agent_state_retry_executes_restored_failed_planner(
             assert planner_llm.calls == 2
             assert result["current_stage"] == AgentStage.NEEDS_MANUAL_ACTION
             assert result["current_stage"] != AgentStage.INVESTIGATION_PLANNING
+            assert result["workflow_retry_count"] == 1
             assert list(second_graph.get_state(config).next) == []
+    finally:
+        with open_postgres_checkpointer() as checkpointer:
+            checkpointer.delete_thread(thread_id)
+
+
+def test_postgres_retry_usage_survives_a_second_failed_retry(
+    database_session,
+) -> None:
+    """Every recorded retry survives failure and leaves the same task continuable."""
+
+    thread_id = str(uuid4())
+    config = WorkflowService.config_for(thread_id)
+    planner_llm = _SequencedPlannerLLM(failing_calls=frozenset({1, 2}))
+    calls = {"planning_guard": 0, "planning": 0, "tool_execution": 0}
+    state = create_initial_agent_state(_RecoveryIncident(id=uuid4()))
+    state["current_stage"] = AgentStage.INVESTIGATION_PLANNING
+    runtime = PostgresWorkflowRuntime(database_session)
+
+    try:
+        with open_postgres_checkpointer() as first_checkpointer:
+            first_graph = _durable_agent_state_retry_graph(
+                checkpointer=first_checkpointer,
+                planner_llm=planner_llm,
+                calls=calls,
+            )
+            with pytest.raises(PlanningError, match="planner provider failed"):
+                first_graph.invoke(state, config)
+
+        runtime.record_retry_attempt(thread_id)
+        with open_postgres_checkpointer() as second_checkpointer:
+            second_graph = _durable_agent_state_retry_graph(
+                checkpointer=second_checkpointer,
+                planner_llm=planner_llm,
+                calls=calls,
+            )
+            with pytest.raises(PlanningError, match="planner provider failed"):
+                WorkflowService(second_graph).retry_failed_task(thread_id)
+
+        failed_state = runtime.get_state(thread_id)
+        failed_retry = runtime.get_failure(thread_id)
+        assert failed_state is not None
+        assert failed_state["workflow_retry_count"] == 1
+        assert failed_retry is not None
+        assert failed_retry.failed_node == "investigation_planning"
+        assert calls == {"planning_guard": 1, "planning": 2, "tool_execution": 0}
+
+        runtime.record_retry_attempt(thread_id)
+        with open_postgres_checkpointer() as third_checkpointer:
+            third_graph = _durable_agent_state_retry_graph(
+                checkpointer=third_checkpointer,
+                planner_llm=planner_llm,
+                calls=calls,
+            )
+            result = WorkflowService(third_graph).retry_failed_task(thread_id)
+
+            assert result["workflow_retry_count"] == 2
+            assert list(third_graph.get_state(config).next) == []
+
+        assert calls == {"planning_guard": 1, "planning": 3, "tool_execution": 1}
+        assert planner_llm.calls == 3
+        assert runtime.get_failure(thread_id) is None
     finally:
         with open_postgres_checkpointer() as checkpointer:
             checkpointer.delete_thread(thread_id)
