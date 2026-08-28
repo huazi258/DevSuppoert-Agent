@@ -54,6 +54,8 @@ def test_initial_agent_state_has_neutral_intake_defaults() -> None:
     assert state["tool_history"] == []
     assert state["investigation_round"] == 0
     assert state["tool_call_count"] == 0
+    assert state["llm_call_count"] == 0
+    assert state["workflow_retry_count"] == 0
     assert state["intake_decision"] is None
     assert state["missing_information"] == []
     assert state["evaluation_decision"] is None
@@ -147,6 +149,8 @@ def test_state_checkpoint_payload_is_json_serializable_without_orm_or_session() 
     state["evidence"].append(evidence)
     state["intake_decision"] = IntakeDecision.NEEDS_INFORMATION
     state["missing_information"] = ["Exact incident time range"]
+    state["llm_call_count"] = 3
+    state["workflow_retry_count"] = 2
     state["tool_history"].append(
         ToolHistoryEntry(
             tool_name="query_metrics",
@@ -163,6 +167,8 @@ def test_state_checkpoint_payload_is_json_serializable_without_orm_or_session() 
     assert json.loads(json.dumps(payload))["evidence"][0]["id"] == str(evidence.id)
     assert payload["intake_decision"] == "NEEDS_INFORMATION"
     assert payload["missing_information"] == ["Exact incident time range"]
+    assert payload["llm_call_count"] == 3
+    assert payload["workflow_retry_count"] == 2
 
 
 def test_tool_history_requires_a_structured_error_for_failure() -> None:

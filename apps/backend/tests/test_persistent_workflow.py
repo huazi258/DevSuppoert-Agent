@@ -79,6 +79,8 @@ def _complete_agent_state(incident: Incident) -> AgentState:
             ],
             "investigation_round": 2,
             "tool_call_count": 3,
+            "llm_call_count": 4,
+            "workflow_retry_count": 1,
             "evaluation_decision": EvaluationDecision.CONCLUDE,
             "proposed_action": ProposedAction(
                 action_type="manual_action",
@@ -169,6 +171,8 @@ def test_postgres_checkpoint_recovers_the_complete_current_agent_state() -> None
         assert recovered["tool_history"] == state["tool_history"]
         assert recovered["investigation_round"] == state["investigation_round"]
         assert recovered["tool_call_count"] == state["tool_call_count"] + 1
+        assert recovered["llm_call_count"] == state["llm_call_count"]
+        assert recovered["workflow_retry_count"] == state["workflow_retry_count"]
         assert recovered["evaluation_decision"] == EvaluationDecision.CONCLUDE
         assert recovered["proposed_action"] == state["proposed_action"]
         assert recovered["final_conclusion"] == state["final_conclusion"]

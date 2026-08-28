@@ -525,6 +525,7 @@ def test_continue_forms_a_second_plan_then_conclude_without_repeating_initial_no
     assert result["policy_outcome"].decision is PolicyDecision.DENIED
     assert result["investigation_round"] == 2
     assert result["tool_call_count"] == 2
+    assert result["llm_call_count"] == 6
     assert llm_client.generation_calls == 1
     assert llm_client.planning_calls == 2
     assert llm_client.update_calls == 2
@@ -578,6 +579,7 @@ def test_limit_stops_future_planning_and_tools_with_manual_action(
     assert result[limit_field] == 1
     assert result["investigation_round"] == 1
     assert result["tool_call_count"] == 1
+    assert result["llm_call_count"] == 3
     assert llm_client.planning_calls == 1
     assert llm_client.update_calls == 1
     assert llm_client.resolution_calls == 0
@@ -687,6 +689,7 @@ def test_final_allowed_round_can_conclude_and_propose_resolution(
     assert result["policy_outcome"] is not None
     assert result["investigation_round"] == 1
     assert result["tool_call_count"] == 1
+    assert result["llm_call_count"] == 4
     assert llm_client.planning_calls == 1
     assert llm_client.update_calls == 1
     assert llm_client.resolution_calls == 1

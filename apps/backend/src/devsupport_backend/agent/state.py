@@ -354,6 +354,8 @@ class AgentState(TypedDict):
     tool_history: list[ToolHistoryEntry]
     investigation_round: int
     tool_call_count: int
+    llm_call_count: int
+    workflow_retry_count: int
     intake_decision: IntakeDecision | None
     missing_information: list[str]
     evaluation_decision: EvaluationDecision | None
@@ -388,6 +390,8 @@ def create_initial_agent_state(
         "tool_history": [],
         "investigation_round": 0,
         "tool_call_count": 0,
+        "llm_call_count": 0,
+        "workflow_retry_count": 0,
         "intake_decision": None,
         "missing_information": [],
         "evaluation_decision": None,
@@ -417,6 +421,8 @@ def agent_state_to_checkpoint_payload(state: AgentState) -> dict[str, object]:
         "tool_history": [item.model_dump(mode="json") for item in state["tool_history"]],
         "investigation_round": state["investigation_round"],
         "tool_call_count": state["tool_call_count"],
+        "llm_call_count": state["llm_call_count"],
+        "workflow_retry_count": state["workflow_retry_count"],
         "intake_decision": (
             state["intake_decision"].value if state["intake_decision"] is not None else None
         ),

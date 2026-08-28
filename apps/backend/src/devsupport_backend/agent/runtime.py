@@ -72,6 +72,14 @@ class WorkflowService:
         result = self._graph.invoke(None, self.config_for(thread_id))
         return result
 
+    def record_retry_attempt(self, thread_id: str) -> None:
+        """Durably consume one authorized retry attempt before continuing the failed task."""
+        state = self.get_state(thread_id)
+        self._graph.update_state(
+            self.config_for(thread_id),
+            {"workflow_retry_count": state["workflow_retry_count"] + 1},
+        )
+
     def resume(self, thread_id: str, payload: object) -> AgentState:
         """Resume a future interrupted workflow without interpreting the payload as approval."""
         result = self._graph.invoke(Command(resume=payload), self.config_for(thread_id))

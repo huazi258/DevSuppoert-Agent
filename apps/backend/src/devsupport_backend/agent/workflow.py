@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Protocol
+from typing import Callable, Protocol
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy.orm import Session
 
+from devsupport_backend.agent.budget import (
+    DEFAULT_INVESTIGATION_BUDGET,
+    InvestigationBudget,
+    UsageAccountingLLMClient,
+    collect_llm_usage,
+)
+from devsupport_backend.agent.evidence_evaluator import LLMEvidenceEvaluator
 from devsupport_backend.agent.llm import LLMClient
 from devsupport_backend.agent.nodes.hypothesis_generation import hypothesis_generation_node
 from devsupport_backend.agent.nodes.hypothesis_update import hypothesis_update_node
@@ -51,8 +58,8 @@ from devsupport_backend.approvals import (
 )
 from devsupport_backend.rag.retrieval import RAGService
 
-DEFAULT_MAX_INVESTIGATION_ROUNDS = 5
-DEFAULT_MAX_TOOL_CALLS = 6
+DEFAULT_MAX_INVESTIGATION_ROUNDS = DEFAULT_INVESTIGATION_BUDGET.max_rounds
+DEFAULT_MAX_TOOL_CALLS = DEFAULT_INVESTIGATION_BUDGET.max_tool_calls
 """Conservative V0 workflow limits, kept central rather than in graph edges."""
 
 
@@ -82,10 +89,17 @@ class InvestigationLoopLimits:
     max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS
 
     def __post_init__(self) -> None:
-        if self.max_rounds < 1:
-            raise ValueError("max_rounds must be at least 1")
-        if self.max_tool_calls < 1:
-            raise ValueError("max_tool_calls must be at least 1")
+        InvestigationBudget(max_rounds=self.max_rounds, max_tool_calls=self.max_tool_calls)
+
+    @classmethod
+    def from_budget(cls, budget: InvestigationBudget) -> "InvestigationLoopLimits":
+        """Preserve the existing loop-limit API while deriving it from one budget contract."""
+        return cls(max_rounds=budget.max_rounds, max_tool_calls=budget.max_tool_calls)
+
+    @property
+    def budget(self) -> InvestigationBudget:
+        """Project existing enforced dimensions into the unified budget contract."""
+        return InvestigationBudget(max_rounds=self.max_rounds, max_tool_calls=self.max_tool_calls)
 
 
 @dataclass(frozen=True)
@@ -109,11 +123,25 @@ def build_investigation_graph(
     dependencies: InvestigationWorkflowDependencies,
     *,
     limits: InvestigationLoopLimits | None = None,
+    budget: InvestigationBudget | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
     observer: InvestigationNodeObserver | None = None,
 ) -> CompiledStateGraph:
     """Compile the bounded Day 3 graph with an optional externally owned checkpointer."""
-    loop_limits = limits or InvestigationLoopLimits()
+    if limits is not None and budget is not None:
+        raise ValueError("pass either limits or budget, not both")
+    loop_limits = limits or InvestigationLoopLimits.from_budget(
+        budget or DEFAULT_INVESTIGATION_BUDGET
+    )
+    accounting_llm_client = UsageAccountingLLMClient(dependencies.llm_client)
+    evaluator = dependencies.evaluator
+    if isinstance(evaluator, LLMEvidenceEvaluator):
+        evaluator = evaluator.with_llm_client(accounting_llm_client)
+    dependencies = replace(
+        dependencies,
+        llm_client=accounting_llm_client,
+        evaluator=evaluator,
+    )
     graph = StateGraph(AgentState)
 
     graph.add_node("intake", observe_investigation_node("intake", intake_node, observer))
@@ -127,7 +155,9 @@ def build_investigation_graph(
         "hypothesis_generation",
         observe_investigation_node(
             "hypothesis_generation",
-            lambda state: hypothesis_generation_node(state, dependencies.llm_client),
+            _account_llm_usage_node(
+                lambda state: hypothesis_generation_node(state, dependencies.llm_client)
+            ),
             observer,
         ),
     )
@@ -141,7 +171,9 @@ def build_investigation_graph(
         "investigation_planning",
         observe_investigation_node(
             "investigation_planning",
-            lambda state: _investigation_planning_node(state, dependencies.llm_client),
+            _account_llm_usage_node(
+                lambda state: _investigation_planning_node(state, dependencies.llm_client)
+            ),
             observer,
         ),
     )
@@ -159,7 +191,9 @@ def build_investigation_graph(
         "hypothesis_update",
         observe_investigation_node(
             "hypothesis_update",
-            lambda state: _hypothesis_update_round_node(state, dependencies.llm_client),
+            _account_llm_usage_node(
+                lambda state: _hypothesis_update_round_node(state, dependencies.llm_client)
+            ),
             observer,
         ),
     )
@@ -167,7 +201,9 @@ def build_investigation_graph(
         "evidence_evaluation",
         observe_investigation_node(
             "evidence_evaluation",
-            lambda state: evidence_evaluation_node(state, dependencies.evaluator, loop_limits),
+            _account_llm_usage_node(
+                lambda state: evidence_evaluation_node(state, dependencies.evaluator, loop_limits)
+            ),
             observer,
         ),
     )
@@ -175,7 +211,9 @@ def build_investigation_graph(
         "resolution_proposal",
         observe_investigation_node(
             "resolution_proposal",
-            lambda state: resolution_proposal_node(state, dependencies.llm_client),
+            _account_llm_usage_node(
+                lambda state: resolution_proposal_node(state, dependencies.llm_client)
+            ),
             observer,
         ),
     )
@@ -312,6 +350,7 @@ def build_production_investigation_graph(
     *,
     session: Session,
     limits: InvestigationLoopLimits | None = None,
+    budget: InvestigationBudget | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
     observer: InvestigationNodeObserver | None = None,
 ) -> CompiledStateGraph:
@@ -326,6 +365,7 @@ def build_production_investigation_graph(
             manual_terminalizer=PostgresManualTerminalizer(session),
         ),
         limits=limits,
+        budget=budget,
         checkpointer=checkpointer,
         observer=observer,
     )
@@ -399,6 +439,21 @@ def _hypothesis_update_round_node(state: AgentState, llm_client: LLMClient) -> A
             "investigation_round": state["investigation_round"] + 1,
         }
     return updated
+
+
+def _account_llm_usage_node(
+    node: Callable[[AgentState], AgentState],
+) -> Callable[[AgentState], AgentState]:
+    """Persist successful node-local LLM attempts without changing provider or node contracts."""
+
+    def accounted_node(state: AgentState) -> AgentState:
+        with collect_llm_usage() as usage:
+            updated = node(state)
+        if usage.call_count == 0:
+            return updated
+        return {**updated, "llm_call_count": state["llm_call_count"] + usage.call_count}
+
+    return accounted_node
 
 
 def _planning_guard_node(state: AgentState, limits: InvestigationLoopLimits) -> AgentState:

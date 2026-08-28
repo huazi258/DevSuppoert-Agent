@@ -33,6 +33,10 @@ class LLMEvidenceEvaluator:
     def __init__(self, llm_client: LLMClient) -> None:
         self._llm_client = llm_client
 
+    def with_llm_client(self, llm_client: LLMClient) -> "LLMEvidenceEvaluator":
+        """Rebind the shared client at the graph composition boundary."""
+        return type(self)(llm_client)
+
     def evaluate(self, state: AgentState) -> EvaluationDecision:
         """Return one validated decision without changing workflow state or calling a Tool."""
         try:

@@ -133,6 +133,9 @@ class WorkflowRuntime(Protocol):
     def retry_failed_task(self, thread_id: str) -> AgentState:
         """Continue a persisted failed thread when a later policy authorizes it."""
 
+    def record_retry_attempt(self, thread_id: str) -> None:
+        """Persist one authorized retry attempt before continuing the failed task."""
+
 
 class PostgresWorkflowRuntime:
     """The only production composition for a new persisted investigation."""
@@ -162,6 +165,12 @@ class PostgresWorkflowRuntime:
         with open_postgres_checkpointer() as checkpointer:
             service = WorkflowService(self._production_graph(checkpointer))
             return service.retry_failed_task(thread_id)
+
+    def record_retry_attempt(self, thread_id: str) -> None:
+        """Record retry usage in the existing LangGraph checkpoint, without a database table."""
+        with open_postgres_checkpointer() as checkpointer:
+            service = WorkflowService(self._checkpoint_reader_graph(checkpointer))
+            service.record_retry_attempt(thread_id)
 
     @staticmethod
     def _checkpoint_reader_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
@@ -274,6 +283,7 @@ class WorkflowConsoleService:
         if not self._is_retry_eligible(incident, state, failure):
             raise WorkflowConflictError("Workflow retry is not eligible for this Incident")
         try:
+            self._runtime.record_retry_attempt(incident.thread_id)
             result = self._runtime.retry_failed_task(incident.thread_id)
         except Exception as error:
             raise WorkflowRetryError("Workflow retry failed") from error

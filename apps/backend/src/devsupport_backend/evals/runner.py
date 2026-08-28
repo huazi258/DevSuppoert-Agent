@@ -559,6 +559,9 @@ class _RunnerWorkflowRuntime:
     def retry_failed_task(self, thread_id: str) -> AgentState:
         return self._workflow.retry_failed_task(thread_id)
 
+    def record_retry_attempt(self, thread_id: str) -> None:
+        self._workflow.record_retry_attempt(thread_id)
+
 
 @dataclass(frozen=True)
 class EvalRunOutput:

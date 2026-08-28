@@ -34,6 +34,7 @@ from devsupport_backend.workflow_console import (
     PostgresWorkflowRuntime,
     WorkflowConflictError,
     WorkflowConsoleService,
+    WorkflowRetryError,
     WorkflowStartError,
     WorkflowStateConflict,
     project_workflow_response,
@@ -47,14 +48,17 @@ class FakeRuntime:
         state=None,
         states: list[object | None] | None = None,
         start_error: Exception | None = None,
+        retry_error: Exception | None = None,
         failure: WorkflowFailure | None = None,
     ) -> None:
         self.state = state
         self.states = states or []
         self.start_error = start_error
+        self.retry_error = retry_error
         self.failure = failure
         self.start_calls = 0
         self.retry_calls = 0
+        self.retry_usage_calls = 0
         self.thread_ids: list[str] = []
         self.failure_thread_ids: list[str] = []
 
@@ -83,7 +87,18 @@ class FakeRuntime:
     def retry_failed_task(self, thread_id: str):
         self.retry_calls += 1
         self.thread_ids.append(thread_id)
-        raise AssertionError("Task 2 workflow reads must not continue failed tasks")
+        if self.retry_error is not None:
+            raise self.retry_error
+        if self.state is None:
+            raise AssertionError("successful fake retry requires a state")
+        return self.state
+
+    def record_retry_attempt(self, thread_id: str) -> None:
+        self.retry_usage_calls += 1
+        self.thread_ids.append(thread_id)
+        if self.state is None:
+            raise AssertionError("retry usage requires a persisted state")
+        self.state["workflow_retry_count"] += 1
 
 
 def _incident(session: Session, *, status: str = "OPEN") -> Incident:
@@ -432,6 +447,59 @@ def test_retry_available_requires_exact_failed_preapproval_task(database_session
     assert runtime.retry_calls == 0
     assert "failed_node" not in response.model_dump(mode="json")
     assert "safe_error" not in response.model_dump(mode="json")
+
+
+def test_eligible_retries_persist_usage_before_attempt_and_accumulate(
+    database_session: Session,
+) -> None:
+    incident = _incident(database_session, status="INVESTIGATING")
+    state = _state(incident)
+    state["current_stage"] = AgentStage.INVESTIGATION_PLANNING
+    runtime = FakeRuntime(
+        state=state,
+        failure=WorkflowFailure(
+            failed_node="investigation_planning",
+            safe_error="Persisted workflow task failed",
+        ),
+    )
+    service = WorkflowConsoleService(database_session, runtime)
+
+    service.retry(incident.id)
+    service.retry(incident.id)
+
+    assert runtime.retry_usage_calls == 2
+    assert runtime.retry_calls == 2
+    assert state["workflow_retry_count"] == 2
+
+
+def test_retry_failure_keeps_usage_and_ineligible_retry_does_not_consume_it(
+    database_session: Session,
+) -> None:
+    incident = _incident(database_session, status="INVESTIGATING")
+    state = _state(incident)
+    state["current_stage"] = AgentStage.INVESTIGATION_PLANNING
+    runtime = FakeRuntime(
+        state=state,
+        retry_error=RuntimeError("controlled retry failure"),
+        failure=WorkflowFailure(
+            failed_node="investigation_planning",
+            safe_error="Persisted workflow task failed",
+        ),
+    )
+    service = WorkflowConsoleService(database_session, runtime)
+
+    with pytest.raises(WorkflowRetryError, match="Workflow retry failed"):
+        service.retry(incident.id)
+
+    assert runtime.retry_usage_calls == 1
+    assert state["workflow_retry_count"] == 1
+    runtime.failure = WorkflowFailure(
+        failed_node="policy_gate",
+        safe_error="Persisted workflow task failed",
+    )
+    with pytest.raises(WorkflowConflictError, match="not eligible"):
+        service.retry(incident.id)
+    assert runtime.retry_usage_calls == 1
 
 
 @pytest.mark.parametrize(
