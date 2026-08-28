@@ -2,9 +2,9 @@
 
 ## Project
 
-DevSupport Agent V0
+DevSupport Agent V1
 
-面向研发团队的微服务故障调查与受控处置 Agent。
+DevSupport Agent V1 是面向研发团队的微服务故障调查 Agent。
 
 核心闭环：
 
@@ -21,7 +21,14 @@ Incident
 → Report
 ```
 
-V0 是可写入简历、可演示、可评测的正式版本，不是一次性 Demo。
+当前目标是在既有 V0 基础上，把 AI Investigator 做到：
+
+* stable；
+* explainable；
+* evaluable；
+* portable across investigation environments。
+
+V1 不进行 Incident Investigation Workspace 的大规模产品重构。
 
 ---
 
@@ -31,11 +38,11 @@ V0 是可写入简历、可演示、可评测的正式版本，不是一次性 D
 
 根据当前任务读取对应文档：
 
-| 需要了解              | 文档                            |
-| ----------------- | ----------------------------- |
-| 产品目标、功能范围、V0 不做什么 | `docs/PRD.md`                 |
-| 整体架构、模块边界、技术原则    | `docs/TECH_DESIGN.md`         |
-| 当前开发阶段、任务顺序、验收标准  | `docs/IMPLEMENTATION_PLAN.md` |
+| 需要了解 | 文档 |
+| --- | --- |
+| V1 产品目标、功能范围、非目标 | `docs/V1_SCOPE.md` |
+| V1 相对现有实现的技术变化 | `docs/V1_TECH_DELTA.md` |
+| 当前开发阶段、任务顺序、验收标准 | `docs/V1_IMPLEMENTATION_PLAN.md` |
 
 开始实现前：
 
@@ -44,22 +51,27 @@ V0 是可写入简历、可演示、可评测的正式版本，不是一次性 D
 3. 确认当前任务边界和验证方式；
 4. 再修改代码。
 
+旧文档 `docs/PRD.md`、`docs/TECH_DESIGN.md`、`docs/IMPLEMENTATION_PLAN.md` 保留为 V0 / 架构历史参考。若 V0 与 V1 文档冲突，以 V1 文档为准。
+
 如果当前任务与上述文档冲突，停止扩大实现并报告冲突。
 
 ---
 
-## Core V0 Constraints
+## Core Constraints
 
 长期必须遵守：
 
-1. V0 使用单 Agent，不引入 Multi-Agent。
+1. V1 使用单 Agent，不引入 Multi-Agent。
 2. Agent 只能通过白名单 Tool 获取运行信息或执行操作。
 3. 禁止给 Agent 任意 Shell、任意 SQL 或任意代码执行能力。
-4. `rollback_deployment` 是 V0 唯一允许的副作用 Agent Action。
+4. `rollback_deployment` 是 V1 唯一允许的副作用 Agent Action。
 5. Rollback 必须经过代码层 Policy Gate 和真实 Human Approval。
 6. Tool 执行成功不代表 Incident 已解决；必须独立执行 Recovery Verification。
 7. 不得把 Eval 正确答案或 Fault 根因硬编码进 Prompt、Agent Workflow 或 Tool。
-8. 不得擅自扩大 `docs/PRD.md` 定义的 V0 范围。
+8. Fault Lab 是 Eval / Ground Truth 环境；Real Integration 用于证明 Adapter 泛化。
+9. V1 不做 Service Registry、独立 Investigation Domain 重构、Human Investigation、Workspace IA、Multi-Agent 或大量新增 Remediation Actions。
+10. V2 Workspace 是 North Star，不是 V1 Backlog。
+11. 不得擅自扩大 `docs/V1_SCOPE.md` 定义的 V1 范围。
 
 ---
 
@@ -115,7 +127,7 @@ Ready for Review
 
 ## Git Commit Rule
 
-每完成一个 `docs/IMPLEMENTATION_PLAN.md` 中定义的子任务，并通过相关测试和验收后，必须创建一次独立 Git commit。
+每完成一个 `docs/V1_IMPLEMENTATION_PLAN.md` 中定义的子任务，并通过相关测试和验收后，必须创建一次独立 Git commit。
 
 提交前必须：
 
@@ -135,7 +147,7 @@ Ready for Review
 
 开发默认直接基于 `main`。
 
-每完成一个 `docs/IMPLEMENTATION_PLAN.md` 中的子任务，并通过测试和验收后：
+每完成一个 `docs/V1_IMPLEMENTATION_PLAN.md` 中的子任务，并通过测试和验收后：
 
 1. 检查 diff；
 2. 创建独立 commit；
