@@ -63,6 +63,8 @@ from devsupport_backend.evals.contracts import (
     EvalExecutionScope,
     EvalFixture,
     EvalFixtureSuite,
+    EvalLifecycleEvent,
+    EvalLifecyclePhase,
     EvalScore,
     InvestigationObservability,
     InvestigationToolName,
@@ -129,6 +131,13 @@ class LLMCallObserver(Protocol):
         outcome: str,
     ) -> None:
         """Record one completed or failed LLM call."""
+
+
+class EvalLifecycleObserver(Protocol):
+    """Evaluator-only marker observer for child-side lifecycle boundaries."""
+
+    def phase_reached(self, phase: EvalLifecyclePhase) -> None:
+        """Record a content-free Eval lifecycle marker."""
 
 
 @dataclass(frozen=True)
@@ -214,6 +223,7 @@ class _InvestigationObservabilityCollector:
     last_completed_node: str | None = None
     active_node: str | None = None
     active_llm_calls: dict[int, str | None] = field(default_factory=dict)
+    lifecycle_events: list[EvalLifecycleEvent] = field(default_factory=list)
 
     def accept(self, message: tuple) -> bool:
         """Consume one recognized evaluator observability message."""
@@ -246,6 +256,9 @@ class _InvestigationObservabilityCollector:
                 )
             )
             return True
+        if message[0] == "eval_phase":
+            self.lifecycle_events.append(EvalLifecycleEvent(phase=message[1]))
+            return True
         return False
 
     def snapshot(self, *, timed_out: bool) -> InvestigationObservability:
@@ -255,6 +268,9 @@ class _InvestigationObservabilityCollector:
             self.active_llm_calls[latest_active_call_id]
             if latest_active_call_id is not None
             else None
+        )
+        workflow_returned = any(
+            event.phase == "workflow_returned" for event in self.lifecycle_events
         )
         return InvestigationObservability(
             node_calls=self.node_calls,
@@ -268,7 +284,39 @@ class _InvestigationObservabilityCollector:
             last_completed_node=self.last_completed_node,
             active_node_at_timeout=self.active_node if timed_out else None,
             active_llm_call_node_at_timeout=active_llm_node if timed_out else None,
+            lifecycle_events=self.lifecycle_events,
+            workflow_returned_before_timeout=workflow_returned,
+            last_eval_phase_at_timeout=(
+                self.lifecycle_events[-1].phase if timed_out and self.lifecycle_events else None
+            ),
+            active_eval_phase_at_timeout=(
+                self._active_eval_phase() if timed_out else None
+            ),
+            timeout_classification=(
+                "eval_post_processing_timeout"
+                if timed_out and workflow_returned
+                else "workflow_timeout"
+                if timed_out
+                else None
+            ),
         )
+
+    def _active_eval_phase(self) -> str | None:
+        """Identify the incomplete Eval phase from ordered completed lifecycle markers."""
+        completed = {event.phase for event in self.lifecycle_events}
+        if "workflow_started" not in completed:
+            return None
+        if "workflow_returned" not in completed:
+            return "workflow_execution"
+        if "result_persisted" not in completed:
+            return "result_persistence"
+        if "result_collected" not in completed:
+            return "result_collection"
+        if "scoring_completed" not in completed:
+            return "scoring"
+        if "output_ready" not in completed:
+            return "output_preparation"
+        return "output_delivery"
 
 
 def _timing_stats(events) -> list[TimingStats]:
@@ -312,6 +360,28 @@ class _QueueLLMCallObserver:
         outcome: str,
     ) -> None:
         self._queue.put(("llm_finished", call_id, node_name, duration_ms, outcome))
+
+
+class _QueueEvalLifecycleObserver:
+    """Child-side lifecycle marker observer retained by the parent after termination."""
+
+    def __init__(self, queue) -> None:
+        self._queue = queue
+
+    def phase_reached(self, phase: EvalLifecyclePhase) -> None:
+        self._queue.put(("eval_phase", phase))
+
+
+def _notify_eval_lifecycle(
+    observer: EvalLifecycleObserver | None, phase: EvalLifecyclePhase
+) -> None:
+    """Discard marker failures so Eval diagnostics cannot alter workflow execution."""
+    if observer is None:
+        return
+    try:
+        observer.phase_reached(phase)
+    except Exception:
+        pass
 
 
 class FaultLabController(Protocol):
@@ -947,6 +1017,7 @@ def _full_workflow_child(fixture: EvalFixture, run_started_at: datetime, queue) 
         fault_lab = LiveFaultLabController()
         fault_lab.inject(fixture)
         fault_lab.generate_failure_signal(fixture)
+        lifecycle_observer = _QueueEvalLifecycleObserver(queue)
         output = _execute_full_workflow(
             fixture,
             run_started_at,
@@ -957,7 +1028,9 @@ def _full_workflow_child(fixture: EvalFixture, run_started_at: datetime, queue) 
             llm_observer=lambda count, latency: queue.put(("llm", count, latency)),
             node_observer=_QueueNodeObserver(queue),
             llm_call_observer=_QueueLLMCallObserver(queue),
+            lifecycle_observer=lifecycle_observer,
         )
+        _notify_eval_lifecycle(lifecycle_observer, "output_ready")
         queue.put(("output", output))
     except Exception as error:
         queue.put(("error", f"{type(error).__name__}: {error}"))
@@ -981,6 +1054,7 @@ def _execute_full_workflow(
     llm_observer: Callable[[int, float], None],
     node_observer: InvestigationNodeObserver | None = None,
     llm_call_observer: LLMCallObserver | None = None,
+    lifecycle_observer: EvalLifecycleObserver | None = None,
 ) -> EvalRunOutput:
     agent_input = fixture.agent_input(run_started_at)
     with SessionLocal() as session, open_postgres_checkpointer() as checkpointer:
@@ -999,7 +1073,9 @@ def _execute_full_workflow(
                 node_observer=node_observer,
             )
         )
+        _notify_eval_lifecycle(lifecycle_observer, "workflow_started")
         WorkflowConsoleService(session, _RunnerWorkflowRuntime(workflow)).start(incident.id)
+        _notify_eval_lifecycle(lifecycle_observer, "workflow_returned")
         state = workflow.get_state(incident.thread_id)
         state = EvaluationRunner()._handle_approval(session, workflow, incident, fixture, state)
         result = _persist_and_collect_result(
@@ -1010,8 +1086,13 @@ def _execute_full_workflow(
             latency_ms=_elapsed_ms(started),
             llm_call_count=observability.llm_call_count,
             llm_total_latency_ms=observability.llm_total_latency_ms,
+            on_result_persisted=lambda: _notify_eval_lifecycle(
+                lifecycle_observer, "result_persisted"
+            ),
         )
+    _notify_eval_lifecycle(lifecycle_observer, "result_collected")
     score = score_eval_case(fixture, result)
+    _notify_eval_lifecycle(lifecycle_observer, "scoring_completed")
     return EvalRunOutput(
         fixture_id=fixture.id,
         execution_scope=fixture.execution_scope,
@@ -1134,9 +1215,12 @@ def _persist_and_collect_result(
     latency_ms: float,
     llm_call_count: int | None = None,
     llm_total_latency_ms: float | None = None,
+    on_result_persisted: Callable[[], None] | None = None,
 ) -> EvalCaseResult:
     """Persist runtime projections, then collect the score input from persisted records."""
     _persist_state_observations(session, incident, state)
+    if on_result_persisted is not None:
+        on_result_persisted()
     session.refresh(incident)
     evidence = list(
         session.scalars(select(Evidence).where(Evidence.incident_id == incident.id))

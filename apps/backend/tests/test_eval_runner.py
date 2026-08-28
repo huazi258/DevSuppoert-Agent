@@ -51,7 +51,9 @@ from devsupport_backend.evals.runner import (
     _create_incident,
     _ForcedLogsAdapter,
     _InvestigationObservabilityCollector,
+    _notify_eval_lifecycle,
     _persist_and_collect_result,
+    _QueueEvalLifecycleObserver,
     _recover_partial_workflow_facts,
     aggregate_eval_outputs,
 )
@@ -531,6 +533,7 @@ def test_timeout_observability_retains_completed_and_in_flight_events() -> None:
     collector = _InvestigationObservabilityCollector()
 
     for message in (
+        ("eval_phase", "workflow_started"),
         ("node_started", "intake"),
         ("node_finished", "intake", 1.25, "completed"),
         ("llm_started", 1, "hypothesis_generation"),
@@ -545,6 +548,10 @@ def test_timeout_observability_retains_completed_and_in_flight_events() -> None:
     assert observability.last_completed_node == "intake"
     assert observability.active_node_at_timeout == "investigation_planning"
     assert observability.active_llm_call_node_at_timeout == "investigation_planning"
+    assert observability.workflow_returned_before_timeout is False
+    assert observability.last_eval_phase_at_timeout == "workflow_started"
+    assert observability.active_eval_phase_at_timeout == "workflow_execution"
+    assert observability.timeout_classification == "workflow_timeout"
     assert observability.node_stats[0].model_dump() == {
         "name": "intake",
         "call_count": 1,
@@ -558,6 +565,12 @@ def test_completed_observability_keeps_full_node_timing_without_active_state() -
     collector = _InvestigationObservabilityCollector()
 
     for message in (
+        ("eval_phase", "workflow_started"),
+        ("eval_phase", "workflow_returned"),
+        ("eval_phase", "result_persisted"),
+        ("eval_phase", "result_collected"),
+        ("eval_phase", "scoring_completed"),
+        ("eval_phase", "output_ready"),
         ("node_started", "planning_guard"),
         ("node_finished", "planning_guard", 1.0, "completed"),
         ("node_started", "planning_guard"),
@@ -570,11 +583,53 @@ def test_completed_observability_keeps_full_node_timing_without_active_state() -
     assert observability.last_completed_node == "planning_guard"
     assert observability.active_node_at_timeout is None
     assert observability.active_llm_call_node_at_timeout is None
+    assert observability.workflow_returned_before_timeout is True
+    assert [event.phase for event in observability.lifecycle_events] == [
+        "workflow_started",
+        "workflow_returned",
+        "result_persisted",
+        "result_collected",
+        "scoring_completed",
+        "output_ready",
+    ]
+    assert observability.last_eval_phase_at_timeout is None
+    assert observability.active_eval_phase_at_timeout is None
+    assert observability.timeout_classification is None
     assert observability.node_stats[0].model_dump() == {
         "name": "planning_guard",
         "call_count": 2,
         "total_duration_ms": 3.5,
     }
+
+
+def test_timeout_observability_classifies_post_workflow_output_preparation() -> None:
+    collector = _InvestigationObservabilityCollector()
+
+    for phase in (
+        "workflow_started",
+        "workflow_returned",
+        "result_persisted",
+        "result_collected",
+        "scoring_completed",
+    ):
+        assert collector.accept(("eval_phase", phase))
+
+    observability = collector.snapshot(timed_out=True)
+
+    assert observability.workflow_returned_before_timeout is True
+    assert observability.last_eval_phase_at_timeout == "scoring_completed"
+    assert observability.active_eval_phase_at_timeout == "output_preparation"
+    assert observability.timeout_classification == "eval_post_processing_timeout"
+
+
+def test_lifecycle_marker_queue_failure_is_discarded() -> None:
+    class FailingQueue:
+        def put(self, message: tuple) -> None:
+            raise RuntimeError(f"queue unavailable for {message[1]}")
+
+    observer = _QueueEvalLifecycleObserver(FailingQueue())
+
+    _notify_eval_lifecycle(observer, "workflow_started")
 
 
 def test_suite_cli_outputs_case_results_and_aggregate(
@@ -656,6 +711,7 @@ def test_timeout_returns_machine_failure_preserves_incident_and_cleans_up(
 
         def start(self) -> None:
             self._queue.put(("incident", str(incident_id), "timeout-thread"))
+            self._queue.put(("eval_phase", "workflow_started"))
             self._queue.put(("node_started", "intake"))
             self._queue.put(("node_finished", "intake", 1.0, "completed"))
             self._queue.put(("node_started", "hypothesis_generation"))
@@ -699,5 +755,8 @@ def test_timeout_returns_machine_failure_preserves_incident_and_cleans_up(
     assert output.observability.last_completed_node == "intake"
     assert output.observability.active_node_at_timeout == "hypothesis_generation"
     assert output.observability.active_llm_call_node_at_timeout == "hypothesis_generation"
+    assert output.observability.workflow_returned_before_timeout is False
+    assert output.observability.active_eval_phase_at_timeout == "workflow_execution"
+    assert output.observability.timeout_classification == "workflow_timeout"
     assert output.machine_output()["investigation_observability"] is not None
     assert fault_lab.resets == 2

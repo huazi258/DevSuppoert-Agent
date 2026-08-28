@@ -459,8 +459,33 @@ class TimingStats(EvalModel):
     total_duration_ms: float = Field(ge=0)
 
 
+EvalLifecyclePhase = Literal[
+    "workflow_started",
+    "workflow_returned",
+    "result_persisted",
+    "result_collected",
+    "scoring_completed",
+    "output_ready",
+]
+EvalActivePhase = Literal[
+    "workflow_execution",
+    "result_persistence",
+    "result_collection",
+    "scoring",
+    "output_preparation",
+    "output_delivery",
+]
+EvalTimeoutClassification = Literal["workflow_timeout", "eval_post_processing_timeout"]
+
+
+class EvalLifecycleEvent(EvalModel):
+    """One content-free Eval harness lifecycle marker from the child process."""
+
+    phase: EvalLifecyclePhase
+
+
 class InvestigationObservability(EvalModel):
-    """Best-effort investigation timing facts, including timeout-safe in-flight state."""
+    """Best-effort investigation and Eval lifecycle facts without raw runtime payloads."""
 
     node_calls: list[NodeCallEvent] = Field(default_factory=list, max_length=500)
     node_stats: list[TimingStats] = Field(default_factory=list, max_length=100)
@@ -469,6 +494,11 @@ class InvestigationObservability(EvalModel):
     last_completed_node: str | None = Field(default=None, max_length=100)
     active_node_at_timeout: str | None = Field(default=None, max_length=100)
     active_llm_call_node_at_timeout: str | None = Field(default=None, max_length=100)
+    lifecycle_events: list[EvalLifecycleEvent] = Field(default_factory=list, max_length=20)
+    workflow_returned_before_timeout: bool = False
+    last_eval_phase_at_timeout: EvalLifecyclePhase | None = None
+    active_eval_phase_at_timeout: EvalActivePhase | None = None
+    timeout_classification: EvalTimeoutClassification | None = None
 
 
 class EvalCaseResult(EvalModel):
