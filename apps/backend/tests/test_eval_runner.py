@@ -50,6 +50,7 @@ from devsupport_backend.evals.runner import (
     ObservedLLMClient,
     _create_incident,
     _ForcedLogsAdapter,
+    _InvestigationObservabilityCollector,
     _persist_and_collect_result,
     _recover_partial_workflow_facts,
     aggregate_eval_outputs,
@@ -526,6 +527,56 @@ def test_observed_llm_client_preserves_completion_input_and_records_latency(
     assert observability.llm_total_latency_ms == 250.0
 
 
+def test_timeout_observability_retains_completed_and_in_flight_events() -> None:
+    collector = _InvestigationObservabilityCollector()
+
+    for message in (
+        ("node_started", "intake"),
+        ("node_finished", "intake", 1.25, "completed"),
+        ("llm_started", 1, "hypothesis_generation"),
+        ("llm_finished", 1, "hypothesis_generation", 12.5, "completed"),
+        ("node_started", "investigation_planning"),
+        ("llm_started", 2, "investigation_planning"),
+    ):
+        assert collector.accept(message)
+
+    observability = collector.snapshot(timed_out=True)
+
+    assert observability.last_completed_node == "intake"
+    assert observability.active_node_at_timeout == "investigation_planning"
+    assert observability.active_llm_call_node_at_timeout == "investigation_planning"
+    assert observability.node_stats[0].model_dump() == {
+        "name": "intake",
+        "call_count": 1,
+        "total_duration_ms": 1.25,
+    }
+    assert observability.llm_calls[0].node_name == "hypothesis_generation"
+    assert observability.llm_calls[0].duration_ms == 12.5
+
+
+def test_completed_observability_keeps_full_node_timing_without_active_state() -> None:
+    collector = _InvestigationObservabilityCollector()
+
+    for message in (
+        ("node_started", "planning_guard"),
+        ("node_finished", "planning_guard", 1.0, "completed"),
+        ("node_started", "planning_guard"),
+        ("node_finished", "planning_guard", 2.5, "completed"),
+    ):
+        assert collector.accept(message)
+
+    observability = collector.snapshot(timed_out=False)
+
+    assert observability.last_completed_node == "planning_guard"
+    assert observability.active_node_at_timeout is None
+    assert observability.active_llm_call_node_at_timeout is None
+    assert observability.node_stats[0].model_dump() == {
+        "name": "planning_guard",
+        "call_count": 2,
+        "total_duration_ms": 3.5,
+    }
+
+
 def test_suite_cli_outputs_case_results_and_aggregate(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -605,6 +656,10 @@ def test_timeout_returns_machine_failure_preserves_incident_and_cleans_up(
 
         def start(self) -> None:
             self._queue.put(("incident", str(incident_id), "timeout-thread"))
+            self._queue.put(("node_started", "intake"))
+            self._queue.put(("node_finished", "intake", 1.0, "completed"))
+            self._queue.put(("node_started", "hypothesis_generation"))
+            self._queue.put(("llm_started", 3, "hypothesis_generation"))
             self._queue.put(("llm", 2, 12.5))
 
         def join(self, timeout: object = None) -> None:
@@ -640,4 +695,9 @@ def test_timeout_returns_machine_failure_preserves_incident_and_cleans_up(
     assert output.error == "TIMEOUT: workflow exceeded 10 seconds"
     assert output.llm_call_count == 2
     assert output.llm_total_latency_ms == 12.5
+    assert output.observability is not None
+    assert output.observability.last_completed_node == "intake"
+    assert output.observability.active_node_at_timeout == "hypothesis_generation"
+    assert output.observability.active_llm_call_node_at_timeout == "hypothesis_generation"
+    assert output.machine_output()["investigation_observability"] is not None
     assert fault_lab.resets == 2

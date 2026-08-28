@@ -434,6 +434,43 @@ class TokenUsage(EvalModel):
         return self
 
 
+class NodeCallEvent(EvalModel):
+    """One completed LangGraph node call without payload or state contents."""
+
+    node_name: str = Field(min_length=1, max_length=100)
+    duration_ms: float = Field(ge=0)
+    outcome: Literal["completed", "error"]
+
+
+class LLMCallEvent(EvalModel):
+    """One completed LLM call without prompts, responses, or token estimates."""
+
+    call_id: int = Field(ge=1)
+    node_name: str | None = Field(default=None, max_length=100)
+    duration_ms: float = Field(ge=0)
+    outcome: Literal["completed", "error"]
+
+
+class TimingStats(EvalModel):
+    """Aggregated duration for one node or one node-attributed LLM call group."""
+
+    name: str = Field(min_length=1, max_length=100)
+    call_count: int = Field(ge=1)
+    total_duration_ms: float = Field(ge=0)
+
+
+class InvestigationObservability(EvalModel):
+    """Best-effort investigation timing facts, including timeout-safe in-flight state."""
+
+    node_calls: list[NodeCallEvent] = Field(default_factory=list, max_length=500)
+    node_stats: list[TimingStats] = Field(default_factory=list, max_length=100)
+    llm_calls: list[LLMCallEvent] = Field(default_factory=list, max_length=100)
+    llm_stats: list[TimingStats] = Field(default_factory=list, max_length=100)
+    last_completed_node: str | None = Field(default=None, max_length=100)
+    active_node_at_timeout: str | None = Field(default=None, max_length=100)
+    active_llm_call_node_at_timeout: str | None = Field(default=None, max_length=100)
+
+
 class EvalCaseResult(EvalModel):
     """Machine-scoreable projection of one complete Agent workflow run."""
 

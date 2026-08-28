@@ -23,6 +23,10 @@ from devsupport_backend.agent.nodes.tool_execution import (
     ToolExecutionDependencies,
     tool_execution_node,
 )
+from devsupport_backend.agent.observability import (
+    InvestigationNodeObserver,
+    observe_investigation_node,
+)
 from devsupport_backend.agent.policy import PolicyGate, policy_gate_node
 from devsupport_backend.agent.post_approval import (
     ControlledActionExecution,
@@ -106,58 +110,104 @@ def build_investigation_graph(
     *,
     limits: InvestigationLoopLimits | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
+    observer: InvestigationNodeObserver | None = None,
 ) -> CompiledStateGraph:
     """Compile the bounded Day 3 graph with an optional externally owned checkpointer."""
     loop_limits = limits or InvestigationLoopLimits()
     graph = StateGraph(AgentState)
 
-    graph.add_node("intake", intake_node)
-    graph.add_node("retrieval", lambda state: retrieval_node(state, dependencies.rag_service))
+    graph.add_node("intake", observe_investigation_node("intake", intake_node, observer))
+    graph.add_node(
+        "retrieval",
+        observe_investigation_node(
+            "retrieval", lambda state: retrieval_node(state, dependencies.rag_service), observer
+        ),
+    )
     graph.add_node(
         "hypothesis_generation",
-        lambda state: hypothesis_generation_node(state, dependencies.llm_client),
+        observe_investigation_node(
+            "hypothesis_generation",
+            lambda state: hypothesis_generation_node(state, dependencies.llm_client),
+            observer,
+        ),
     )
     graph.add_node(
         "planning_guard",
-        lambda state: _planning_guard_node(state, loop_limits),
+        observe_investigation_node(
+            "planning_guard", lambda state: _planning_guard_node(state, loop_limits), observer
+        ),
     )
     graph.add_node(
         "investigation_planning",
-        lambda state: _investigation_planning_node(state, dependencies.llm_client),
+        observe_investigation_node(
+            "investigation_planning",
+            lambda state: _investigation_planning_node(state, dependencies.llm_client),
+            observer,
+        ),
     )
     graph.add_node(
         "tool_execution",
-        lambda state: _tool_execution_with_initial_evidence_batch(
-            state, dependencies.tool_execution
+        observe_investigation_node(
+            "tool_execution",
+            lambda state: _tool_execution_with_initial_evidence_batch(
+                state, dependencies.tool_execution
+            ),
+            observer,
         ),
     )
     graph.add_node(
         "hypothesis_update",
-        lambda state: _hypothesis_update_round_node(state, dependencies.llm_client),
+        observe_investigation_node(
+            "hypothesis_update",
+            lambda state: _hypothesis_update_round_node(state, dependencies.llm_client),
+            observer,
+        ),
     )
     graph.add_node(
         "evidence_evaluation",
-        lambda state: evidence_evaluation_node(state, dependencies.evaluator, loop_limits),
+        observe_investigation_node(
+            "evidence_evaluation",
+            lambda state: evidence_evaluation_node(state, dependencies.evaluator, loop_limits),
+            observer,
+        ),
     )
     graph.add_node(
         "resolution_proposal",
-        lambda state: resolution_proposal_node(state, dependencies.llm_client),
+        observe_investigation_node(
+            "resolution_proposal",
+            lambda state: resolution_proposal_node(state, dependencies.llm_client),
+            observer,
+        ),
     )
     graph.add_node(
         "policy_gate",
-        lambda state: policy_gate_node(state, dependencies.policy_gate),
+        observe_investigation_node(
+            "policy_gate", lambda state: policy_gate_node(state, dependencies.policy_gate), observer
+        ),
     )
     graph.add_node(
         "approval_wait",
-        lambda state: approval_wait_node(state, dependencies.approval_wait),
+        observe_investigation_node(
+            "approval_wait",
+            lambda state: approval_wait_node(state, dependencies.approval_wait),
+            observer,
+        ),
     )
     graph.add_node(
         "approval_interrupt",
-        lambda state: approval_interrupt_node(state, dependencies.approval_wait),
+        observe_investigation_node(
+            "approval_interrupt",
+            lambda state: approval_interrupt_node(state, dependencies.approval_wait),
+            observer,
+        ),
     )
     graph.add_node(
         "approval_decision",
-        lambda state: approval_decision_node(state, dependencies.approval_decision),
+        observe_investigation_node(
+            "approval_decision",
+            lambda state: approval_decision_node(state, dependencies.approval_decision),
+            observer,
+        ),
     )
     has_terminal_report = (
         dependencies.final_report is not None and dependencies.manual_terminalizer is not None
@@ -165,14 +215,21 @@ def build_investigation_graph(
     if has_terminal_report:
         graph.add_node(
             "manual_terminalization",
-            lambda state: dependencies.manual_terminalizer.mark_needs_manual_action(state),
+            observe_investigation_node(
+                "manual_terminalization",
+                lambda state: dependencies.manual_terminalizer.mark_needs_manual_action(state),
+                observer,
+            ),
         )
         if dependencies.action_execution is None:
-            add_final_report_node(graph, dependencies.final_report)
+            add_final_report_node(graph, dependencies.final_report, observer=observer)
         graph.add_edge("manual_terminalization", "final_report")
     else:
         # Keep route targets valid in pure Day 3 unit graphs without a report boundary.
-        graph.add_node("manual_terminalization", lambda state: state)
+        graph.add_node(
+            "manual_terminalization",
+            observe_investigation_node("manual_terminalization", lambda state: state, observer),
+        )
         graph.add_edge("manual_terminalization", END)
     if dependencies.action_execution is not None:
         add_post_approval_continuation(
@@ -180,6 +237,7 @@ def build_investigation_graph(
             action_execution=dependencies.action_execution,
             recovery_verification=dependencies.recovery_verification,
             final_report=dependencies.final_report,
+            observer=observer,
         )
 
     graph.add_edge(START, "intake")
@@ -255,6 +313,7 @@ def build_production_investigation_graph(
     session: Session,
     limits: InvestigationLoopLimits | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
+    observer: InvestigationNodeObserver | None = None,
 ) -> CompiledStateGraph:
     """Compose the formal start graph with its PostgreSQL terminal report boundaries."""
     from devsupport_backend.agent.terminalization import PostgresManualTerminalizer
@@ -268,6 +327,7 @@ def build_production_investigation_graph(
         ),
         limits=limits,
         checkpointer=checkpointer,
+        observer=observer,
     )
 
 

@@ -4,6 +4,10 @@ from typing import Protocol
 
 from langgraph.graph import END, StateGraph
 
+from devsupport_backend.agent.observability import (
+    InvestigationNodeObserver,
+    observe_investigation_node,
+)
 from devsupport_backend.agent.state import AgentStage, AgentState
 
 
@@ -24,11 +28,21 @@ class FinalReport(Protocol):
         """Persist a deterministic terminal audit projection."""
 
 
-def add_final_report_node(graph: StateGraph, final_report: FinalReport) -> None:
+def add_final_report_node(
+    graph: StateGraph,
+    final_report: FinalReport,
+    *,
+    observer: InvestigationNodeObserver | None = None,
+) -> None:
     """Add the one shared terminal report node used by every eligible topology."""
     from devsupport_backend.final_report import final_report_node
 
-    graph.add_node("final_report", lambda state: final_report_node(state, final_report))
+    graph.add_node(
+        "final_report",
+        observe_investigation_node(
+            "final_report", lambda state: final_report_node(state, final_report), observer
+        ),
+    )
     graph.add_edge("final_report", END)
 
 
@@ -38,13 +52,18 @@ def add_post_approval_continuation(
     action_execution: ControlledActionExecution,
     recovery_verification: RecoveryVerification | None = None,
     final_report: FinalReport | None = None,
+    observer: InvestigationNodeObserver | None = None,
 ) -> None:
     """Use identical node names and edges after approval in both graph entry paths."""
     from devsupport_backend.action_execution import controlled_action_execution_node
 
     graph.add_node(
         "controlled_action_execution",
-        lambda state: controlled_action_execution_node(state, action_execution),
+        observe_investigation_node(
+            "controlled_action_execution",
+            lambda state: controlled_action_execution_node(state, action_execution),
+            observer,
+        ),
     )
     graph.add_conditional_edges(
         "approval_decision",
@@ -58,7 +77,7 @@ def add_post_approval_continuation(
         },
     )
     if final_report is not None:
-        add_final_report_node(graph, final_report)
+        add_final_report_node(graph, final_report, observer=observer)
     if recovery_verification is None:
         graph.add_conditional_edges(
             "controlled_action_execution",
@@ -70,7 +89,11 @@ def add_post_approval_continuation(
 
     graph.add_node(
         "recovery_verification",
-        lambda state: recovery_verification_node(state, recovery_verification),
+        observe_investigation_node(
+            "recovery_verification",
+            lambda state: recovery_verification_node(state, recovery_verification),
+            observer,
+        ),
     )
     graph.add_conditional_edges(
         "controlled_action_execution",

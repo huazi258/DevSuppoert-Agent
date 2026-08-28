@@ -9,7 +9,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from queue import Empty
@@ -25,6 +25,10 @@ from devsupport_backend.action_execution import ActionExecutionService
 from devsupport_backend.agent.evidence_evaluator import LLMEvidenceEvaluator
 from devsupport_backend.agent.llm import LLMClient, OpenAICompatibleLLMClient
 from devsupport_backend.agent.nodes.tool_execution import ToolExecutionDependencies
+from devsupport_backend.agent.observability import (
+    InvestigationNodeObserver,
+    active_investigation_node,
+)
 from devsupport_backend.agent.persistence import open_postgres_checkpointer
 from devsupport_backend.agent.policy import PolicyGateService
 from devsupport_backend.agent.runtime import WorkflowService
@@ -60,7 +64,10 @@ from devsupport_backend.evals.contracts import (
     EvalFixture,
     EvalFixtureSuite,
     EvalScore,
+    InvestigationObservability,
     InvestigationToolName,
+    LLMCallEvent,
+    NodeCallEvent,
     ObservedAction,
     ObservedApproval,
     ObservedEvidence,
@@ -71,6 +78,7 @@ from devsupport_backend.evals.contracts import (
     PartialEvalFacts,
     PolicySafetyFixture,
     RunnerPreparation,
+    TimingStats,
     load_eval_fixture_suite,
     score_eval_case,
 )
@@ -107,13 +115,65 @@ class EvalRunnerError(RuntimeError):
     """A case could not run to a scoreable terminal outcome."""
 
 
+class LLMCallObserver(Protocol):
+    """Evaluator-only observer for LLM lifecycle events without request content."""
+
+    def llm_call_started(self, call_id: int, node_name: str | None) -> None:
+        """Record a started LLM call."""
+
+    def llm_call_finished(
+        self,
+        call_id: int,
+        node_name: str | None,
+        duration_ms: float,
+        outcome: str,
+    ) -> None:
+        """Record one completed or failed LLM call."""
+
+
+@dataclass(frozen=True)
+class _InFlightLLMCall:
+    call_id: int
+    node_name: str | None
+    started: float
+
+
 @dataclass
 class LLMObservability:
     """Evaluator-only completion counters; no prompt, response, or token fabrication."""
 
     observer: Callable[[int, float], None] | None = None
+    call_observer: LLMCallObserver | None = None
     llm_call_count: int = 0
     llm_total_latency_ms: float = 0.0
+    _next_call_id: int = 1
+
+    def start_call(self, node_name: str | None) -> _InFlightLLMCall:
+        """Start a content-free evaluator timing event before the delegate is called."""
+        call = _InFlightLLMCall(
+            call_id=self._next_call_id,
+            node_name=node_name,
+            started=perf_counter(),
+        )
+        self._next_call_id += 1
+        if self.call_observer is not None:
+            try:
+                self.call_observer.llm_call_started(call.call_id, call.node_name)
+            except Exception:
+                pass
+        return call
+
+    def finish_call(self, call: _InFlightLLMCall, outcome: str) -> None:
+        """Finish a call even when the underlying LLM client raises."""
+        elapsed_ms = _elapsed_ms(call.started)
+        self.record(elapsed_ms)
+        if self.call_observer is not None:
+            try:
+                self.call_observer.llm_call_finished(
+                    call.call_id, call.node_name, elapsed_ms, outcome
+                )
+            except Exception:
+                pass
 
     def record(self, elapsed_ms: float) -> None:
         self.llm_call_count += 1
@@ -134,11 +194,124 @@ class ObservedLLMClient:
         self._observability = observability
 
     def complete(self, *, system_prompt: str, user_prompt: str) -> str:
-        started = perf_counter()
+        call = self._observability.start_call(active_investigation_node())
+        outcome = "completed"
         try:
             return self._delegate.complete(system_prompt=system_prompt, user_prompt=user_prompt)
+        except BaseException:
+            outcome = "error"
+            raise
         finally:
-            self._observability.record(_elapsed_ms(started))
+            self._observability.finish_call(call, outcome)
+
+
+@dataclass
+class _InvestigationObservabilityCollector:
+    """Parent-owned reconstruction of child workflow timing and in-flight state."""
+
+    node_calls: list[NodeCallEvent] = field(default_factory=list)
+    llm_calls: list[LLMCallEvent] = field(default_factory=list)
+    last_completed_node: str | None = None
+    active_node: str | None = None
+    active_llm_calls: dict[int, str | None] = field(default_factory=dict)
+
+    def accept(self, message: tuple) -> bool:
+        """Consume one recognized evaluator observability message."""
+        if message[0] == "node_started":
+            self.active_node = message[1]
+            return True
+        if message[0] == "node_finished":
+            node_name, duration_ms, outcome = message[1:]
+            self.node_calls.append(
+                NodeCallEvent(node_name=node_name, duration_ms=duration_ms, outcome=outcome)
+            )
+            if outcome == "completed":
+                self.last_completed_node = node_name
+            if self.active_node == node_name:
+                self.active_node = None
+            return True
+        if message[0] == "llm_started":
+            call_id, node_name = message[1:]
+            self.active_llm_calls[call_id] = node_name
+            return True
+        if message[0] == "llm_finished":
+            call_id, node_name, duration_ms, outcome = message[1:]
+            self.active_llm_calls.pop(call_id, None)
+            self.llm_calls.append(
+                LLMCallEvent(
+                    call_id=call_id,
+                    node_name=node_name,
+                    duration_ms=duration_ms,
+                    outcome=outcome,
+                )
+            )
+            return True
+        return False
+
+    def snapshot(self, *, timed_out: bool) -> InvestigationObservability:
+        """Project only completed timings plus timeout-only in-flight facts."""
+        latest_active_call_id = next(reversed(self.active_llm_calls), None)
+        active_llm_node = (
+            self.active_llm_calls[latest_active_call_id]
+            if latest_active_call_id is not None
+            else None
+        )
+        return InvestigationObservability(
+            node_calls=self.node_calls,
+            node_stats=_timing_stats(
+                ((item.node_name, item.duration_ms) for item in self.node_calls)
+            ),
+            llm_calls=self.llm_calls,
+            llm_stats=_timing_stats(
+                ((item.node_name or "unattributed", item.duration_ms) for item in self.llm_calls)
+            ),
+            last_completed_node=self.last_completed_node,
+            active_node_at_timeout=self.active_node if timed_out else None,
+            active_llm_call_node_at_timeout=active_llm_node if timed_out else None,
+        )
+
+
+def _timing_stats(events) -> list[TimingStats]:
+    totals: dict[str, tuple[int, float]] = {}
+    for name, duration_ms in events:
+        count, total = totals.get(name, (0, 0.0))
+        totals[name] = (count + 1, total + duration_ms)
+    return [
+        TimingStats(name=name, call_count=count, total_duration_ms=round(total, 2))
+        for name, (count, total) in sorted(totals.items())
+    ]
+
+
+class _QueueNodeObserver:
+    """Child-side node observer whose parent can retain in-flight state after termination."""
+
+    def __init__(self, queue) -> None:
+        self._queue = queue
+
+    def node_started(self, node_name: str) -> None:
+        self._queue.put(("node_started", node_name))
+
+    def node_finished(self, node_name: str, duration_ms: float, outcome: str) -> None:
+        self._queue.put(("node_finished", node_name, duration_ms, outcome))
+
+
+class _QueueLLMCallObserver:
+    """Child-side content-free LLM lifecycle observer."""
+
+    def __init__(self, queue) -> None:
+        self._queue = queue
+
+    def llm_call_started(self, call_id: int, node_name: str | None) -> None:
+        self._queue.put(("llm_started", call_id, node_name))
+
+    def llm_call_finished(
+        self,
+        call_id: int,
+        node_name: str | None,
+        duration_ms: float,
+        outcome: str,
+    ) -> None:
+        self._queue.put(("llm_finished", call_id, node_name, duration_ms, outcome))
 
 
 class FaultLabController(Protocol):
@@ -324,6 +497,7 @@ class EvalRunOutput:
     latency_ms: float
     llm_call_count: int | None = None
     llm_total_latency_ms: float | None = None
+    observability: InvestigationObservability | None = None
     partial_facts: PartialEvalFacts | None = None
     error: str | None = None
 
@@ -359,6 +533,11 @@ class EvalRunOutput:
             "latency_ms": self.latency_ms,
             "llm_call_count": self.llm_call_count,
             "llm_total_latency_ms": self.llm_total_latency_ms,
+            "investigation_observability": (
+                self.observability.model_dump(mode="json")
+                if self.observability is not None
+                else None
+            ),
             "token_usage": (
                 self.result.token_usage.model_dump(mode="json")
                 if self.result is not None and self.result.token_usage is not None
@@ -517,12 +696,16 @@ class EvaluationRunner:
         thread_id: str | None = None
         llm_call_count = 0
         llm_total_latency_ms = 0.0
+        observability = _InvestigationObservabilityCollector()
         output: EvalRunOutput | None = None
+        timed_out = False
         cleanup_error: str | None = None
 
         def collect_child_messages() -> None:
             nonlocal incident_id, thread_id, llm_call_count, llm_total_latency_ms, output
             for message in _drain_child_messages(queue):
+                if observability.accept(message):
+                    continue
                 if message[0] == "incident":
                     incident_id = UUID(message[1])
                     thread_id = message[2]
@@ -552,6 +735,7 @@ class EvaluationRunner:
             process.join(fixture.runner_preparation.case_timeout_seconds)
             collect_child_messages()
             if process.is_alive():
+                timed_out = True
                 process.terminate()
                 process.join()
                 collect_child_messages()
@@ -592,6 +776,7 @@ class EvaluationRunner:
                     output,
                     partial_facts=_recover_partial_workflow_facts(incident_id, thread_id),
                 )
+            output = replace(output, observability=observability.snapshot(timed_out=timed_out))
         finally:
             try:
                 self._fault_lab.reset()
@@ -770,6 +955,8 @@ def _full_workflow_child(fixture: EvalFixture, run_started_at: datetime, queue) 
                 ("incident", str(incident.id), incident.thread_id)
             ),
             llm_observer=lambda count, latency: queue.put(("llm", count, latency)),
+            node_observer=_QueueNodeObserver(queue),
+            llm_call_observer=_QueueLLMCallObserver(queue),
         )
         queue.put(("output", output))
     except Exception as error:
@@ -792,14 +979,25 @@ def _execute_full_workflow(
     *,
     on_incident: Callable[[Incident], None],
     llm_observer: Callable[[int, float], None],
+    node_observer: InvestigationNodeObserver | None = None,
+    llm_call_observer: LLMCallObserver | None = None,
 ) -> EvalRunOutput:
     agent_input = fixture.agent_input(run_started_at)
     with SessionLocal() as session, open_postgres_checkpointer() as checkpointer:
         incident = _create_incident(session, agent_input)
         on_incident(incident)
-        observability = LLMObservability(observer=llm_observer)
+        observability = LLMObservability(
+            observer=llm_observer,
+            call_observer=llm_call_observer,
+        )
         workflow = WorkflowService(
-            _build_runner_graph(session, checkpointer, fixture.runner_preparation, observability)
+            _build_runner_graph(
+                session,
+                checkpointer,
+                fixture.runner_preparation,
+                observability,
+                node_observer=node_observer,
+            )
         )
         WorkflowConsoleService(session, _RunnerWorkflowRuntime(workflow)).start(incident.id)
         state = workflow.get_state(incident.thread_id)
@@ -834,6 +1032,8 @@ def _build_runner_graph(
     checkpointer,
     preparation: RunnerPreparation,
     observability: LLMObservability,
+    *,
+    node_observer: InvestigationNodeObserver | None = None,
 ):
     """Compose the real graph with evaluator-only adapter seams for deterministic failures."""
     llm_client = ObservedLLMClient(
@@ -882,7 +1082,10 @@ def _build_runner_graph(
         ),
     )
     return build_production_investigation_graph(
-        dependencies, session=session, checkpointer=checkpointer
+        dependencies,
+        session=session,
+        checkpointer=checkpointer,
+        observer=node_observer,
     )
 
 
