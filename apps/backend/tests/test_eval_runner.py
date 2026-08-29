@@ -11,6 +11,7 @@ from queue import Queue
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from devsupport_backend.agent.evidence_evaluator import LLMEvidenceEvaluator
@@ -23,6 +24,9 @@ from devsupport_backend.agent.state import (
     EvidenceContext,
     HypothesisContext,
     HypothesisStatus,
+    PolicyDecision,
+    PolicyOutcome,
+    PolicyReasonCode,
     TerminalReason,
     ToolHistoryEntry,
     create_initial_agent_state,
@@ -64,7 +68,7 @@ from devsupport_backend.evals.runner import (
     _strongest_hypothesis,
     aggregate_eval_outputs,
 )
-from devsupport_backend.models import Action, Hypothesis, Incident
+from devsupport_backend.models import Action, Approval, Hypothesis, Incident
 from devsupport_backend.tools.logs import LogsAdapterError
 from devsupport_backend.tools.registry import ToolName
 from devsupport_backend.tools.schemas import QueryLogsInput, ToolStatus
@@ -215,7 +219,7 @@ def test_approval_routes_through_the_same_incident_thread(
     fixture = _full_fixture(case_id)
     incident = _create_incident(database_session, fixture.agent_input(RUN_STARTED_AT))
     state = create_initial_agent_state(incident)
-    state["current_stage"] = AgentStage.WAITING_APPROVAL
+    state["current_stage"] = AgentStage.WAITING_APPROVAL.value
     recorded: dict[str, object] = {}
 
     class RecordedApprovalService:
@@ -251,6 +255,164 @@ def test_approval_routes_through_the_same_incident_thread(
     assert recorded["decision"] == expected_decision
     assert recorded["resume_thread_id"] == incident.thread_id
     assert recorded["payload"] == {"event": "approval_recorded"}
+
+
+@pytest.mark.parametrize(
+    ("case_id", "expected_status"),
+    [("a-approve-happy", "APPROVED"), ("a-approval-reject", "REJECTED")],
+)
+def test_approval_decision_binds_the_real_pending_action_and_resumes_same_thread(
+    database_session: Session, case_id: str, expected_status: str
+) -> None:
+    fixture = _full_fixture(case_id)
+    incident = _create_incident(database_session, fixture.agent_input(RUN_STARTED_AT))
+    incident.status = "WAITING_APPROVAL"
+    action = Action(
+        incident_id=incident.id,
+        action_type=ActionType.ROLLBACK_DEPLOYMENT.value,
+        status="PENDING_APPROVAL",
+        parameters={
+            "service": incident.service,
+            "environment": incident.environment,
+            "current_version": "v1.1.0",
+            "target_version": "v1.0.0",
+            "reason": "A verified rollback proposal requires human approval.",
+        },
+        executed_at=None,
+    )
+    database_session.add(action)
+    database_session.commit()
+    state = create_initial_agent_state(incident)
+    state.update(
+        {
+            "current_stage": AgentStage.WAITING_APPROVAL.value,
+            "policy_outcome": PolicyOutcome(
+                decision=PolicyDecision.APPROVAL_REQUIRED,
+                reason_code=PolicyReasonCode.APPROVAL_REQUIRED,
+                reason="A verified rollback requires human approval.",
+                action_id=action.id,
+            ),
+        }
+    )
+    resumed_threads: list[str] = []
+
+    class SameThreadWorkflow:
+        def get_state(self, thread_id: str):
+            assert thread_id == incident.thread_id
+            return state
+
+        def resume(self, thread_id: str, payload: object):
+            assert payload == {"event": "approval_recorded"}
+            resumed_threads.append(thread_id)
+            return state
+
+    result = EvaluationRunner()._handle_approval(  # noqa: SLF001
+        database_session,
+        SameThreadWorkflow(),
+        incident,
+        fixture,
+        state,
+    )
+
+    approval = database_session.scalar(select(Approval).where(Approval.action_id == action.id))
+    assert result is state
+    assert approval is not None
+    assert approval.incident_id == incident.id
+    assert approval.action_id == action.id
+    assert approval.status == expected_status
+    assert resumed_threads == [incident.thread_id]
+
+
+def test_expected_approval_collects_a_legitimate_manual_terminal_result(
+    database_session: Session,
+) -> None:
+    fixture = _full_fixture("a-approval-reject")
+    incident = _create_incident(database_session, fixture.agent_input(RUN_STARTED_AT))
+    incident.status = "NEEDS_MANUAL_ACTION"
+    database_session.commit()
+    state = create_initial_agent_state(incident)
+    state.update(
+        {
+            "current_stage": AgentStage.NEEDS_MANUAL_ACTION.value,
+            "terminal_reason": TerminalReason.POLICY_DENIED.value,
+            "policy_outcome": PolicyOutcome(
+                decision=PolicyDecision.DENIED,
+                reason_code=PolicyReasonCode.MANUAL_ACTION,
+                reason="The workflow legitimately terminalized without an executable Action.",
+            ),
+        }
+    )
+
+    class TerminalWorkflow:
+        def resume(self, thread_id: str, payload: object):
+            raise AssertionError(f"terminal workflow must not resume {thread_id}: {payload}")
+
+    handled = EvaluationRunner()._handle_approval(  # noqa: SLF001
+        database_session,
+        TerminalWorkflow(),
+        incident,
+        fixture,
+        state,
+    )
+    result = _persist_and_collect_result(
+        database_session, fixture, incident, handled, latency_ms=12.5
+    )
+    output = EvalRunOutput(
+        fixture_id=fixture.id,
+        execution_scope=fixture.execution_scope,
+        incident_id=result.incident_id,
+        thread_id=result.thread_id,
+        final_outcome=result.actual_final_status.value,
+        score=score_eval_case(fixture, result),
+        result=result,
+        passed=False,
+        latency_ms=result.latency_ms,
+        terminal_reason=TerminalReason.POLICY_DENIED.value,
+    ).machine_output()
+
+    assert handled is state
+    assert result.actual_final_status is EvalFinalStatus.NEEDS_MANUAL_ACTION
+    assert result.actual_policy_decision is PolicyDecision.DENIED
+    assert result.approval is None
+    assert database_session.query(Approval).filter(Approval.incident_id == incident.id).count() == 0
+    assert output["terminal_reason"] == TerminalReason.POLICY_DENIED.value
+    assert output["failure_category"] is None
+
+
+def test_expected_approval_fails_closed_for_a_nonterminal_nonapproval_stage(
+    database_session: Session,
+) -> None:
+    fixture = _full_fixture("a-approval-reject")
+    incident = _create_incident(database_session, fixture.agent_input(RUN_STARTED_AT))
+    state = create_initial_agent_state(incident)
+    state["current_stage"] = AgentStage.HYPOTHESIS_UPDATE.value
+
+    with pytest.raises(EvalRunnerError, match="did not reach"):
+        EvaluationRunner()._handle_approval(  # noqa: SLF001
+            database_session,
+            object(),  # type: ignore[arg-type]
+            incident,
+            fixture,
+            state,
+        )
+
+
+def test_not_required_case_fails_closed_for_a_persisted_approval_checkpoint(
+    database_session: Session,
+) -> None:
+    fixture = _full_fixture("b-payment-timeout-standard")
+    incident = _create_incident(database_session, fixture.agent_input(RUN_STARTED_AT))
+    state = create_initial_agent_state(incident)
+    state["current_stage"] = AgentStage.WAITING_APPROVAL.value
+
+    with pytest.raises(EvalRunnerError, match="requested approval"):
+        EvaluationRunner()._handle_approval(  # noqa: SLF001
+            database_session,
+            object(),  # type: ignore[arg-type]
+            incident,
+            fixture,
+            state,
+        )
 
 
 def test_persisted_collection_constructs_and_scores_eval_case_result(

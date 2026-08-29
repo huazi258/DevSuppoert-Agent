@@ -114,6 +114,9 @@ from devsupport_backend.workflow_console import PostgresWorkflowRuntime, Workflo
 DEFAULT_SUITE_PATH = Path(__file__).resolve().parents[5] / "evals" / "initial_suite.yaml"
 _EVAL_IPC_POLL_SECONDS = 0.1
 _EVAL_IPC_FINAL_DRAIN_SECONDS = 0.2
+_EVAL_COLLECTABLE_TERMINAL_STAGES = frozenset(
+    {AgentStage.NEEDS_MANUAL_ACTION, AgentStage.RESOLVED}
+)
 
 
 class EvalRunnerError(RuntimeError):
@@ -908,11 +911,14 @@ class EvaluationRunner:
         state: AgentState,
     ) -> AgentState:
         behavior = fixture.expectations.approval_behavior
+        stage = _persisted_agent_stage(state.get("current_stage"))
         if behavior is ApprovalBehavior.NOT_REQUIRED:
-            if state["current_stage"] is AgentStage.WAITING_APPROVAL:
+            if stage is AgentStage.WAITING_APPROVAL:
                 raise EvalRunnerError("workflow requested approval for a not_required case")
             return state
-        if state["current_stage"] is not AgentStage.WAITING_APPROVAL:
+        if stage in _EVAL_COLLECTABLE_TERMINAL_STAGES:
+            return state
+        if stage is not AgentStage.WAITING_APPROVAL:
             raise EvalRunnerError("workflow did not reach the expected approval checkpoint")
         decision = (
             ApprovalStatus.APPROVED
@@ -967,6 +973,14 @@ class EvaluationRunner:
             passed=passed,
             latency_ms=_elapsed_ms(started),
         )
+
+
+def _persisted_agent_stage(value: object) -> AgentStage | None:
+    """Normalize the checkpoint-safe stage form at the Eval approval boundary only."""
+    try:
+        return AgentStage(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class _UnexpectedDeploymentAdapter:

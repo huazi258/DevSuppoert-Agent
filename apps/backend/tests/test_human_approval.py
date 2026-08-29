@@ -447,7 +447,9 @@ def test_postgres_interrupt_persists_waiting_state_across_reopen(
                 checkpointer=second_checkpointer,
                 approval_wait=ApprovalWaitService(database_session),
             )
-            recovered = second_graph.get_state(config).values
+            reopened_service = WorkflowService(second_graph)
+            snapshot = second_graph.get_state(config)
+            recovered = reopened_service.get_state(incident.thread_id)
             reader_recovered = PostgresWorkflowStateReader().get_state(incident.thread_id)
 
         database_session.refresh(incident)
@@ -456,11 +458,18 @@ def test_postgres_interrupt_persists_waiting_state_across_reopen(
         assert interrupt_value["action_id"] == str(action.id)
         assert "approval_id" not in interrupt_value
         assert "approved" not in interrupt_value
-        assert recovered["current_stage"] == AgentStage.WAITING_APPROVAL
+        recovered_stage = recovered["current_stage"]
+        assert recovered_stage == AgentStage.WAITING_APPROVAL
+        assert type(recovered_stage) is str
+        assert recovered_stage is not AgentStage.WAITING_APPROVAL
+        assert any(
+            task.name == "approval_interrupt" and task.interrupts for task in snapshot.tasks
+        )
         assert recovered["policy_outcome"] is not None
         assert recovered["policy_outcome"].action_id == action.id
         assert reader_recovered["current_stage"] == AgentStage.WAITING_APPROVAL
         assert incident.status == WAITING_APPROVAL
+        assert action.status == PENDING_APPROVAL
         assert database_session.query(Approval).filter(Approval.action_id == action.id).count() == 0
     finally:
         _delete_thread(incident.thread_id)
