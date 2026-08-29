@@ -13,15 +13,19 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.orm import Session
 
+from devsupport_backend.agent.evidence_evaluator import LLMEvidenceEvaluator
+from devsupport_backend.agent.observability import observe_investigation_node
 from devsupport_backend.agent.state import (
     ActionType,
     AgentStage,
+    EvaluationDecision,
     EvidenceContext,
     HypothesisContext,
     HypothesisStatus,
     ToolHistoryEntry,
     create_initial_agent_state,
 )
+from devsupport_backend.agent.workflow import InvestigationLoopLimits, evidence_evaluation_node
 from devsupport_backend.evals.contracts import (
     ApprovalTriggerScore,
     EfficiencyMetrics,
@@ -584,6 +588,85 @@ def test_machine_output_exposes_terminal_reason_for_completed_workflow() -> None
     )
 
     assert output.machine_output()["terminal_reason"] == "investigation_inconclusive"
+
+
+def test_deterministic_evidence_conclusion_records_node_without_an_llm_call() -> None:
+    collector = _InvestigationObservabilityCollector()
+
+    class CollectorNodeObserver:
+        def node_started(self, node_name: str) -> None:
+            collector.accept(("node_started", node_name))
+
+        def node_finished(self, node_name: str, duration_ms: float, outcome: str) -> None:
+            collector.accept(("node_finished", node_name, duration_ms, outcome))
+
+    class CollectorLLMObserver:
+        def llm_call_started(self, call_id: int, node_name: str | None) -> None:
+            collector.accept(("llm_started", call_id, node_name))
+
+        def llm_call_finished(
+            self, call_id: int, node_name: str | None, duration_ms: float, outcome: str
+        ) -> None:
+            collector.accept(("llm_finished", call_id, node_name, duration_ms, outcome))
+
+    class EvaluationDelegate:
+        def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+            del system_prompt, user_prompt
+            return json.dumps({"decision": "CONTINUE", "reason": "More evidence is useful."})
+
+    incident = Incident(
+        id=uuid4(),
+        service="order-service",
+        environment="local",
+        description="Observe the evidence evaluation boundary.",
+        time_range_start=RUN_STARTED_AT - timedelta(minutes=5),
+        time_range_end=RUN_STARTED_AT,
+        thread_id="deterministic-observability-thread",
+    )
+    grounded = create_initial_agent_state(incident)
+    evidence = EvidenceContext(
+        evidence_type="metric_snapshot",
+        source="query_metrics",
+        summary="The metric grounds a confirmed hypothesis.",
+    )
+    hypothesis = HypothesisContext(
+        summary="A confirmed issue has real support.",
+        status=HypothesisStatus.CONFIRMED,
+        confidence=0.7,
+        supporting_evidence_ids=[evidence.id],
+    )
+    grounded.update(
+        {
+            "current_stage": AgentStage.EVIDENCE_EVALUATION,
+            "evidence": [evidence],
+            "hypotheses": [hypothesis],
+        }
+    )
+    evaluator = LLMEvidenceEvaluator(
+        ObservedLLMClient(
+            EvaluationDelegate(),
+            LLMObservability(call_observer=CollectorLLMObserver()),
+        )
+    )
+    observed_node = observe_investigation_node(
+        "evidence_evaluation",
+        lambda state: evidence_evaluation_node(state, evaluator, InvestigationLoopLimits()),
+        CollectorNodeObserver(),
+    )
+
+    completed = observed_node(grounded)
+
+    assert completed["evaluation_decision"] is EvaluationDecision.CONCLUDE
+    assert [event.node_name for event in collector.node_calls] == ["evidence_evaluation"]
+    assert collector.llm_calls == []
+
+    ungrounded = create_initial_agent_state(incident)
+    ungrounded["current_stage"] = AgentStage.EVIDENCE_EVALUATION
+
+    continued = observed_node(ungrounded)
+
+    assert continued["evaluation_decision"] is EvaluationDecision.CONTINUE
+    assert collector.llm_calls[-1].node_name == "evidence_evaluation"
 
 
 def test_observed_llm_client_preserves_completion_input_and_records_latency(

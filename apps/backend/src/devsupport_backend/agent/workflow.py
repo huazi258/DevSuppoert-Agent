@@ -19,7 +19,10 @@ from devsupport_backend.agent.budget import (
     collect_llm_usage,
     current_active_execution_seconds,
 )
-from devsupport_backend.agent.evidence_evaluator import LLMEvidenceEvaluator
+from devsupport_backend.agent.evidence_evaluator import (
+    LLMEvidenceEvaluator,
+    is_conclusion_eligible,
+)
 from devsupport_backend.agent.llm import LLMClient
 from devsupport_backend.agent.nodes.hypothesis_generation import hypothesis_generation_node
 from devsupport_backend.agent.nodes.hypothesis_update import hypothesis_update_node
@@ -226,12 +229,10 @@ def build_investigation_graph(
         "evidence_evaluation",
         _investigation_node(
             "evidence_evaluation",
-            _enforce_llm_budget_node(
-                _account_llm_usage_node(
-                    lambda state: evidence_evaluation_node(
-                        state, dependencies.evaluator, loop_limits
-                    )
-                ),
+            lambda state: _evidence_evaluation_with_llm_budget(
+                state,
+                dependencies.evaluator,
+                loop_limits,
                 effective_budget,
             ),
             effective_budget,
@@ -448,6 +449,13 @@ def evidence_evaluation_node(
     if state["current_stage"] != AgentStage.EVIDENCE_EVALUATION:
         return state
 
+    if is_conclusion_eligible(state):
+        return {
+            **state,
+            "evaluation_decision": EvaluationDecision.CONCLUDE,
+            "terminal_reason": None,
+        }
+
     decision = evaluator.evaluate(state)
     if not isinstance(decision, EvaluationDecision):
         raise InvestigationWorkflowError("evaluator returned an invalid decision")
@@ -465,6 +473,24 @@ def evidence_evaluation_node(
             else state["current_stage"]
         ),
     }
+
+
+def _evidence_evaluation_with_llm_budget(
+    state: AgentState,
+    evaluator: EvidenceEvaluator,
+    limits: InvestigationLoopLimits,
+    budget: InvestigationBudget,
+) -> AgentState:
+    """Prefer a grounded conclusion before applying the evaluator's LLM-call budget."""
+    if state["current_stage"] != AgentStage.EVIDENCE_EVALUATION:
+        return state
+    if is_conclusion_eligible(state):
+        return evidence_evaluation_node(state, evaluator, limits)
+    if _llm_budget_exhausted(state, budget):
+        return _llm_budget_exhausted_state(state)
+    return _account_llm_usage_node(
+        lambda current: evidence_evaluation_node(current, evaluator, limits)
+    )(state)
 
 
 def _investigation_planning_node(

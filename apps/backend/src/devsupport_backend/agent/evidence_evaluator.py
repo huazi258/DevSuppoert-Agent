@@ -65,14 +65,14 @@ def _parse_output(raw_output: str) -> EvidenceEvaluationOutput:
 
 def _validate_conclusion_safety(state: AgentState) -> None:
     """Require one confirmed hypothesis backed only by real current evidence references."""
-    if _is_conclusion_eligible(state):
+    if is_conclusion_eligible(state):
         return
     raise EvidenceEvaluationError(
         "CONCLUDE requires a CONFIRMED hypothesis with real supporting evidence"
     )
 
 
-def _is_conclusion_eligible(state: AgentState) -> bool:
+def is_conclusion_eligible(state: AgentState) -> bool:
     """Return whether current state satisfies the non-negotiable conclude boundary."""
     known_evidence_ids = {evidence.id for evidence in state["evidence"]}
     for hypothesis in state["hypotheses"]:
@@ -97,7 +97,7 @@ def _build_prompt_context(state: AgentState) -> dict[str, object]:
 
 def _build_decision_contract(state: AgentState) -> dict[str, object]:
     """Derive the only LLM-eligible decisions from the current grounded state."""
-    conclude_allowed = _is_conclusion_eligible(state)
+    conclude_allowed = is_conclusion_eligible(state)
     allowed_decisions = [
         EvaluationDecision.CONTINUE.value,
         EvaluationDecision.NEEDS_MANUAL_ACTION.value,

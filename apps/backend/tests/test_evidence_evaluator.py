@@ -12,6 +12,7 @@ from devsupport_backend.agent.evidence_evaluator import (
     EvidenceEvaluationError,
     LLMEvidenceEvaluator,
     _build_prompt_context,
+    is_conclusion_eligible,
 )
 from devsupport_backend.agent.llm import LLMError
 from devsupport_backend.agent.state import (
@@ -47,6 +48,17 @@ class FakeLLMClient:
         if isinstance(self.response, Exception):
             raise self.response
         return self.response
+
+
+class RecordingEvaluator:
+    def __init__(self, decision: EvaluationDecision) -> None:
+        self.decision = decision
+        self.calls = 0
+
+    def evaluate(self, state: AgentState) -> EvaluationDecision:
+        del state
+        self.calls += 1
+        return self.decision
 
 
 def build_evaluation_state() -> tuple[AgentState, EvidenceContext, HypothesisContext]:
@@ -281,3 +293,80 @@ def test_needs_manual_evaluation_sets_a_stable_inconclusive_terminal_reason() ->
 
     assert updated["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
     assert updated["terminal_reason"] is TerminalReason.INVESTIGATION_INCONCLUSIVE
+
+
+def test_grounded_confirmed_hypothesis_concludes_without_calling_evaluator() -> None:
+    state, evidence, hypothesis = build_evaluation_state()
+    state["hypotheses"] = [
+        hypothesis.model_copy(
+            update={
+                "status": HypothesisStatus.CONFIRMED,
+                "supporting_evidence_ids": [evidence.id],
+            }
+        )
+    ]
+    state["llm_call_count"] = 4
+    evaluator = RecordingEvaluator(EvaluationDecision.NEEDS_MANUAL_ACTION)
+
+    updated = evidence_evaluation_node(state, evaluator, InvestigationLoopLimits())
+
+    assert is_conclusion_eligible(state) is True
+    assert evaluator.calls == 0
+    assert updated["evaluation_decision"] is EvaluationDecision.CONCLUDE
+    assert updated["llm_call_count"] == 4
+    assert updated["terminal_reason"] is None
+
+
+@pytest.mark.parametrize("case", ["missing_support", "unknown_support", "supported"])
+def test_non_grounded_states_still_delegate_to_the_evaluator(case: str) -> None:
+    state, evidence, hypothesis = build_evaluation_state()
+    if case == "missing_support":
+        state["hypotheses"] = [
+            hypothesis.model_copy(update={"status": HypothesisStatus.CONFIRMED})
+        ]
+    elif case == "unknown_support":
+        state["hypotheses"] = [
+            hypothesis.model_copy(
+                update={
+                    "status": HypothesisStatus.CONFIRMED,
+                    "supporting_evidence_ids": [uuid4()],
+                }
+            )
+        ]
+    else:
+        state["hypotheses"] = [
+            hypothesis.model_copy(
+                update={
+                    "status": HypothesisStatus.SUPPORTED,
+                    "confidence": 1.0,
+                    "supporting_evidence_ids": [evidence.id],
+                }
+            )
+        ]
+    evaluator = RecordingEvaluator(EvaluationDecision.CONTINUE)
+
+    updated = evidence_evaluation_node(state, evaluator, InvestigationLoopLimits())
+
+    assert is_conclusion_eligible(state) is False
+    assert evaluator.calls == 1
+    assert updated["evaluation_decision"] is EvaluationDecision.CONTINUE
+
+
+def test_any_grounded_confirmed_hypothesis_enables_deterministic_conclusion() -> None:
+    state, evidence, hypothesis = build_evaluation_state()
+    state["hypotheses"] = [
+        hypothesis,
+        hypothesis.model_copy(
+            update={
+                "id": uuid4(),
+                "status": HypothesisStatus.CONFIRMED,
+                "supporting_evidence_ids": [evidence.id],
+            }
+        ),
+    ]
+    evaluator = RecordingEvaluator(EvaluationDecision.CONTINUE)
+
+    updated = evidence_evaluation_node(state, evaluator, InvestigationLoopLimits())
+
+    assert updated["evaluation_decision"] is EvaluationDecision.CONCLUDE
+    assert evaluator.calls == 0

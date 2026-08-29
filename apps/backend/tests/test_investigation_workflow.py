@@ -22,6 +22,8 @@ from devsupport_backend.agent.state import (
     AgentState,
     EvaluationDecision,
     EvidenceContext,
+    HypothesisContext,
+    HypothesisStatus,
     PolicyDecision,
     PolicyOutcome,
     PolicyReasonCode,
@@ -49,7 +51,8 @@ from devsupport_backend.tools.schemas import (
 class WorkflowFakeLLM:
     """Produce context-derived structured outputs for existing LLM node boundaries."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, confirm_on_update_call: int | None = 1) -> None:
+        self._confirm_on_update_call = confirm_on_update_call
         self.generation_calls = 0
         self.planning_calls = 0
         self.update_calls = 0
@@ -103,7 +106,12 @@ class WorkflowFakeLLM:
                             "supporting_evidence_ids": [evidence_id],
                             "contradicting_evidence_ids": [],
                             "confidence": 0.6,
-                            "status": "CONFIRMED" if index == 0 else "SUPPORTED",
+                            "status": (
+                                "CONFIRMED"
+                                if index == 0
+                                and self.update_calls == self._confirm_on_update_call
+                                else "SUPPORTED"
+                            ),
                             "next_check": "Collect another distinguishing signal if needed.",
                         }
                         for index, hypothesis in enumerate(context["hypotheses"])
@@ -343,6 +351,7 @@ def _run_workflow(
     policy_gate: FakePolicyGate | None = None,
     final_report: RecordingFinalReport | None = None,
     manual_terminalizer: RecordingManualTerminalizer | None = None,
+    llm_client: WorkflowFakeLLM | None = None,
 ) -> tuple[dict[str, object], WorkflowFakeLLM, tuple[int, int]]:
     retrieval_calls = 0
     tool_calls = 0
@@ -359,7 +368,7 @@ def _run_workflow(
 
     monkeypatch.setattr(workflow_module, "retrieval_node", fake_retrieval)
     monkeypatch.setattr(execution_module, "query_metrics", fake_query_metrics)
-    llm_client = WorkflowFakeLLM()
+    llm_client = llm_client or WorkflowFakeLLM()
     graph = build_investigation_graph(
         _workflow_dependencies(
             llm_client,
@@ -434,7 +443,7 @@ def test_workflow_service_default_budget_reaches_five_round_terminalization(
     report = RecordingFinalReport()
     graph = build_investigation_graph(
         _workflow_dependencies(
-            WorkflowFakeLLM(),
+            WorkflowFakeLLM(confirm_on_update_call=None),
             FakeEvaluator([EvaluationDecision.CONTINUE] * 5),
             final_report=report,
             manual_terminalizer=terminalizer,
@@ -490,6 +499,65 @@ def test_default_planning_guard_preserves_checkpoint_equivalent_remaining_budget
         workflow_module._planning_guard_node(both_limited, limits)["terminal_reason"]
         is TerminalReason.INVESTIGATION_ROUND_LIMIT_REACHED
     )
+
+
+def test_grounded_evidence_evaluation_bypasses_an_exhausted_llm_budget() -> None:
+    state = _build_initial_state()
+    evidence = EvidenceContext(
+        evidence_type="metric_snapshot",
+        source="query_metrics",
+        summary="Current evidence grounds the confirmed hypothesis.",
+    )
+    state.update(
+        {
+            "current_stage": AgentStage.EVIDENCE_EVALUATION,
+            "evidence": [evidence],
+            "hypotheses": [
+                HypothesisContext(
+                    summary="A grounded root cause is confirmed.",
+                    status=HypothesisStatus.CONFIRMED,
+                    confidence=0.7,
+                    supporting_evidence_ids=[evidence.id],
+                )
+            ],
+            "llm_call_count": 1,
+        }
+    )
+    evaluator = FakeEvaluator([EvaluationDecision.NEEDS_MANUAL_ACTION])
+
+    result = workflow_module._evidence_evaluation_with_llm_budget(
+        state,
+        evaluator,
+        InvestigationLoopLimits(),
+        InvestigationBudget(max_llm_calls=1),
+    )
+
+    assert result["evaluation_decision"] is EvaluationDecision.CONCLUDE
+    assert result["llm_call_count"] == 1
+    assert result["terminal_reason"] is None
+    assert evaluator.calls == 0
+
+
+def test_ungrounded_evidence_evaluation_stops_at_an_exhausted_llm_budget() -> None:
+    state = _build_initial_state()
+    state.update(
+        {
+            "current_stage": AgentStage.EVIDENCE_EVALUATION,
+            "llm_call_count": 1,
+        }
+    )
+    evaluator = FakeEvaluator([EvaluationDecision.CONTINUE])
+
+    result = workflow_module._evidence_evaluation_with_llm_budget(
+        state,
+        evaluator,
+        InvestigationLoopLimits(),
+        InvestigationBudget(max_llm_calls=1),
+    )
+
+    assert result["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
+    assert result["terminal_reason"] is TerminalReason.LLM_CALL_BUDGET_EXHAUSTED
+    assert evaluator.calls == 0
 
 
 def test_graph_compiles_with_an_injected_checkpointer() -> None:
@@ -589,12 +657,13 @@ def test_approval_required_routes_to_a_real_langgraph_interrupt(
 def test_continue_forms_a_second_plan_then_conclude_without_repeating_initial_nodes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    evaluator = FakeEvaluator([EvaluationDecision.CONTINUE, EvaluationDecision.CONCLUDE])
+    evaluator = FakeEvaluator([EvaluationDecision.CONTINUE])
 
     result, llm_client, calls = _run_workflow(
         monkeypatch,
         tool_outputs=[_successful_metrics_output(), _successful_metrics_output()],
         evaluator=evaluator,
+        llm_client=WorkflowFakeLLM(confirm_on_update_call=2),
     )
 
     assert result["evaluation_decision"] is EvaluationDecision.CONCLUDE
@@ -610,7 +679,7 @@ def test_continue_forms_a_second_plan_then_conclude_without_repeating_initial_no
     assert llm_client.planning_calls == 2
     assert llm_client.update_calls == 2
     assert llm_client.resolution_calls == 1
-    assert evaluator.calls == 2
+    assert evaluator.calls == 1
     assert calls == (1, 2)
 
 
@@ -631,7 +700,7 @@ def test_tool_failure_replans_without_incrementing_the_failed_round(
     assert llm_client.planning_calls == 2
     assert llm_client.update_calls == 1
     assert llm_client.resolution_calls == 1
-    assert evaluator.calls == 1
+    assert evaluator.calls == 0
 
 
 @pytest.mark.parametrize(
@@ -653,6 +722,7 @@ def test_limit_stops_future_planning_and_tools_with_manual_action(
         tool_outputs=[_successful_metrics_output()],
         evaluator=evaluator,
         limits=limits,
+        llm_client=WorkflowFakeLLM(confirm_on_update_call=None),
     )
 
     assert result["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
@@ -909,7 +979,7 @@ def test_production_formal_factory_uses_terminalization_and_report_services(
     assert report is not None
 
 
-def test_final_allowed_round_can_conclude_and_propose_resolution(
+def test_grounded_update_deterministically_concludes_and_proposes_resolution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     evaluator = FakeEvaluator([EvaluationDecision.CONCLUDE])
@@ -932,5 +1002,5 @@ def test_final_allowed_round_can_conclude_and_propose_resolution(
     assert llm_client.planning_calls == 1
     assert llm_client.update_calls == 1
     assert llm_client.resolution_calls == 1
-    assert evaluator.calls == 1
+    assert evaluator.calls == 0
     assert calls == (1, 1)
