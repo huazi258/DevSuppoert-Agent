@@ -267,6 +267,7 @@ def test_postgres_retry_usage_update_preserves_failed_planner_continuation(
     calls = {"planning_guard": 0, "planning": 0, "tool_execution": 0}
     state = create_initial_agent_state(_RecoveryIncident(id=uuid4()))
     state["current_stage"] = AgentStage.INVESTIGATION_PLANNING
+    state["active_execution_seconds"] = 70.0
     del state["workflow_retry_count"]
 
     try:
@@ -295,6 +296,7 @@ def test_postgres_retry_usage_update_preserves_failed_planner_continuation(
         recorded_failure = runtime.get_failure(thread_id)
         assert recorded_state is not None
         assert recorded_state["workflow_retry_count"] == 1
+        assert recorded_state["active_execution_seconds"] == 70.0
         assert recorded_failure is not None
         assert recorded_failure.failed_node == "investigation_planning"
         assert calls == {"planning_guard": 1, "planning": 1, "tool_execution": 0}
@@ -312,6 +314,7 @@ def test_postgres_retry_usage_update_preserves_failed_planner_continuation(
             assert result["current_stage"] == AgentStage.NEEDS_MANUAL_ACTION
             assert result["current_stage"] != AgentStage.INVESTIGATION_PLANNING
             assert result["workflow_retry_count"] == 1
+            assert result["active_execution_seconds"] == 70.0
             assert list(second_graph.get_state(config).next) == []
     finally:
         with open_postgres_checkpointer() as checkpointer:

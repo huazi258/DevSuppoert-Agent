@@ -238,6 +238,17 @@ class RecordingApprovalWait:
         }
 
 
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
 def _build_initial_state() -> AgentState:
     started_at = datetime(2026, 8, 8, 10, 0, tzinfo=UTC)
     incident = Incident(
@@ -480,6 +491,50 @@ def test_graph_compiles_with_an_injected_checkpointer() -> None:
     )
 
     assert "evidence_evaluation" in graph.get_graph().nodes
+
+
+def test_active_budget_after_retrieval_routes_to_manual_terminalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _FakeClock()
+    terminalizer = RecordingManualTerminalizer()
+    report = RecordingFinalReport()
+
+    def delayed_retrieval(state: AgentState, rag_service: object) -> AgentState:
+        clock.advance(95.0)
+        return _fake_retrieval(state, rag_service)
+
+    monkeypatch.setattr(workflow_module, "retrieval_node", delayed_retrieval)
+    graph = build_investigation_graph(
+        _workflow_dependencies(
+            WorkflowFakeLLM(),
+            FakeEvaluator([EvaluationDecision.CONCLUDE]),
+            final_report=report,
+            manual_terminalizer=terminalizer,
+        ),
+        budget=InvestigationBudget(max_active_execution_seconds=95.0),
+    )
+    source = _build_initial_state()["incident"]
+    incident = Incident(
+        id=uuid4(),
+        service=source.service,
+        environment=source.environment,
+        description=source.description,
+        time_range_start=source.time_range_start,
+        time_range_end=source.time_range_end,
+        thread_id=str(uuid4()),
+    )
+
+    result = WorkflowService(
+        graph,
+        InvestigationBudget(max_active_execution_seconds=95.0),
+        monotonic_clock=clock,
+    ).start(incident)
+
+    assert result["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
+    assert result["active_execution_seconds"] == 95.0
+    assert terminalizer.calls == 1
+    assert report.calls == 1
 
 
 def test_approval_required_routes_to_a_real_langgraph_interrupt(

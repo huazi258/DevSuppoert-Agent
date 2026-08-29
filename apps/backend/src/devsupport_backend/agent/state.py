@@ -356,6 +356,7 @@ class AgentState(TypedDict):
     tool_call_count: int
     llm_call_count: int
     workflow_retry_count: int
+    active_execution_seconds: float
     intake_decision: IntakeDecision | None
     missing_information: list[str]
     evaluation_decision: EvaluationDecision | None
@@ -392,6 +393,7 @@ def create_initial_agent_state(
         "tool_call_count": 0,
         "llm_call_count": 0,
         "workflow_retry_count": 0,
+        "active_execution_seconds": 0.0,
         "intake_decision": None,
         "missing_information": [],
         "evaluation_decision": None,
@@ -423,6 +425,7 @@ def agent_state_to_checkpoint_payload(state: AgentState) -> dict[str, object]:
         "tool_call_count": state["tool_call_count"],
         "llm_call_count": state["llm_call_count"],
         "workflow_retry_count": state["workflow_retry_count"],
+        "active_execution_seconds": state.get("active_execution_seconds", 0.0),
         "intake_decision": (
             state["intake_decision"].value if state["intake_decision"] is not None else None
         ),

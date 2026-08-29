@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from time import monotonic
+from typing import Callable, Protocol
 
 from langgraph.checkpoint.base import ERROR, BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
+from devsupport_backend.agent.budget import (
+    DEFAULT_INVESTIGATION_BUDGET,
+    InvestigationBudget,
+    active_execution_scope,
+)
 from devsupport_backend.agent.state import (
     AgentState,
     IncidentStateSource,
@@ -36,17 +42,28 @@ class WorkflowIncidentSource(IncidentStateSource, Protocol):
 class WorkflowService:
     """Start, inspect, and later resume one persisted LangGraph workflow thread."""
 
-    def __init__(self, graph: CompiledStateGraph) -> None:
+    def __init__(
+        self,
+        graph: CompiledStateGraph,
+        budget: InvestigationBudget = DEFAULT_INVESTIGATION_BUDGET,
+        *,
+        monotonic_clock: Callable[[], float] = monotonic,
+    ) -> None:
         self._graph = graph
+        self._budget = budget
+        self._monotonic_clock = monotonic_clock
 
     def start(
         self, incident: WorkflowIncidentSource, *, symptoms: list[str] | None = None
     ) -> AgentState:
         """Invoke the graph using the incident's stable, persisted thread identifier."""
-        result = self._graph.invoke(
-            create_initial_agent_state(incident, symptoms=symptoms),
-            self.config_for(incident.thread_id),
-        )
+        state = create_initial_agent_state(incident, symptoms=symptoms)
+        with active_execution_scope(
+            state.get("active_execution_seconds", 0.0),
+            self._budget,
+            clock=self._monotonic_clock,
+        ):
+            result = self._graph.invoke(state, self.config_for(incident.thread_id))
         return result
 
     def get_state(self, thread_id: str) -> AgentState:
@@ -70,7 +87,13 @@ class WorkflowService:
 
     def retry_failed_task(self, thread_id: str) -> AgentState:
         """Continue one persisted thread from its failed LangGraph task."""
-        result = self._graph.invoke(None, self.config_for(thread_id))
+        state = self.get_state(thread_id)
+        with active_execution_scope(
+            state.get("active_execution_seconds", 0.0),
+            self._budget,
+            clock=self._monotonic_clock,
+        ):
+            result = self._graph.invoke(None, self.config_for(thread_id))
         return result
 
     def record_retry_attempt(self, thread_id: str) -> None:
@@ -99,7 +122,13 @@ class WorkflowService:
 
     def resume(self, thread_id: str, payload: object) -> AgentState:
         """Resume a future interrupted workflow without interpreting the payload as approval."""
-        result = self._graph.invoke(Command(resume=payload), self.config_for(thread_id))
+        state = self.get_state(thread_id)
+        with active_execution_scope(
+            state.get("active_execution_seconds", 0.0),
+            self._budget,
+            clock=self._monotonic_clock,
+        ):
+            result = self._graph.invoke(Command(resume=payload), self.config_for(thread_id))
         return result
 
     @staticmethod

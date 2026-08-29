@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from devsupport_backend.agent.budget import InvestigationBudget
 from devsupport_backend.agent.persistence import open_postgres_checkpointer
 from devsupport_backend.agent.runtime import WorkflowService
 from devsupport_backend.agent.state import (
@@ -46,6 +47,17 @@ from devsupport_backend.schemas.approvals import ApprovalDecision
 
 PENDING_APPROVAL = "PENDING_APPROVAL"
 WAITING_APPROVAL = "WAITING_APPROVAL"
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
 
 
 class StaticWorkflowStateReader:
@@ -417,6 +429,42 @@ def test_postgres_interrupt_persists_waiting_state_across_reopen(
         assert reader_recovered["current_stage"] == AgentStage.WAITING_APPROVAL
         assert incident.status == WAITING_APPROVAL
         assert database_session.query(Approval).filter(Approval.action_id == action.id).count() == 0
+    finally:
+        _delete_thread(incident.thread_id)
+
+
+def test_postgres_approval_resume_preserves_active_usage_across_human_wait(
+    database_session: Session,
+) -> None:
+    incident = _incident(database_session, status="OPEN")
+    action = _pending_action(database_session, incident)
+    state = _waiting_state(incident, action)
+    state["current_stage"] = AgentStage.POLICY_GATE
+    state["active_execution_seconds"] = 40.0
+    config = WorkflowService.config_for(incident.thread_id)
+    clock = _FakeClock()
+    try:
+        with open_postgres_checkpointer() as first_checkpointer:
+            first_graph = _approval_interrupt_graph(
+                checkpointer=first_checkpointer,
+                approval_wait=ApprovalWaitService(database_session),
+            )
+            first_graph.invoke(state, config)
+
+        clock.advance(1_000.0)
+        with open_postgres_checkpointer() as second_checkpointer:
+            second_graph = _approval_interrupt_graph(
+                checkpointer=second_checkpointer,
+                approval_wait=ApprovalWaitService(database_session),
+            )
+            result = WorkflowService(
+                second_graph,
+                InvestigationBudget(max_active_execution_seconds=95.0),
+                monotonic_clock=clock,
+            ).resume(incident.thread_id, {"approval_recorded": True})
+
+            assert result["active_execution_seconds"] == 40.0
+            assert second_graph.get_state(config).values["active_execution_seconds"] == 40.0
     finally:
         _delete_thread(incident.thread_id)
 

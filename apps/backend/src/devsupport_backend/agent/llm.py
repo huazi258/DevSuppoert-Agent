@@ -61,6 +61,13 @@ class OpenAICompatibleLLMClient:
 
     def complete(self, *, system_prompt: str, user_prompt: str) -> str:
         """Call the provider and extract one non-empty assistant message."""
+        from devsupport_backend.agent.budget import (
+            ActiveExecutionBudgetExceeded,
+            effective_llm_timeout_seconds,
+            llm_timeout_is_budget_limited,
+        )
+
+        effective_timeout_seconds = effective_llm_timeout_seconds(self._timeout_seconds)
         request_body: dict[str, object] = {
             "model": self._model,
             "temperature": 0,
@@ -76,14 +83,20 @@ class OpenAICompatibleLLMClient:
                 f"{self._base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {self._api_key}"},
                 json=request_body,
-                timeout=self._timeout,
+                timeout=_httpx_timeout(effective_timeout_seconds),
             )
             response.raise_for_status()
             payload = response.json()
             content = payload["choices"][0]["message"]["content"]
         except httpx.ReadTimeout as error:
+            if llm_timeout_is_budget_limited(
+                self._timeout_seconds, effective_timeout_seconds
+            ):
+                raise ActiveExecutionBudgetExceeded(
+                    "active execution budget expired while waiting for the LLM provider"
+                ) from error
             raise LLMError(
-                f"LLM request read timed out after {self._timeout_seconds:g} seconds"
+                f"LLM request read timed out after {effective_timeout_seconds:g} seconds"
             ) from error
         except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as error:
             raise LLMError(f"LLM request failed: {error}") from error
@@ -91,3 +104,13 @@ class OpenAICompatibleLLMClient:
         if not isinstance(content, str) or not content.strip():
             raise LLMError("LLM response did not contain non-empty message content")
         return content
+
+
+def _httpx_timeout(timeout_seconds: float) -> httpx.Timeout:
+    """Build one bounded timeout without widening the configured provider limit."""
+    return httpx.Timeout(
+        connect=min(10.0, timeout_seconds),
+        read=timeout_seconds,
+        write=timeout_seconds,
+        pool=timeout_seconds,
+    )

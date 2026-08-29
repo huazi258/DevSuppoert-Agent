@@ -11,9 +11,13 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from devsupport_backend.agent.budget import (
+    ACTIVE_EXECUTION_SAFETY_MARGIN_SECONDS,
     DEFAULT_INVESTIGATION_BUDGET,
+    ActiveExecutionBudgetExceeded,
     InvestigationBudget,
     UsageAccountingLLMClient,
+    active_execution_scope,
+    effective_llm_timeout_seconds,
 )
 from devsupport_backend.agent.runtime import WorkflowService
 from devsupport_backend.agent.state import (
@@ -26,6 +30,7 @@ from devsupport_backend.agent.workflow import (
     DEFAULT_MAX_TOOL_CALLS,
     InvestigationLoopLimits,
     _account_llm_usage_node,
+    _enforce_active_execution_budget_node,
     _enforce_llm_budget_node,
 )
 from devsupport_backend.models import Incident
@@ -45,6 +50,17 @@ class FailingLLM:
     def complete(self, *, system_prompt: str, user_prompt: str) -> str:
         del system_prompt, user_prompt
         raise RuntimeError("controlled provider failure")
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
 
 
 def _incident() -> Incident:
@@ -75,7 +91,7 @@ def test_budget_rejects_non_positive_configured_limits(kwargs: dict[str, object]
         InvestigationBudget(**kwargs)  # type: ignore[arg-type]
 
 
-def test_budget_freezes_initial_v1_discrete_limits_and_leaves_active_time_unset() -> None:
+def test_budget_freezes_initial_v1_limits_with_calibrated_active_time() -> None:
     budget = DEFAULT_INVESTIGATION_BUDGET
     limits = InvestigationLoopLimits()
 
@@ -83,7 +99,7 @@ def test_budget_freezes_initial_v1_discrete_limits_and_leaves_active_time_unset(
     assert budget.max_tool_calls == DEFAULT_MAX_TOOL_CALLS == 6
     assert budget.max_llm_calls == 8
     assert budget.max_workflow_retries == 1
-    assert budget.max_active_execution_seconds is None
+    assert budget.max_active_execution_seconds == 95.0
     assert limits.budget == budget
 
 
@@ -251,3 +267,188 @@ def test_llm_budget_is_enforced_after_checkpoint_resume() -> None:
     assert delegate.calls == 0
     assert result["llm_call_count"] == 1
     assert result["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
+
+
+def test_active_execution_usage_accumulates_across_resume_but_excludes_approval_wait() -> None:
+    incident = _incident()
+    clock = FakeClock()
+    budget = InvestigationBudget(max_active_execution_seconds=95.0)
+    graph = StateGraph(AgentState)
+
+    def first_work(state: AgentState) -> AgentState:
+        clock.advance(40.0)
+        return state
+
+    def waiting_for_approval(state: AgentState) -> AgentState:
+        interrupt("approval required")
+        return state
+
+    def resumed_work(state: AgentState) -> AgentState:
+        clock.advance(5.0)
+        return state
+
+    graph.add_node("first_work", _enforce_active_execution_budget_node(first_work, budget))
+    graph.add_node("approval_wait", waiting_for_approval)
+    graph.add_node("resumed_work", _enforce_active_execution_budget_node(resumed_work, budget))
+    graph.add_edge(START, "first_work")
+    graph.add_edge("first_work", "approval_wait")
+    graph.add_edge("approval_wait", "resumed_work")
+    graph.add_edge("resumed_work", END)
+    service = WorkflowService(
+        graph.compile(checkpointer=InMemorySaver()), budget, monotonic_clock=clock
+    )
+
+    service.start(incident)
+    assert service.get_state(incident.thread_id)["active_execution_seconds"] == 40.0
+
+    clock.advance(1_000.0)
+    result = service.resume(incident.thread_id, {"approved": True})
+
+    assert result["active_execution_seconds"] == 45.0
+    assert service.get_state(incident.thread_id)["active_execution_seconds"] == 45.0
+
+
+def test_active_execution_budget_allows_work_below_limit_and_stops_at_exact_boundary() -> None:
+    clock = FakeClock()
+    budget = InvestigationBudget(max_active_execution_seconds=95.0)
+    calls = 0
+
+    def work(state: AgentState) -> AgentState:
+        nonlocal calls
+        calls += 1
+        return state
+
+    guarded_work = _enforce_active_execution_budget_node(work, budget)
+    below_limit = create_initial_agent_state(_incident())
+    below_limit["active_execution_seconds"] = 94.0
+    with active_execution_scope(94.0, budget, clock=clock):
+        assert guarded_work(below_limit)["evaluation_decision"] is None
+
+    at_limit = create_initial_agent_state(_incident())
+    at_limit["active_execution_seconds"] = 95.0
+    with active_execution_scope(95.0, budget, clock=clock):
+        result = guarded_work(at_limit)
+
+    assert calls == 1
+    assert result["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
+    assert result["active_execution_seconds"] == 95.0
+
+
+def test_active_execution_budget_stops_after_a_node_reaches_the_exact_boundary() -> None:
+    clock = FakeClock()
+    budget = InvestigationBudget(max_active_execution_seconds=95.0)
+    state = create_initial_agent_state(_incident())
+    state["active_execution_seconds"] = 94.0
+
+    def work(current: AgentState) -> AgentState:
+        clock.advance(1.0)
+        return current
+
+    with active_execution_scope(94.0, budget, clock=clock):
+        result = _enforce_active_execution_budget_node(work, budget)(state)
+
+    assert result["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
+    assert result["active_execution_seconds"] == 95.0
+
+
+def test_pre_active_budget_checkpoint_defaults_to_zero_usage() -> None:
+    clock = FakeClock()
+    budget = InvestigationBudget(max_active_execution_seconds=95.0)
+    state = create_initial_agent_state(_incident())
+    del state["active_execution_seconds"]
+
+    def work(current: AgentState) -> AgentState:
+        clock.advance(3.0)
+        return current
+
+    with active_execution_scope(0.0, budget, clock=clock):
+        result = _enforce_active_execution_budget_node(work, budget)(state)
+
+    assert result["active_execution_seconds"] == 3.0
+
+
+def test_effective_llm_timeout_respects_remaining_active_execution_budget() -> None:
+    budget = InvestigationBudget(max_active_execution_seconds=95.0)
+    clock = FakeClock()
+
+    with active_execution_scope(25.0, budget, clock=clock):
+        assert effective_llm_timeout_seconds(50.0) == 50.0
+    with active_execution_scope(75.0, budget, clock=clock):
+        assert effective_llm_timeout_seconds(50.0) == 15.0
+    with active_execution_scope(90.0, budget, clock=clock):
+        with pytest.raises(ActiveExecutionBudgetExceeded):
+            effective_llm_timeout_seconds(50.0)
+
+    assert ACTIVE_EXECUTION_SAFETY_MARGIN_SECONDS == 5.0
+    assert effective_llm_timeout_seconds(50.0) == 50.0
+
+
+def test_budget_limited_llm_timeout_routes_to_manual_without_a_failed_task() -> None:
+    incident = _incident()
+    budget = InvestigationBudget(max_active_execution_seconds=95.0)
+    clock = FakeClock()
+    llm_client = UsageAccountingLLMClient(_BudgetLimitedTimeoutLLM())
+    graph = StateGraph(AgentState)
+
+    def invoke_llm(state: AgentState) -> AgentState:
+        llm_client.complete(system_prompt="system", user_prompt="user")
+        return state
+
+    graph.add_node(
+        "invoke_llm",
+        _enforce_active_execution_budget_node(_account_llm_usage_node(invoke_llm), budget),
+    )
+    graph.add_edge(START, "invoke_llm")
+    graph.add_edge("invoke_llm", END)
+    compiled = graph.compile(checkpointer=InMemorySaver())
+    state = create_initial_agent_state(incident)
+    state["active_execution_seconds"] = 75.0
+    config = WorkflowService.config_for(incident.thread_id)
+
+    with active_execution_scope(75.0, budget, clock=clock):
+        result = compiled.invoke(state, config)
+
+    assert result["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
+    assert list(compiled.get_state(config).tasks) == []
+
+
+def test_active_execution_usage_carries_into_retry_without_a_new_full_budget() -> None:
+    incident = _incident()
+    clock = FakeClock()
+    budget = InvestigationBudget(max_active_execution_seconds=95.0)
+    should_fail = [True]
+    graph = StateGraph(AgentState)
+
+    def investigation_work(state: AgentState) -> AgentState:
+        if should_fail[0]:
+            raise RuntimeError("controlled retryable failure")
+        clock.advance(10.0)
+        return state
+
+    graph.add_node(
+        "investigation_work",
+        _enforce_active_execution_budget_node(investigation_work, budget),
+    )
+    graph.add_edge(START, "investigation_work")
+    graph.add_edge("investigation_work", END)
+    compiled = graph.compile(checkpointer=InMemorySaver())
+    service = WorkflowService(compiled, budget, monotonic_clock=clock)
+    state = create_initial_agent_state(incident)
+    state["active_execution_seconds"] = 70.0
+
+    with active_execution_scope(70.0, budget, clock=clock):
+        with pytest.raises(RuntimeError, match="controlled retryable failure"):
+            compiled.invoke(state, WorkflowService.config_for(incident.thread_id))
+
+    service.record_retry_attempt(incident.thread_id)
+    should_fail[0] = False
+    result = service.retry_failed_task(incident.thread_id)
+
+    assert result["active_execution_seconds"] == 80.0
+    assert result["workflow_retry_count"] == 1
+
+
+class _BudgetLimitedTimeoutLLM:
+    def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+        del system_prompt, user_prompt
+        raise ActiveExecutionBudgetExceeded("controlled active budget timeout")
