@@ -7,7 +7,14 @@ import json
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 from devsupport_backend.agent.llm import LLMClient, LLMError
-from devsupport_backend.agent.state import AgentStage, AgentState, PendingToolCall
+from devsupport_backend.agent.state import (
+    AgentStage,
+    AgentState,
+    EvaluationDecision,
+    PendingToolCall,
+    TerminalReason,
+    ToolHistoryEntry,
+)
 from devsupport_backend.agent.structured_output import (
     StructuredOutputParseError,
     parse_structured_json,
@@ -18,6 +25,7 @@ from devsupport_backend.tools.schemas import (
     QueryLogsInput,
     QueryMetricsInput,
     QueryTracesInput,
+    ToolStatus,
 )
 
 
@@ -66,12 +74,39 @@ def investigation_planner_node(state: AgentState, llm_client: LLMClient) -> Agen
 
     plan = _parse_plan(raw_output)
     pending_tool_call = _validate_plan(plan)
+    if has_successful_equivalent_tool_call(state, pending_tool_call):
+        return {
+            **state,
+            "pending_tool_call": None,
+            "evaluation_decision": EvaluationDecision.NEEDS_MANUAL_ACTION,
+            "terminal_reason": TerminalReason.INVESTIGATION_INCONCLUSIVE,
+        }
     return {
         **state,
         "current_goal": pending_tool_call.investigation_goal,
         "pending_tool_call": pending_tool_call,
         "current_stage": AgentStage.TOOL_EXECUTION,
     }
+
+
+def has_successful_equivalent_tool_call(
+    state: AgentState, pending_tool_call: PendingToolCall
+) -> bool:
+    """Return whether a validated next call exactly repeats successful prior work."""
+    return any(
+        _is_successful_equivalent_tool_call(entry, pending_tool_call)
+        for entry in state["tool_history"]
+    )
+
+
+def _is_successful_equivalent_tool_call(
+    entry: ToolHistoryEntry, pending_tool_call: PendingToolCall
+) -> bool:
+    return (
+        entry.status == ToolStatus.SUCCESS
+        and entry.tool_name == pending_tool_call.tool_name
+        and entry.tool_arguments == pending_tool_call.tool_arguments
+    )
 
 
 def deterministic_initial_evidence_plan(state: AgentState) -> PendingToolCall | None:

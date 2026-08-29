@@ -14,6 +14,7 @@ import pytest
 from sqlalchemy.orm import Session
 
 from devsupport_backend.agent.evidence_evaluator import LLMEvidenceEvaluator
+from devsupport_backend.agent.nodes.planner import investigation_planner_node
 from devsupport_backend.agent.observability import observe_investigation_node
 from devsupport_backend.agent.state import (
     ActionType,
@@ -22,6 +23,7 @@ from devsupport_backend.agent.state import (
     EvidenceContext,
     HypothesisContext,
     HypothesisStatus,
+    TerminalReason,
     ToolHistoryEntry,
     create_initial_agent_state,
 )
@@ -64,6 +66,7 @@ from devsupport_backend.evals.runner import (
 )
 from devsupport_backend.models import Action, Hypothesis, Incident
 from devsupport_backend.tools.logs import LogsAdapterError
+from devsupport_backend.tools.registry import ToolName
 from devsupport_backend.tools.schemas import QueryLogsInput, ToolStatus
 
 SUITE_PATH = Path(__file__).resolve().parents[3] / "evals" / "initial_suite.yaml"
@@ -667,6 +670,79 @@ def test_deterministic_evidence_conclusion_records_node_without_an_llm_call() ->
 
     assert continued["evaluation_decision"] is EvaluationDecision.CONTINUE
     assert collector.llm_calls[-1].node_name == "evidence_evaluation"
+
+
+def test_duplicate_planner_call_records_planner_but_not_tool_execution_observability() -> None:
+    collector = _InvestigationObservabilityCollector()
+
+    class CollectorNodeObserver:
+        def node_started(self, node_name: str) -> None:
+            collector.accept(("node_started", node_name))
+
+        def node_finished(self, node_name: str, duration_ms: float, outcome: str) -> None:
+            collector.accept(("node_finished", node_name, duration_ms, outcome))
+
+    class CollectorLLMObserver:
+        def llm_call_started(self, call_id: int, node_name: str | None) -> None:
+            collector.accept(("llm_started", call_id, node_name))
+
+        def llm_call_finished(
+            self, call_id: int, node_name: str | None, duration_ms: float, outcome: str
+        ) -> None:
+            collector.accept(("llm_finished", call_id, node_name, duration_ms, outcome))
+
+    class PlannerDelegate:
+        def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+            del system_prompt, user_prompt
+            return json.dumps(
+                {
+                    "investigation_goal": "Repeat the metric snapshot.",
+                    "tool_name": "query_metrics",
+                    "tool_arguments": {"service": "order-service", "environment": "local"},
+                    "reason": "The prior metric snapshot was useful.",
+                }
+            )
+
+    incident = Incident(
+        id=uuid4(),
+        service="order-service",
+        environment="local",
+        description="Observe duplicate planning.",
+        time_range_start=RUN_STARTED_AT - timedelta(minutes=5),
+        time_range_end=RUN_STARTED_AT,
+        thread_id="duplicate-observability-thread",
+    )
+    state = create_initial_agent_state(incident)
+    state.update(
+        {
+            "current_stage": AgentStage.INVESTIGATION_PLANNING,
+            "tool_history": [
+                ToolHistoryEntry(
+                    tool_name=ToolName.QUERY_METRICS,
+                    tool_arguments={"service": "order-service", "environment": "local"},
+                    status=ToolStatus.SUCCESS,
+                )
+            ],
+        }
+    )
+    observed_planner = observe_investigation_node(
+        "investigation_planning",
+        lambda current: investigation_planner_node(
+            current,
+            ObservedLLMClient(
+                PlannerDelegate(),
+                LLMObservability(call_observer=CollectorLLMObserver()),
+            ),
+        ),
+        CollectorNodeObserver(),
+    )
+
+    result = observed_planner(state)
+
+    assert result["terminal_reason"] is TerminalReason.INVESTIGATION_INCONCLUSIVE
+    assert [event.node_name for event in collector.node_calls] == ["investigation_planning"]
+    assert [event.node_name for event in collector.llm_calls] == ["investigation_planning"]
+    assert all(event.node_name != "tool_execution" for event in collector.node_calls)
 
 
 def test_observed_llm_client_preserves_completion_input_and_records_latency(

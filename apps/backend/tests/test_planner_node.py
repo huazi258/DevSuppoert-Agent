@@ -7,19 +7,27 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 
 from devsupport_backend.agent.llm import LLMError
 from devsupport_backend.agent.nodes.planner import (
     PlanningError,
     deterministic_initial_evidence_plan,
+    has_successful_equivalent_tool_call,
     investigation_planner_node,
 )
+from devsupport_backend.agent.runtime import WorkflowService
 from devsupport_backend.agent.state import (
     AgentStage,
     AgentState,
+    EvaluationDecision,
     EvidenceContext,
     HypothesisContext,
     HypothesisStatus,
+    PendingToolCall,
+    TerminalReason,
     ToolHistoryEntry,
     create_initial_agent_state,
 )
@@ -128,6 +136,171 @@ def test_planner_creates_valid_pending_tool_call_and_advances_stage() -> None:
     assert updated["investigation_round"] == state["investigation_round"] == 0
     assert updated["proposed_action"] is state["proposed_action"] is None
     assert updated["final_conclusion"] is state["final_conclusion"] is None
+
+
+def test_successful_exact_equivalent_call_stops_planning_without_creating_tool_facts() -> None:
+    state, _, _ = build_planning_state()
+    arguments = {"service": "catalog-service", "environment": "staging"}
+    state["tool_history"].append(
+        ToolHistoryEntry(
+            tool_name=ToolName.QUERY_METRICS,
+            tool_arguments=arguments,
+            status=ToolStatus.SUCCESS,
+        )
+    )
+
+    updated = investigation_planner_node(
+        state,
+        FakeLLMClient(
+            plan_response(tool_name="query_metrics", arguments=dict(reversed(arguments.items())))
+        ),
+    )
+
+    assert updated["current_stage"] is AgentStage.INVESTIGATION_PLANNING
+    assert updated["pending_tool_call"] is None
+    assert updated["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
+    assert updated["terminal_reason"] is TerminalReason.INVESTIGATION_INCONCLUSIVE
+    assert updated["tool_call_count"] == 0
+    assert len(updated["tool_history"]) == 2
+
+
+def test_equivalent_tool_call_predicate_matches_only_successful_exact_arguments() -> None:
+    state, _, _ = build_planning_state()
+    exact_arguments = {"service": "catalog-service", "environment": "staging"}
+    pending = PendingToolCall(
+        investigation_goal="Collect a metric snapshot.",
+        tool_name=ToolName.QUERY_METRICS,
+        tool_arguments=dict(reversed(exact_arguments.items())),
+        reason="Metrics distinguish the active hypotheses.",
+    )
+    state["tool_history"].extend(
+        [
+            ToolHistoryEntry(
+                tool_name=ToolName.QUERY_METRICS,
+                tool_arguments={"service": "catalog-service", "environment": "local"},
+                status=ToolStatus.SUCCESS,
+            ),
+            ToolHistoryEntry(
+                tool_name=ToolName.QUERY_LOGS,
+                tool_arguments=exact_arguments,
+                status=ToolStatus.SUCCESS,
+            ),
+            ToolHistoryEntry(
+                tool_name=ToolName.QUERY_METRICS,
+                tool_arguments=exact_arguments,
+                status=ToolStatus.FAILURE,
+                error=ToolError(code="transient", message="metrics unavailable", retryable=True),
+            ),
+            ToolHistoryEntry(
+                tool_name=ToolName.QUERY_METRICS,
+                tool_arguments=exact_arguments,
+                status=ToolStatus.UNAVAILABLE,
+                error=ToolError(code="transient", message="metrics unavailable", retryable=True),
+            ),
+        ]
+    )
+
+    assert has_successful_equivalent_tool_call(state, pending) is False
+
+    state["tool_history"].append(
+        ToolHistoryEntry(
+            tool_name=ToolName.QUERY_METRICS,
+            tool_arguments=exact_arguments,
+            status=ToolStatus.SUCCESS,
+        )
+    )
+
+    assert has_successful_equivalent_tool_call(state, pending) is True
+
+
+@pytest.mark.parametrize("status", [ToolStatus.FAILURE, ToolStatus.UNAVAILABLE])
+def test_transient_unsuccessful_equivalent_call_remains_plannable(status: ToolStatus) -> None:
+    state, _, _ = build_planning_state()
+    arguments = {
+        "service": "catalog-service",
+        "environment": "staging",
+        "time_range_start": "2026-08-08T10:00:00+00:00",
+        "time_range_end": "2026-08-08T10:05:00+00:00",
+        "limit": 10,
+    }
+    state["tool_history"].append(
+        ToolHistoryEntry(
+            tool_name=ToolName.QUERY_LOGS,
+            tool_arguments=arguments,
+            status=status,
+            error=ToolError(code="transient", message="logs unavailable", retryable=True),
+        )
+    )
+
+    updated = investigation_planner_node(
+        state,
+        FakeLLMClient(plan_response(tool_name="query_logs", arguments=arguments)),
+    )
+
+    assert updated["current_stage"] is AgentStage.TOOL_EXECUTION
+    assert updated["pending_tool_call"] is not None
+    assert updated["pending_tool_call"].tool_name is ToolName.QUERY_LOGS
+
+
+def test_resumed_checkpointed_successful_call_is_still_blocked_as_a_duplicate() -> None:
+    state, _, _ = build_planning_state()
+    arguments = {"service": "catalog-service", "environment": "staging"}
+    state["tool_history"].append(
+        ToolHistoryEntry(
+            tool_name=ToolName.QUERY_METRICS,
+            tool_arguments=arguments,
+            status=ToolStatus.SUCCESS,
+        )
+    )
+    thread_id = str(uuid4())
+    checkpointer = InMemorySaver()
+    tool_execution_calls = 0
+
+    def checkpoint_pause(current: AgentState) -> AgentState:
+        interrupt("resume the persisted planning state")
+        return current
+
+    def tool_execution(current: AgentState) -> AgentState:
+        nonlocal tool_execution_calls
+        tool_execution_calls += 1
+        return current
+
+    graph = StateGraph(AgentState)
+    graph.add_node("checkpoint_pause", checkpoint_pause)
+    graph.add_node(
+        "investigation_planning",
+        lambda current: investigation_planner_node(
+            current,
+            FakeLLMClient(plan_response(tool_name="query_metrics", arguments=arguments)),
+        ),
+    )
+    graph.add_node("tool_execution", tool_execution)
+    graph.add_edge(START, "checkpoint_pause")
+    graph.add_edge("checkpoint_pause", "investigation_planning")
+    graph.add_conditional_edges(
+        "investigation_planning",
+        lambda current: (
+            "tool_execution"
+            if current["current_stage"] is AgentStage.TOOL_EXECUTION
+            else "end"
+        ),
+        {"tool_execution": "tool_execution", "end": END},
+    )
+    graph.add_edge("tool_execution", END)
+    first_graph = graph.compile(checkpointer=checkpointer)
+    config = WorkflowService.config_for(thread_id)
+
+    interrupted = first_graph.invoke(state, config)
+
+    assert "__interrupt__" in interrupted
+
+    resumed_graph = graph.compile(checkpointer=checkpointer)
+    result = WorkflowService(resumed_graph).resume(thread_id, {"resumed": True})
+
+    assert result["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
+    assert result["terminal_reason"] is TerminalReason.INVESTIGATION_INCONCLUSIVE
+    assert result["pending_tool_call"] is None
+    assert tool_execution_calls == 0
 
 
 def test_planner_context_contains_current_investigation_facts() -> None:

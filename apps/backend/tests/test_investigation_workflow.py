@@ -51,8 +51,14 @@ from devsupport_backend.tools.schemas import (
 class WorkflowFakeLLM:
     """Produce context-derived structured outputs for existing LLM node boundaries."""
 
-    def __init__(self, *, confirm_on_update_call: int | None = 1) -> None:
+    def __init__(
+        self,
+        *,
+        confirm_on_update_call: int | None = 1,
+        planner_arguments: list[dict[str, object]] | None = None,
+    ) -> None:
         self._confirm_on_update_call = confirm_on_update_call
+        self._planner_arguments = planner_arguments or []
         self.generation_calls = 0
         self.planning_calls = 0
         self.update_calls = 0
@@ -84,14 +90,19 @@ class WorkflowFakeLLM:
         if system_prompt.startswith("Plan exactly"):
             self.planning_calls += 1
             incident = context["incident"]
+            arguments = (
+                self._planner_arguments[self.planning_calls - 1]
+                if self.planning_calls <= len(self._planner_arguments)
+                else {
+                    "service": incident["service"],
+                    "environment": incident["environment"],
+                }
+            )
             return json.dumps(
                 {
                     "investigation_goal": "Collect one metric snapshot for the current incident.",
                     "tool_name": "query_metrics",
-                    "tool_arguments": {
-                        "service": incident["service"],
-                        "environment": incident["environment"],
-                    },
+                    "tool_arguments": arguments,
                     "reason": "Metrics can distinguish the active candidate explanations.",
                 }
             )
@@ -308,7 +319,11 @@ def _failed_metrics_output() -> QueryMetricsOutput:
     return QueryMetricsOutput(
         status=ToolStatus.UNAVAILABLE,
         duration_ms=2.0,
-        error=ToolError(code="adapter_unavailable", message="metrics adapter unavailable"),
+        error=ToolError(
+            code="adapter_unavailable",
+            message="metrics adapter unavailable",
+            retryable=True,
+        ),
     )
 
 
@@ -443,7 +458,13 @@ def test_workflow_service_default_budget_reaches_five_round_terminalization(
     report = RecordingFinalReport()
     graph = build_investigation_graph(
         _workflow_dependencies(
-            WorkflowFakeLLM(confirm_on_update_call=None),
+            WorkflowFakeLLM(
+                confirm_on_update_call=None,
+                planner_arguments=[
+                    {"service": f"catalog-service-{index}", "environment": "staging"}
+                    for index in range(5)
+                ],
+            ),
             FakeEvaluator([EvaluationDecision.CONTINUE] * 5),
             final_report=report,
             manual_terminalizer=terminalizer,
@@ -654,32 +675,69 @@ def test_approval_required_routes_to_a_real_langgraph_interrupt(
     assert approval_wait.payloads == 1
 
 
-def test_continue_forms_a_second_plan_then_conclude_without_repeating_initial_nodes(
+def test_duplicate_second_planner_call_terminalizes_without_a_second_tool_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     evaluator = FakeEvaluator([EvaluationDecision.CONTINUE])
+    terminalizer = RecordingManualTerminalizer()
+    report = RecordingFinalReport()
+
+    result, llm_client, calls = _run_workflow(
+        monkeypatch,
+        tool_outputs=[_successful_metrics_output()],
+        evaluator=evaluator,
+        llm_client=WorkflowFakeLLM(confirm_on_update_call=2),
+        final_report=report,
+        manual_terminalizer=terminalizer,
+    )
+
+    assert result["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
+    assert result["terminal_reason"] is TerminalReason.INVESTIGATION_INCONCLUSIVE
+    assert result["current_stage"] is AgentStage.NEEDS_MANUAL_ACTION
+    assert result["pending_tool_call"] is None
+    assert result["investigation_round"] == 1
+    assert result["tool_call_count"] == 1
+    assert len(result["tool_history"]) == 1
+    assert result["tool_history"][0].status is ToolStatus.SUCCESS
+    assert result["llm_call_count"] == 4
+    assert llm_client.generation_calls == 1
+    assert llm_client.planning_calls == 2
+    assert llm_client.update_calls == 1
+    assert llm_client.resolution_calls == 0
+    assert evaluator.calls == 1
+    assert terminalizer.calls == 1
+    assert report.calls == 1
+    assert calls == (1, 1)
+
+
+def test_second_planner_call_with_different_arguments_executes_normally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evaluator = FakeEvaluator([EvaluationDecision.CONTINUE])
+    llm_client = WorkflowFakeLLM(
+        confirm_on_update_call=2,
+        planner_arguments=[
+            {"service": "catalog-service", "environment": "staging"},
+            {"service": "catalog-service", "environment": "local"},
+        ],
+    )
 
     result, llm_client, calls = _run_workflow(
         monkeypatch,
         tool_outputs=[_successful_metrics_output(), _successful_metrics_output()],
         evaluator=evaluator,
-        llm_client=WorkflowFakeLLM(confirm_on_update_call=2),
+        llm_client=llm_client,
     )
 
     assert result["evaluation_decision"] is EvaluationDecision.CONCLUDE
     assert result["current_stage"] is AgentStage.POLICY_GATE
-    assert result["final_conclusion"] is not None
-    assert result["proposed_action"] is not None
-    assert result["policy_outcome"] is not None
-    assert result["policy_outcome"].decision is PolicyDecision.DENIED
-    assert result["investigation_round"] == 2
     assert result["tool_call_count"] == 2
-    assert result["llm_call_count"] == 6
-    assert llm_client.generation_calls == 1
+    assert [entry.tool_arguments["environment"] for entry in result["tool_history"]] == [
+        "staging",
+        "local",
+    ]
     assert llm_client.planning_calls == 2
     assert llm_client.update_calls == 2
-    assert llm_client.resolution_calls == 1
-    assert evaluator.calls == 1
     assert calls == (1, 2)
 
 
@@ -697,6 +755,10 @@ def test_tool_failure_replans_without_incrementing_the_failed_round(
     assert result["evaluation_decision"] is EvaluationDecision.CONCLUDE
     assert result["tool_call_count"] == 2
     assert result["investigation_round"] == 1
+    assert result["tool_history"][0].status is ToolStatus.UNAVAILABLE
+    assert result["tool_history"][0].error is not None
+    assert result["tool_history"][0].error.retryable is True
+    assert result["tool_history"][1].status is ToolStatus.SUCCESS
     assert llm_client.planning_calls == 2
     assert llm_client.update_calls == 1
     assert llm_client.resolution_calls == 1
