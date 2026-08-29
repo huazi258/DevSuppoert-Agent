@@ -17,6 +17,7 @@ from devsupport_backend.agent.state import (
     AgentStage,
     AgentState,
     EvidenceContext,
+    FailureCategory,
     FinalConclusion,
     HypothesisContext,
     HypothesisStatus,
@@ -181,6 +182,15 @@ def _action(session: Session, incident: Incident) -> Action:
     session.add(action)
     session.commit()
     return action
+
+
+def _retryable_failure(failed_node: str) -> WorkflowFailure:
+    return WorkflowFailure(
+        failed_node=failed_node,
+        safe_error="LLM provider request timed out",
+        category=FailureCategory.LLM_PROVIDER_TIMEOUT,
+        retryable=True,
+    )
 
 
 def test_projector_exposes_only_bound_public_facts(database_session: Session) -> None:
@@ -434,10 +444,7 @@ def test_retry_available_requires_exact_failed_preapproval_task(database_session
     state["current_stage"] = AgentStage.INVESTIGATION_PLANNING
     runtime = FakeRuntime(
         state=state,
-        failure=WorkflowFailure(
-            failed_node="investigation_planning",
-            safe_error="Persisted workflow task failed",
-        ),
+        failure=_retryable_failure("investigation_planning"),
     )
 
     response = WorkflowConsoleService(database_session, runtime).read(incident.id)
@@ -449,7 +456,65 @@ def test_retry_available_requires_exact_failed_preapproval_task(database_session
     assert "safe_error" not in response.model_dump(mode="json")
 
 
-def test_first_eligible_retry_persists_usage_and_second_retry_is_budget_denied(
+@pytest.mark.parametrize(
+    ("category", "retryable", "expected_available"),
+    [
+        (FailureCategory.LLM_PROVIDER_TIMEOUT, True, True),
+        (FailureCategory.STRUCTURED_OUTPUT_INVALID, True, True),
+        (FailureCategory.WORKFLOW_RUNTIME_FAILURE, False, False),
+        (FailureCategory.PERSISTENCE_FAILURE, False, False),
+    ],
+)
+def test_retry_availability_requires_classified_failure_retryability(
+    database_session: Session,
+    category: FailureCategory,
+    retryable: bool,
+    expected_available: bool,
+) -> None:
+    incident = _incident(database_session, status="INVESTIGATING")
+    state = _state(incident)
+    state["current_stage"] = AgentStage.INVESTIGATION_PLANNING
+    runtime = FakeRuntime(
+        state=state,
+        failure=WorkflowFailure(
+            failed_node="investigation_planning",
+            safe_error="safe classified failure",
+            category=category,
+            retryable=retryable,
+        ),
+    )
+
+    response = WorkflowConsoleService(database_session, runtime).read(incident.id)
+
+    assert response.retry_available is expected_available
+
+
+def test_non_retryable_failure_is_rejected_before_retry_usage_is_recorded(
+    database_session: Session,
+) -> None:
+    incident = _incident(database_session, status="INVESTIGATING")
+    state = _state(incident)
+    state["current_stage"] = AgentStage.INVESTIGATION_PLANNING
+    runtime = FakeRuntime(
+        state=state,
+        failure=WorkflowFailure(
+            failed_node="investigation_planning",
+            safe_error="Workflow execution failed",
+            category=FailureCategory.WORKFLOW_RUNTIME_FAILURE,
+            retryable=False,
+        ),
+    )
+    service = WorkflowConsoleService(database_session, runtime)
+
+    with pytest.raises(WorkflowConflictError, match="not eligible"):
+        service.retry(incident.id)
+
+    assert runtime.retry_usage_calls == 0
+    assert runtime.retry_calls == 0
+    assert state["workflow_retry_count"] == 0
+
+
+def test_legacy_failure_projection_is_conservatively_not_retryable(
     database_session: Session,
 ) -> None:
     incident = _incident(database_session, status="INVESTIGATING")
@@ -461,6 +526,25 @@ def test_first_eligible_retry_persists_usage_and_second_retry_is_budget_denied(
             failed_node="investigation_planning",
             safe_error="Persisted workflow task failed",
         ),
+    )
+    service = WorkflowConsoleService(database_session, runtime)
+
+    assert service.read(incident.id).retry_available is False
+    with pytest.raises(WorkflowConflictError, match="not eligible"):
+        service.retry(incident.id)
+    assert runtime.retry_usage_calls == 0
+    assert runtime.retry_calls == 0
+
+
+def test_first_eligible_retry_persists_usage_and_second_retry_is_budget_denied(
+    database_session: Session,
+) -> None:
+    incident = _incident(database_session, status="INVESTIGATING")
+    state = _state(incident)
+    state["current_stage"] = AgentStage.INVESTIGATION_PLANNING
+    runtime = FakeRuntime(
+        state=state,
+        failure=_retryable_failure("investigation_planning"),
     )
     service = WorkflowConsoleService(database_session, runtime)
 
@@ -483,10 +567,7 @@ def test_retry_failure_keeps_usage_and_ineligible_retry_does_not_consume_it(
     runtime = FakeRuntime(
         state=state,
         retry_error=RuntimeError("controlled retry failure"),
-        failure=WorkflowFailure(
-            failed_node="investigation_planning",
-            safe_error="Persisted workflow task failed",
-        ),
+        failure=_retryable_failure("investigation_planning"),
     )
     service = WorkflowConsoleService(database_session, runtime)
 
@@ -500,10 +581,7 @@ def test_retry_failure_keeps_usage_and_ineligible_retry_does_not_consume_it(
         service.retry(incident.id)
     assert runtime.retry_calls == 1
     assert runtime.retry_usage_calls == 1
-    runtime.failure = WorkflowFailure(
-        failed_node="policy_gate",
-        safe_error="Persisted workflow task failed",
-    )
+    runtime.failure = _retryable_failure("policy_gate")
     with pytest.raises(WorkflowConflictError, match="not eligible"):
         service.retry(incident.id)
     assert runtime.retry_usage_calls == 1
@@ -520,10 +598,7 @@ def test_retry_available_rejects_ineligible_node_and_non_investigating_status(
     incident = _incident(database_session, status="INVESTIGATING")
     runtime = FakeRuntime(
         state=_state(incident),
-        failure=WorkflowFailure(
-            failed_node=failed_node,
-            safe_error="Persisted workflow task failed",
-        ),
+        failure=_retryable_failure(failed_node),
     )
 
     response = WorkflowConsoleService(database_session, runtime).read(incident.id)
@@ -532,10 +607,7 @@ def test_retry_available_rejects_ineligible_node_and_non_investigating_status(
     for status in ("OPEN", "WAITING_APPROVAL", "RESOLVED", "NEEDS_MANUAL_ACTION"):
         incident.status = status
         database_session.commit()
-        runtime.failure = WorkflowFailure(
-            failed_node="investigation_planning",
-            safe_error="Persisted workflow task failed",
-        )
+        runtime.failure = _retryable_failure("investigation_planning")
 
         response = WorkflowConsoleService(database_session, runtime).read(incident.id)
         assert response.retry_available is False
@@ -544,10 +616,7 @@ def test_retry_available_rejects_ineligible_node_and_non_investigating_status(
 def test_retry_available_rejects_persisted_action_approval_and_postapproval_outcomes(
     database_session: Session,
 ) -> None:
-    failure = WorkflowFailure(
-        failed_node="investigation_planning",
-        safe_error="Persisted workflow task failed",
-    )
+    failure = _retryable_failure("investigation_planning")
 
     action_incident = _incident(database_session, status="INVESTIGATING")
     _action(database_session, action_incident)

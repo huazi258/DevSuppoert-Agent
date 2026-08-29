@@ -354,6 +354,7 @@ class WorkflowConsoleService:
             or not incident.thread_id.strip()
             or failure is None
             or failure.failed_node not in RETRYABLE_PRE_APPROVAL_NODES
+            or not failure.retryable
             or action_exists
             or approval_exists
             or state["approval_outcome"] is not None

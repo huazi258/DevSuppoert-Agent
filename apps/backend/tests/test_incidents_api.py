@@ -14,6 +14,7 @@ from devsupport_backend.agent.state import (
     ApprovalOutcome,
     ApprovalStatus,
     EvidenceContext,
+    FailureCategory,
     PolicyDecision,
     PolicyOutcome,
     PolicyReasonCode,
@@ -166,6 +167,8 @@ def _prepare_retryable_incident(
     runtime.failure = WorkflowFailure(
         failed_node=failed_node,
         safe_error="Persisted workflow task failed",
+        category=FailureCategory.LLM_PROVIDER_TIMEOUT,
+        retryable=True,
     )
     return incident
 
@@ -257,6 +260,8 @@ def test_workflow_api_duplicate_and_non_open_start_are_conflicts(
     runtime.failure = WorkflowFailure(
         failed_node="investigation_planning",
         safe_error="Persisted workflow task failed",
+        category=FailureCategory.LLM_PROVIDER_TIMEOUT,
+        retryable=True,
     )
     database_session.commit()
     investigating = client.post(f"/incidents/{incident.id}/workflow")
