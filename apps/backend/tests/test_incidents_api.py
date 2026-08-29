@@ -47,6 +47,7 @@ class FakeWorkflowRuntime:
         self.start_calls = 0
         self.started_threads: list[str] = []
         self.retry_calls = 0
+        self.retry_usage_calls = 0
         self.retried_threads: list[str] = []
 
     def get_state(self, thread_id: str):
@@ -91,6 +92,11 @@ class FakeWorkflowRuntime:
             raise self.retry_error
         self.failure = None
         return self.states[thread_id]
+
+    def record_retry_attempt(self, thread_id: str) -> None:
+        self.retry_usage_calls += 1
+        state = self.states[thread_id]
+        state["workflow_retry_count"] += 1
 
 
 @pytest.fixture
@@ -313,7 +319,8 @@ def test_workflow_retry_api_returns_503_and_preserves_retryable_failure(
     assert retried.status_code == 503
     assert retried.json() == {"detail": "Workflow retry failed"}
     assert refreshed.status_code == 200
-    assert refreshed.json()["retry_available"] is True
+    assert refreshed.json()["retry_available"] is False
+    assert runtime.retry_usage_calls == 1
     assert incident.status == "INVESTIGATING"
     assert runtime.retried_threads == [incident.thread_id]
     assert runtime.start_calls == 0

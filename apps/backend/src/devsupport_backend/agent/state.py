@@ -60,6 +60,18 @@ class EvaluationDecision(StrEnum):
     NEEDS_MANUAL_ACTION = "NEEDS_MANUAL_ACTION"
 
 
+class FailureCategory(StrEnum):
+    """Stable, safe categories for persisted workflow task failures."""
+
+    LLM_PROVIDER_TIMEOUT = "LLM_PROVIDER_TIMEOUT"
+    LLM_PROVIDER_ERROR = "LLM_PROVIDER_ERROR"
+    STRUCTURED_OUTPUT_INVALID = "STRUCTURED_OUTPUT_INVALID"
+    RETRIEVAL_FAILURE = "RETRIEVAL_FAILURE"
+    TOOL_FAILURE = "TOOL_FAILURE"
+    PERSISTENCE_FAILURE = "PERSISTENCE_FAILURE"
+    WORKFLOW_RUNTIME_FAILURE = "WORKFLOW_RUNTIME_FAILURE"
+
+
 class IntakeDecision(StrEnum):
     """Outcome of Intake, kept separate from later evidence evaluation."""
 
@@ -357,6 +369,9 @@ class AgentState(TypedDict):
     llm_call_count: int
     workflow_retry_count: int
     active_execution_seconds: float
+    workflow_failure_category: FailureCategory | None
+    workflow_failure_retryable: bool | None
+    workflow_failure_safe_message: str | None
     intake_decision: IntakeDecision | None
     missing_information: list[str]
     evaluation_decision: EvaluationDecision | None
@@ -394,6 +409,9 @@ def create_initial_agent_state(
         "llm_call_count": 0,
         "workflow_retry_count": 0,
         "active_execution_seconds": 0.0,
+        "workflow_failure_category": None,
+        "workflow_failure_retryable": None,
+        "workflow_failure_safe_message": None,
         "intake_decision": None,
         "missing_information": [],
         "evaluation_decision": None,
@@ -426,6 +444,13 @@ def agent_state_to_checkpoint_payload(state: AgentState) -> dict[str, object]:
         "llm_call_count": state["llm_call_count"],
         "workflow_retry_count": state["workflow_retry_count"],
         "active_execution_seconds": state.get("active_execution_seconds", 0.0),
+        "workflow_failure_category": (
+            state["workflow_failure_category"].value
+            if state.get("workflow_failure_category") is not None
+            else None
+        ),
+        "workflow_failure_retryable": state.get("workflow_failure_retryable"),
+        "workflow_failure_safe_message": state.get("workflow_failure_safe_message"),
         "intake_decision": (
             state["intake_decision"].value if state["intake_decision"] is not None else None
         ),

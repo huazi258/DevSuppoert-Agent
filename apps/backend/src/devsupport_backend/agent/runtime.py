@@ -16,8 +16,13 @@ from devsupport_backend.agent.budget import (
     active_execution_scope,
     current_active_execution_seconds,
 )
+from devsupport_backend.agent.failure import (
+    classify_workflow_failure,
+    safe_message_for_failure_category,
+)
 from devsupport_backend.agent.state import (
     AgentState,
+    FailureCategory,
     IncidentStateSource,
     create_initial_agent_state,
 )
@@ -32,6 +37,8 @@ class WorkflowFailure:
 
     failed_node: str
     safe_error: str
+    category: FailureCategory = FailureCategory.WORKFLOW_RUNTIME_FAILURE
+    retryable: bool = False
 
 
 class WorkflowIncidentSource(IncidentStateSource, Protocol):
@@ -79,9 +86,16 @@ class WorkflowService:
         failed_task = failed_tasks[0]
         if not failed_task.name:
             return None
+        category = _persisted_failure_category(snapshot.values)
         return WorkflowFailure(
             failed_node=failed_task.name,
-            safe_error="Persisted workflow task failed",
+            category=category,
+            retryable=(
+                snapshot.values.get("workflow_failure_retryable")
+                if isinstance(snapshot.values.get("workflow_failure_retryable"), bool)
+                else False
+            ),
+            safe_error=safe_message_for_failure_category(category),
         )
 
     def retry_failed_task(self, thread_id: str) -> AgentState:
@@ -123,22 +137,28 @@ class WorkflowService:
         ):
             try:
                 return self._graph.invoke(workflow_input, config)
-            except Exception:
-                self._persist_failed_active_execution_usage(config)
+            except Exception as error:
+                self._persist_failed_active_execution_usage(config, error)
                 raise
 
-    def _persist_failed_active_execution_usage(self, config: dict[str, object]) -> None:
-        """Best-effort failure accounting that must never replace the workflow exception."""
+    def _persist_failed_active_execution_usage(
+        self, config: dict[str, object], error: BaseException
+    ) -> None:
+        """Best-effort failed-checkpoint accounting that never replaces the workflow error."""
         try:
             snapshot = self._graph.get_state(config)
             state = cast(AgentState, snapshot.values)
             persisted_usage = float(state.get("active_execution_seconds", 0.0))
             active_usage = current_active_execution_seconds(state)
-            if active_usage <= persisted_usage:
-                return
-            self._update_failed_checkpoint_fields(
-                snapshot, {"active_execution_seconds": active_usage}
-            )
+            classification = classify_workflow_failure(error)
+            values: dict[str, object] = {
+                "workflow_failure_category": classification.category.value,
+                "workflow_failure_retryable": classification.retryable,
+                "workflow_failure_safe_message": classification.safe_message,
+            }
+            if active_usage > persisted_usage:
+                values["active_execution_seconds"] = active_usage
+            self._update_failed_checkpoint_fields(snapshot, values)
         except Exception:
             pass
 
@@ -180,3 +200,11 @@ class WorkflowService:
             "configurable": {"thread_id": thread_id},
             "recursion_limit": DEFAULT_WORKFLOW_RECURSION_LIMIT,
         }
+
+
+def _persisted_failure_category(values: dict[str, object]) -> FailureCategory:
+    """Read a checkpoint-safe category while keeping pre-M1.3 checkpoints usable."""
+    try:
+        return FailureCategory(values.get("workflow_failure_category"))
+    except (TypeError, ValueError):
+        return FailureCategory.WORKFLOW_RUNTIME_FAILURE

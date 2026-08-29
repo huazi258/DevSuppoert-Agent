@@ -22,6 +22,7 @@ from devsupport_backend.agent.state import (
     AgentStage,
     AgentState,
     EvaluationDecision,
+    FailureCategory,
     create_initial_agent_state,
 )
 from devsupport_backend.agent.workflow import (
@@ -416,6 +417,9 @@ def test_postgres_failed_planner_persists_active_usage_without_replaying_predece
             assert failed_state["active_execution_seconds"] == 70.0
             assert failure is not None
             assert failure.failed_node == "investigation_planning"
+            assert failure.category is FailureCategory.LLM_PROVIDER_ERROR
+            assert failure.retryable is True
+            assert failure.safe_error == "LLM provider request failed"
             assert calls == {"planning_guard": 1, "planning": 1, "tool_execution": 0}
 
             first_service.record_retry_attempt(thread_id)
@@ -428,6 +432,9 @@ def test_postgres_failed_planner_persists_active_usage_without_replaying_predece
         assert recorded_state["workflow_retry_count"] == 1
         assert recorded_failure is not None
         assert recorded_failure.failed_node == "investigation_planning"
+        assert recorded_failure.category is FailureCategory.LLM_PROVIDER_ERROR
+        assert recorded_failure.retryable is True
+        assert recorded_failure.safe_error == "LLM provider request failed"
 
         with open_postgres_checkpointer() as second_checkpointer:
             second_graph = _durable_agent_state_retry_graph(

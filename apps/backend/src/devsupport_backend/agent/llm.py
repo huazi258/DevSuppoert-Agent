@@ -13,6 +13,10 @@ class LLMError(RuntimeError):
     """Raised when an LLM provider cannot return a usable completion."""
 
 
+class LLMProviderTimeoutError(LLMError):
+    """Raised when the configured LLM provider request deadline expires."""
+
+
 class LLMClient(Protocol):
     """Generate one text completion from trusted node instructions and context."""
 
@@ -95,7 +99,7 @@ class OpenAICompatibleLLMClient:
                 raise ActiveExecutionBudgetExceeded(
                     "active execution budget expired while waiting for the LLM provider"
                 ) from error
-            raise LLMError(
+            raise LLMProviderTimeoutError(
                 f"LLM request read timed out after {effective_timeout_seconds:g} seconds"
             ) from error
         except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as error:

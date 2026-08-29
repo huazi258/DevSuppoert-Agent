@@ -544,6 +544,30 @@ def test_aggregate_marks_unrecovered_partial_metrics_unavailable() -> None:
     assert aggregate.unauthorized_execution_observed_case_count == 1
 
 
+def test_machine_output_exposes_safe_persisted_failure_facts() -> None:
+    output = EvalRunOutput(
+        fixture_id="failed-workflow",
+        execution_scope=EvalExecutionScope.FULL_WORKFLOW,
+        incident_id=uuid4(),
+        thread_id="failed-thread",
+        final_outcome=None,
+        score=None,
+        result=None,
+        passed=False,
+        latency_ms=10.0,
+        failure_category="LLM_PROVIDER_TIMEOUT",
+        failure_node="hypothesis_update",
+        failure_retryable=True,
+        error="WorkflowStartError: Workflow start failed",
+    )
+
+    machine_output = output.machine_output()
+
+    assert machine_output["failure_category"] == "LLM_PROVIDER_TIMEOUT"
+    assert machine_output["failure_node"] == "hypothesis_update"
+    assert machine_output["failure_retryable"] is True
+
+
 def test_observed_llm_client_preserves_completion_input_and_records_latency(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

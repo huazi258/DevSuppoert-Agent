@@ -31,7 +31,7 @@ from devsupport_backend.agent.observability import (
 )
 from devsupport_backend.agent.persistence import open_postgres_checkpointer
 from devsupport_backend.agent.policy import PolicyGateService
-from devsupport_backend.agent.runtime import WorkflowService
+from devsupport_backend.agent.runtime import WorkflowFailure, WorkflowService
 from devsupport_backend.agent.state import (
     ActionType,
     AgentStage,
@@ -108,7 +108,7 @@ from devsupport_backend.tools.recovery_probe import (
     RecoveryProbeResult,
 )
 from devsupport_backend.tools.traces import FaultLabTracesAdapter, TracesAdapterError
-from devsupport_backend.workflow_console import WorkflowConsoleService
+from devsupport_backend.workflow_console import PostgresWorkflowRuntime, WorkflowConsoleService
 
 DEFAULT_SUITE_PATH = Path(__file__).resolve().parents[5] / "evals" / "initial_suite.yaml"
 _EVAL_IPC_POLL_SECONDS = 0.1
@@ -580,6 +580,9 @@ class EvalRunOutput:
     llm_total_latency_ms: float | None = None
     observability: InvestigationObservability | None = None
     partial_facts: PartialEvalFacts | None = None
+    failure_category: str | None = None
+    failure_node: str | None = None
+    failure_retryable: bool | None = None
     error: str | None = None
 
     def machine_output(self) -> dict[str, object]:
@@ -624,6 +627,9 @@ class EvalRunOutput:
                 if self.result is not None and self.result.token_usage is not None
                 else None
             ),
+            "failure_category": self.failure_category,
+            "failure_node": self.failure_node,
+            "failure_retryable": self.failure_retryable,
             "passed": self.passed,
             "error": self.error,
         }
@@ -867,9 +873,13 @@ class EvaluationRunner:
                     error="Eval runner child exited without machine-readable output",
                 )
             if output.result is None and incident_id is not None and thread_id is not None:
+                failure = _recover_persisted_workflow_failure(thread_id)
                 output = replace(
                     output,
                     partial_facts=_recover_partial_workflow_facts(incident_id, thread_id),
+                    failure_category=failure.category.value if failure is not None else None,
+                    failure_node=failure.failed_node if failure is not None else None,
+                    failure_retryable=failure.retryable if failure is not None else None,
                 )
             output = replace(output, observability=observability.snapshot(timed_out=timed_out))
         finally:
@@ -959,6 +969,19 @@ class EvaluationRunner:
 class _UnexpectedDeploymentAdapter:
     def query(self, tool_input):
         raise AssertionError("policy_gate_safety must not access Fault Lab adapters")
+
+
+def _recover_persisted_workflow_failure(
+    thread_id: str,
+    *,
+    session_factory: Callable[[], Session] = SessionLocal,
+) -> WorkflowFailure | None:
+    """Read safe persisted failure facts without changing Eval scoring or workflow state."""
+    try:
+        with session_factory() as session:
+            return PostgresWorkflowRuntime(session).get_failure(thread_id)
+    except Exception:
+        return None
 
 
 def _recover_partial_workflow_facts(

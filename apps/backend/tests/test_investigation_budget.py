@@ -19,10 +19,13 @@ from devsupport_backend.agent.budget import (
     active_execution_scope,
     effective_llm_timeout_seconds,
 )
+from devsupport_backend.agent.llm import LLMProviderTimeoutError
+from devsupport_backend.agent.nodes.hypothesis_update import HypothesisUpdateError
 from devsupport_backend.agent.runtime import WorkflowService
 from devsupport_backend.agent.state import (
     AgentState,
     EvaluationDecision,
+    FailureCategory,
     create_initial_agent_state,
 )
 from devsupport_backend.agent.workflow import (
@@ -157,6 +160,39 @@ def test_retry_usage_is_persisted_before_a_later_retry_invocation() -> None:
     service.record_retry_attempt(incident.thread_id)
 
     assert service.get_state(incident.thread_id)["workflow_retry_count"] == 1
+
+
+def test_failed_checkpoint_persists_safe_failure_facts_from_a_wrapped_provider_timeout() -> None:
+    incident = _incident()
+    graph = StateGraph(AgentState)
+
+    def hypothesis_update(state: AgentState) -> AgentState:
+        del state
+        try:
+            raise LLMProviderTimeoutError("provider response included secret=not-persisted")
+        except LLMProviderTimeoutError as error:
+            raise HypothesisUpdateError("node provider failure") from error
+
+    graph.add_node("hypothesis_update", hypothesis_update)
+    graph.add_edge(START, "hypothesis_update")
+    graph.add_edge("hypothesis_update", END)
+    service = WorkflowService(graph.compile(checkpointer=InMemorySaver()))
+
+    with pytest.raises(HypothesisUpdateError, match="node provider failure"):
+        service.start(incident)
+
+    state = service.get_state(incident.thread_id)
+    failure = service.get_failure(incident.thread_id)
+
+    assert failure is not None
+    assert failure.failed_node == "hypothesis_update"
+    assert failure.category is FailureCategory.LLM_PROVIDER_TIMEOUT
+    assert failure.retryable is True
+    assert failure.safe_error == "LLM provider request timed out"
+    assert state["workflow_failure_category"] == "LLM_PROVIDER_TIMEOUT"
+    assert state["workflow_failure_retryable"] is True
+    assert state["workflow_failure_safe_message"] == "LLM provider request timed out"
+    assert "secret=" not in state["workflow_failure_safe_message"]
 
 
 def test_failed_llm_attempt_does_not_reset_prior_checkpointed_usage() -> None:
@@ -495,6 +531,12 @@ def test_failed_invocation_persists_active_usage_and_retries_from_the_remaining_
     assert failed_state["active_execution_seconds"] == 70.0
     assert failure is not None
     assert failure.failed_node == "investigation_planning"
+    assert failure.category is FailureCategory.WORKFLOW_RUNTIME_FAILURE
+    assert failure.retryable is False
+    assert failure.safe_error == "Workflow execution failed"
+    assert failed_state["workflow_failure_category"] == "WORKFLOW_RUNTIME_FAILURE"
+    assert failed_state["workflow_failure_retryable"] is False
+    assert failed_state["workflow_failure_safe_message"] == "Workflow execution failed"
     assert calls == {"predecessor": 1, "planning": 1, "terminal": 0}
 
     service.record_retry_attempt(incident.thread_id)
@@ -641,6 +683,34 @@ def test_active_usage_persistence_failure_does_not_replace_workflow_exception(
     failure = service.get_failure(incident.thread_id)
     assert failure is not None
     assert failure.failed_node == "fails"
+
+
+def test_pre_m13_failed_checkpoint_uses_conservative_failure_fallback() -> None:
+    incident = _incident()
+    graph = StateGraph(AgentState)
+
+    def fails(state: AgentState) -> AgentState:
+        del state
+        raise RuntimeError("legacy checkpoint failure")
+
+    graph.add_node("fails", fails)
+    graph.add_edge(START, "fails")
+    graph.add_edge("fails", END)
+    compiled = graph.compile(checkpointer=InMemorySaver())
+    legacy_state = create_initial_agent_state(incident)
+    del legacy_state["workflow_failure_category"]
+    del legacy_state["workflow_failure_retryable"]
+    del legacy_state["workflow_failure_safe_message"]
+
+    with pytest.raises(RuntimeError, match="legacy checkpoint failure"):
+        compiled.invoke(legacy_state, WorkflowService.config_for(incident.thread_id))
+
+    failure = WorkflowService(compiled).get_failure(incident.thread_id)
+
+    assert failure is not None
+    assert failure.category is FailureCategory.WORKFLOW_RUNTIME_FAILURE
+    assert failure.retryable is False
+    assert failure.safe_error == "Workflow execution failed"
 
 
 class _BudgetLimitedTimeoutLLM:

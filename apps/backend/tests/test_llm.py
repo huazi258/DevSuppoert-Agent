@@ -9,7 +9,11 @@ from devsupport_backend.agent.budget import (
     InvestigationBudget,
     active_execution_scope,
 )
-from devsupport_backend.agent.llm import LLMError, OpenAICompatibleLLMClient
+from devsupport_backend.agent.llm import (
+    LLMError,
+    LLMProviderTimeoutError,
+    OpenAICompatibleLLMClient,
+)
 from devsupport_backend.config import Settings
 
 
@@ -147,7 +151,7 @@ def test_read_timeout_is_wrapped_without_exposing_credentials(
 
     monkeypatch.setattr(httpx, "post", fake_post)
 
-    with pytest.raises(LLMError, match="read timed out after 45 seconds") as error:
+    with pytest.raises(LLMProviderTimeoutError, match="read timed out after 45 seconds") as error:
         OpenAICompatibleLLMClient.from_settings(config).complete(
             system_prompt="system", user_prompt="user"
         )
