@@ -21,8 +21,10 @@ from devsupport_backend.agent.state import (
     EvaluationDecision,
     FinalConclusion,
     PolicyDecision,
+    PolicyOutcome,
     PolicyReasonCode,
     ProposedAction,
+    TerminalReason,
     create_initial_agent_state,
 )
 from devsupport_backend.models import Action, Incident
@@ -317,6 +319,53 @@ def test_policy_node_only_runs_after_a_concluded_resolution() -> None:
     state = create_initial_agent_state(incident)
 
     assert policy_gate_node(state, UnexpectedPolicyGate()) is state  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("decision", "expected_reason"),
+    [
+        (PolicyDecision.DENIED, TerminalReason.POLICY_DENIED),
+        (PolicyDecision.APPROVAL_REQUIRED, None),
+    ],
+)
+def test_policy_node_projects_terminal_reason_only_for_denial(
+    decision: PolicyDecision,
+    expected_reason: TerminalReason | None,
+) -> None:
+    class StaticPolicyGate:
+        def evaluate(self, state: AgentState) -> PolicyOutcome:
+            del state
+            return PolicyOutcome(
+                decision=decision,
+                reason_code=(
+                    PolicyReasonCode.MANUAL_ACTION
+                    if decision is PolicyDecision.DENIED
+                    else PolicyReasonCode.APPROVAL_REQUIRED
+                ),
+                reason="Controlled policy outcome.",
+                action_id=uuid4() if decision is PolicyDecision.APPROVAL_REQUIRED else None,
+            )
+
+    now = datetime.now(UTC)
+    incident = Incident(
+        id=uuid4(),
+        service="order-service",
+        environment="local",
+        description="Policy terminal reason test.",
+        time_range_start=now,
+        time_range_end=now + timedelta(minutes=5),
+        thread_id=str(uuid4()),
+    )
+    state = _concluded_state(incident)
+
+    updated = policy_gate_node(state, StaticPolicyGate())
+
+    assert updated["policy_outcome"].reason_code is (
+        PolicyReasonCode.MANUAL_ACTION
+        if decision is PolicyDecision.DENIED
+        else PolicyReasonCode.APPROVAL_REQUIRED
+    )
+    assert updated["terminal_reason"] is expected_reason
 
 
 def test_policy_service_denies_a_state_not_at_the_conclusion_stage(

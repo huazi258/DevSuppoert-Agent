@@ -566,6 +566,24 @@ def test_machine_output_exposes_safe_persisted_failure_facts() -> None:
     assert machine_output["failure_category"] == "LLM_PROVIDER_TIMEOUT"
     assert machine_output["failure_node"] == "hypothesis_update"
     assert machine_output["failure_retryable"] is True
+    assert machine_output["terminal_reason"] is None
+
+
+def test_machine_output_exposes_terminal_reason_for_completed_workflow() -> None:
+    output = EvalRunOutput(
+        fixture_id="manual-terminal",
+        execution_scope=EvalExecutionScope.FULL_WORKFLOW,
+        incident_id=uuid4(),
+        thread_id="manual-terminal-thread",
+        final_outcome="NEEDS_MANUAL_ACTION",
+        score=None,
+        result=_aggregate_result(tool_call_count=0, latency_ms=10.0),
+        passed=False,
+        latency_ms=10.0,
+        terminal_reason="investigation_inconclusive",
+    )
+
+    assert output.machine_output()["terminal_reason"] == "investigation_inconclusive"
 
 
 def test_observed_llm_client_preserves_completion_input_and_records_latency(

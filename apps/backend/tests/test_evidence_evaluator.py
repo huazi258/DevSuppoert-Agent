@@ -17,9 +17,11 @@ from devsupport_backend.agent.llm import LLMError
 from devsupport_backend.agent.state import (
     AgentStage,
     AgentState,
+    EvaluationDecision,
     EvidenceContext,
     HypothesisContext,
     HypothesisStatus,
+    TerminalReason,
     ToolHistoryEntry,
     create_initial_agent_state,
 )
@@ -265,3 +267,17 @@ def test_real_evaluator_works_with_existing_workflow_evaluation_contract() -> No
 
     assert updated["evaluation_decision"].value == "CONTINUE"
     assert updated["current_stage"] is AgentStage.INVESTIGATION_PLANNING
+    assert updated["terminal_reason"] is None
+
+
+def test_needs_manual_evaluation_sets_a_stable_inconclusive_terminal_reason() -> None:
+    state, _, _ = build_evaluation_state()
+
+    updated = evidence_evaluation_node(
+        state,
+        LLMEvidenceEvaluator(FakeLLMClient(evaluation_response("NEEDS_MANUAL_ACTION"))),
+        InvestigationLoopLimits(),
+    )
+
+    assert updated["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
+    assert updated["terminal_reason"] is TerminalReason.INVESTIGATION_INCONCLUSIVE

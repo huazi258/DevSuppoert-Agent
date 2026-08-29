@@ -26,6 +26,7 @@ from devsupport_backend.agent.state import (
     PolicyOutcome,
     PolicyReasonCode,
     ReportOutcome,
+    TerminalReason,
     ToolHistoryEntry,
     create_initial_agent_state,
 )
@@ -455,6 +456,7 @@ def test_workflow_service_default_budget_reaches_five_round_terminalization(
     assert result["current_stage"] is AgentStage.NEEDS_MANUAL_ACTION
     assert result["investigation_round"] == 5
     assert result["tool_call_count"] == 5
+    assert result["terminal_reason"] is TerminalReason.INVESTIGATION_ROUND_LIMIT_REACHED
     assert tool_calls == 5
     assert terminalizer.calls == 1
     assert report.calls == 1
@@ -476,10 +478,18 @@ def test_default_planning_guard_preserves_checkpoint_equivalent_remaining_budget
     at_round_limit = {**state, "investigation_round": 5}
     round_limited = workflow_module._planning_guard_node(at_round_limit, limits)
     assert round_limited["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
+    assert round_limited["terminal_reason"] is TerminalReason.INVESTIGATION_ROUND_LIMIT_REACHED
 
     at_tool_limit = {**state, "tool_call_count": 6}
     tool_limited = workflow_module._planning_guard_node(at_tool_limit, limits)
     assert tool_limited["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
+    assert tool_limited["terminal_reason"] is TerminalReason.TOOL_CALL_LIMIT_REACHED
+
+    both_limited = {**state, "investigation_round": 5, "tool_call_count": 6}
+    assert (
+        workflow_module._planning_guard_node(both_limited, limits)["terminal_reason"]
+        is TerminalReason.INVESTIGATION_ROUND_LIMIT_REACHED
+    )
 
 
 def test_graph_compiles_with_an_injected_checkpointer() -> None:
@@ -533,6 +543,7 @@ def test_active_budget_after_retrieval_routes_to_manual_terminalization(
 
     assert result["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
     assert result["active_execution_seconds"] == 95.0
+    assert result["terminal_reason"] is TerminalReason.ACTIVE_EXECUTION_BUDGET_EXHAUSTED
     assert terminalizer.calls == 1
     assert report.calls == 1
 
@@ -674,6 +685,7 @@ def test_llm_budget_allows_the_last_call_then_terminalizes_before_the_next(
     assert result["llm_call_count"] == 1
     assert result["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
     assert result["current_stage"] is AgentStage.NEEDS_MANUAL_ACTION
+    assert result["terminal_reason"] is TerminalReason.LLM_CALL_BUDGET_EXHAUSTED
     assert llm_client.generation_calls == 1
     assert llm_client.update_calls == 0
     assert terminalizer.calls == 1
@@ -705,6 +717,7 @@ def test_llm_budget_blocks_the_ninth_call_without_invoking_the_delegate(
 
     assert result["llm_call_count"] == 8
     assert result["current_stage"] is AgentStage.NEEDS_MANUAL_ACTION
+    assert result["terminal_reason"] is TerminalReason.LLM_CALL_BUDGET_EXHAUSTED
     assert llm_client.generation_calls == 0
     assert terminalizer.calls == 1
     assert report.calls == 1
@@ -733,6 +746,7 @@ def test_llm_budget_allows_the_eighth_call_before_blocking_the_ninth(
 
     assert result["llm_call_count"] == 8
     assert result["current_stage"] is AgentStage.NEEDS_MANUAL_ACTION
+    assert result["terminal_reason"] is TerminalReason.LLM_CALL_BUDGET_EXHAUSTED
     assert llm_client.generation_calls == 1
     assert llm_client.planning_calls == 0
     assert terminalizer.calls == 1
@@ -756,6 +770,7 @@ def test_llm_budget_blocks_the_production_evidence_evaluator(
 
     assert result["llm_call_count"] == 3
     assert result["current_stage"] is AgentStage.NEEDS_MANUAL_ACTION
+    assert result["terminal_reason"] is TerminalReason.LLM_CALL_BUDGET_EXHAUSTED
     assert llm_client.generation_calls == 1
     assert llm_client.update_calls == 1
     assert llm_client.evaluation_calls == 0
@@ -780,6 +795,7 @@ def test_llm_budget_blocks_resolution_proposal_after_conclusion(
 
     assert result["llm_call_count"] == 2
     assert result["current_stage"] is AgentStage.NEEDS_MANUAL_ACTION
+    assert result["terminal_reason"] is TerminalReason.LLM_CALL_BUDGET_EXHAUSTED
     assert llm_client.resolution_calls == 0
     assert terminalizer.calls == 1
     assert report.calls == 1

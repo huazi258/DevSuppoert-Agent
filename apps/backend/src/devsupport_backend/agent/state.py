@@ -72,6 +72,21 @@ class FailureCategory(StrEnum):
     WORKFLOW_RUNTIME_FAILURE = "WORKFLOW_RUNTIME_FAILURE"
 
 
+class TerminalReason(StrEnum):
+    """Stable reasons for a workflow's deliberate non-resolved terminal path."""
+
+    ACTIVE_EXECUTION_BUDGET_EXHAUSTED = "active_execution_budget_exhausted"
+    LLM_CALL_BUDGET_EXHAUSTED = "llm_call_budget_exhausted"
+    INVESTIGATION_ROUND_LIMIT_REACHED = "investigation_round_limit_reached"
+    TOOL_CALL_LIMIT_REACHED = "tool_call_limit_reached"
+    INVESTIGATION_INCONCLUSIVE = "investigation_inconclusive"
+    POLICY_DENIED = "policy_denied"
+    APPROVAL_REJECTED = "approval_rejected"
+    ACTION_EXECUTION_FAILED = "action_execution_failed"
+    RECOVERY_VERIFICATION_FAILED = "recovery_verification_failed"
+    RECOVERY_VERIFICATION_INCONCLUSIVE = "recovery_verification_inconclusive"
+
+
 class IntakeDecision(StrEnum):
     """Outcome of Intake, kept separate from later evidence evaluation."""
 
@@ -372,6 +387,7 @@ class AgentState(TypedDict):
     workflow_failure_category: FailureCategory | None
     workflow_failure_retryable: bool | None
     workflow_failure_safe_message: str | None
+    terminal_reason: TerminalReason | None
     intake_decision: IntakeDecision | None
     missing_information: list[str]
     evaluation_decision: EvaluationDecision | None
@@ -412,6 +428,7 @@ def create_initial_agent_state(
         "workflow_failure_category": None,
         "workflow_failure_retryable": None,
         "workflow_failure_safe_message": None,
+        "terminal_reason": None,
         "intake_decision": None,
         "missing_information": [],
         "evaluation_decision": None,
@@ -451,6 +468,9 @@ def agent_state_to_checkpoint_payload(state: AgentState) -> dict[str, object]:
         ),
         "workflow_failure_retryable": state.get("workflow_failure_retryable"),
         "workflow_failure_safe_message": state.get("workflow_failure_safe_message"),
+        "terminal_reason": (
+            state["terminal_reason"].value if state.get("terminal_reason") is not None else None
+        ),
         "intake_decision": (
             state["intake_decision"].value if state["intake_decision"] is not None else None
         ),

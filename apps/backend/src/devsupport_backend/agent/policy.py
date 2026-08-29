@@ -16,6 +16,7 @@ from devsupport_backend.agent.state import (
     PolicyDecision,
     PolicyOutcome,
     PolicyReasonCode,
+    TerminalReason,
 )
 from devsupport_backend.models import Action
 from devsupport_backend.tools.deployments import (
@@ -164,9 +165,15 @@ def policy_gate_node(state: AgentState, policy_gate: PolicyGate) -> AgentState:
         or state["proposed_action"] is None
     ):
         return state
+    outcome = policy_gate.evaluate(state)
     return {
         **state,
-        "policy_outcome": policy_gate.evaluate(state),
+        "policy_outcome": outcome,
+        "terminal_reason": (
+            TerminalReason.POLICY_DENIED
+            if outcome.decision is PolicyDecision.DENIED
+            else None
+        ),
         "current_stage": AgentStage.POLICY_GATE,
     }
 

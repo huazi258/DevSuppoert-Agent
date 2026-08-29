@@ -15,11 +15,16 @@ from devsupport_backend.agent.state import (
     PolicyDecision,
     PolicyOutcome,
     PolicyReasonCode,
+    TerminalReason,
+    VerificationOutcome,
     VerificationStatus,
     create_initial_agent_state,
 )
 from devsupport_backend.models import Action, Approval, Incident, Verification
-from devsupport_backend.recovery_verification import RecoveryVerificationService
+from devsupport_backend.recovery_verification import (
+    RecoveryVerificationService,
+    recovery_verification_node,
+)
 from devsupport_backend.tools.deployments import DeploymentAdapterError, DeploymentQueryResult
 from devsupport_backend.tools.logs import LogQueryResult, LogsAdapterError
 from devsupport_backend.tools.metrics import MetricQueryResult, MetricsAdapterError
@@ -296,3 +301,38 @@ def test_deterministic_fail_and_inconclusive_matrix(
         database_session.query(Verification).filter(Verification.action_id == action.id).count()
         == 1
     )
+
+
+@pytest.mark.parametrize(
+    ("status", "stage", "terminal_reason"),
+    [
+        (VerificationStatus.PASS, AgentStage.RESOLVED, None),
+        (
+            VerificationStatus.FAIL,
+            AgentStage.NEEDS_MANUAL_ACTION,
+            TerminalReason.RECOVERY_VERIFICATION_FAILED,
+        ),
+        (
+            VerificationStatus.INCONCLUSIVE,
+            AgentStage.NEEDS_MANUAL_ACTION,
+            TerminalReason.RECOVERY_VERIFICATION_INCONCLUSIVE,
+        ),
+    ],
+)
+def test_recovery_verification_node_projects_terminal_reasons(
+    database_session: Session,
+    status: VerificationStatus,
+    stage: AgentStage,
+    terminal_reason: TerminalReason | None,
+) -> None:
+    _, _, state = _state(database_session)
+
+    class StaticVerificationService:
+        def verify(self, current: object) -> VerificationOutcome:
+            del current
+            return VerificationOutcome(status=status, summary="Controlled verification outcome.")
+
+    updated = recovery_verification_node(state, StaticVerificationService())
+
+    assert updated["current_stage"] is stage
+    assert updated["terminal_reason"] is terminal_reason

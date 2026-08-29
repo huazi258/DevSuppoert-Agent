@@ -18,6 +18,7 @@ from devsupport_backend.agent.state import (
     ApprovalStatus,
     PolicyDecision,
     PolicyOutcome,
+    TerminalReason,
     VerificationOutcome,
     VerificationStatus,
 )
@@ -404,7 +405,16 @@ def recovery_verification_node(
     return {
         **state,
         "verification_outcome": outcome,
+        "terminal_reason": _terminal_reason_for_verification(outcome.status),
         "current_stage": AgentStage.RESOLVED
         if outcome.status is VerificationStatus.PASS
         else AgentStage.NEEDS_MANUAL_ACTION,
     }
+
+
+def _terminal_reason_for_verification(status: VerificationStatus) -> TerminalReason | None:
+    if status is VerificationStatus.FAIL:
+        return TerminalReason.RECOVERY_VERIFICATION_FAILED
+    if status is VerificationStatus.INCONCLUSIVE:
+        return TerminalReason.RECOVERY_VERIFICATION_INCONCLUSIVE
+    return None

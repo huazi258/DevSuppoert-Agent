@@ -5,7 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, JsonValue
 
-from devsupport_backend.agent.state import AgentStage
+from devsupport_backend.agent.state import AgentStage, TerminalReason
 
 
 class WorkflowResponseModel(BaseModel):
@@ -132,4 +132,5 @@ class WorkflowResponse(WorkflowResponseModel):
     execution_outcome: WorkflowExecutionResponse | None
     verification_outcome: WorkflowVerificationResponse | None
     report_outcome: WorkflowReportOutcomeResponse | None
+    terminal_reason: TerminalReason | None
     retry_available: bool = False

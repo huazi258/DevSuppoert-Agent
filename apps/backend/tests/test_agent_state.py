@@ -18,6 +18,7 @@ from devsupport_backend.agent.state import (
     IntakeDecision,
     IntakeOutcome,
     PendingToolCall,
+    TerminalReason,
     ToolHistoryEntry,
     agent_state_to_checkpoint_payload,
     create_initial_agent_state,
@@ -151,6 +152,7 @@ def test_state_checkpoint_payload_is_json_serializable_without_orm_or_session() 
     state["missing_information"] = ["Exact incident time range"]
     state["llm_call_count"] = 3
     state["workflow_retry_count"] = 2
+    state["terminal_reason"] = TerminalReason.INVESTIGATION_INCONCLUSIVE
     state["tool_history"].append(
         ToolHistoryEntry(
             tool_name="query_metrics",
@@ -169,6 +171,7 @@ def test_state_checkpoint_payload_is_json_serializable_without_orm_or_session() 
     assert payload["missing_information"] == ["Exact incident time range"]
     assert payload["llm_call_count"] == 3
     assert payload["workflow_retry_count"] == 2
+    assert payload["terminal_reason"] == "investigation_inconclusive"
 
 
 def test_tool_history_requires_a_structured_error_for_failure() -> None:

@@ -51,6 +51,7 @@ from devsupport_backend.agent.state import (
     AgentState,
     EvaluationDecision,
     PolicyDecision,
+    TerminalReason,
 )
 from devsupport_backend.approvals import (
     ApprovalDecisionService,
@@ -453,6 +454,11 @@ def evidence_evaluation_node(
     return {
         **state,
         "evaluation_decision": decision,
+        "terminal_reason": (
+            TerminalReason.INVESTIGATION_INCONCLUSIVE
+            if decision is EvaluationDecision.NEEDS_MANUAL_ACTION
+            else state.get("terminal_reason")
+        ),
         "current_stage": (
             AgentStage.INVESTIGATION_PLANNING
             if decision == EvaluationDecision.CONTINUE
@@ -557,6 +563,7 @@ def _active_execution_budget_exhausted_state(state: AgentState) -> AgentState:
         **state,
         "active_execution_seconds": current_active_execution_seconds(state),
         "evaluation_decision": EvaluationDecision.NEEDS_MANUAL_ACTION,
+        "terminal_reason": TerminalReason.ACTIVE_EXECUTION_BUDGET_EXHAUSTED,
     }
 
 
@@ -595,24 +602,39 @@ def _llm_budget_exhausted(state: AgentState, budget: InvestigationBudget) -> boo
 
 
 def _llm_budget_exhausted_state(state: AgentState) -> AgentState:
-    return {**state, "evaluation_decision": EvaluationDecision.NEEDS_MANUAL_ACTION}
+    return {
+        **state,
+        "evaluation_decision": EvaluationDecision.NEEDS_MANUAL_ACTION,
+        "terminal_reason": TerminalReason.LLM_CALL_BUDGET_EXHAUSTED,
+    }
 
 
 def _planning_guard_node(state: AgentState, limits: InvestigationLoopLimits) -> AgentState:
     """Stop before calling Planner when a business safety limit has already been reached."""
-    if state["current_stage"] == AgentStage.INVESTIGATION_PLANNING and _limits_reached(
-        state, limits
-    ):
-        return {**state, "evaluation_decision": EvaluationDecision.NEEDS_MANUAL_ACTION}
+    reason = _planning_limit_terminal_reason(state, limits)
+    if state["current_stage"] == AgentStage.INVESTIGATION_PLANNING and reason is not None:
+        return {
+            **state,
+            "evaluation_decision": EvaluationDecision.NEEDS_MANUAL_ACTION,
+            "terminal_reason": reason,
+        }
     return state
 
 
 def _limits_reached(state: AgentState, limits: InvestigationLoopLimits) -> bool:
     """Keep workflow limits independent from LangGraph's recursion protection."""
-    return (
-        state["investigation_round"] >= limits.max_rounds
-        or state["tool_call_count"] >= limits.max_tool_calls
-    )
+    return _planning_limit_terminal_reason(state, limits) is not None
+
+
+def _planning_limit_terminal_reason(
+    state: AgentState, limits: InvestigationLoopLimits
+) -> TerminalReason | None:
+    """Choose the fixed round-before-tool precedence for a shared planning boundary."""
+    if state["investigation_round"] >= limits.max_rounds:
+        return TerminalReason.INVESTIGATION_ROUND_LIMIT_REACHED
+    if state["tool_call_count"] >= limits.max_tool_calls:
+        return TerminalReason.TOOL_CALL_LIMIT_REACHED
+    return None
 
 
 def _route_after_intake(state: AgentState, terminal_report_enabled: bool = False) -> str:

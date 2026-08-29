@@ -26,6 +26,7 @@ from devsupport_backend.agent.state import (
     AgentState,
     EvaluationDecision,
     FailureCategory,
+    TerminalReason,
     create_initial_agent_state,
 )
 from devsupport_backend.agent.workflow import (
@@ -368,6 +369,7 @@ def test_active_execution_budget_allows_work_below_limit_and_stops_at_exact_boun
     assert calls == 1
     assert result["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
     assert result["active_execution_seconds"] == 95.0
+    assert result["terminal_reason"] is TerminalReason.ACTIVE_EXECUTION_BUDGET_EXHAUSTED
 
 
 def test_active_execution_budget_stops_after_a_node_reaches_the_exact_boundary() -> None:
@@ -385,6 +387,7 @@ def test_active_execution_budget_stops_after_a_node_reaches_the_exact_boundary()
 
     assert result["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
     assert result["active_execution_seconds"] == 95.0
+    assert result["terminal_reason"] is TerminalReason.ACTIVE_EXECUTION_BUDGET_EXHAUSTED
 
 
 def test_pre_active_budget_checkpoint_defaults_to_zero_usage() -> None:
@@ -446,6 +449,7 @@ def test_budget_limited_llm_timeout_routes_to_manual_without_a_failed_task() -> 
 
     assert result["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
     assert list(compiled.get_state(config).tasks) == []
+    assert result["terminal_reason"] is TerminalReason.ACTIVE_EXECUTION_BUDGET_EXHAUSTED
 
 
 def test_active_execution_usage_carries_into_retry_without_a_new_full_budget() -> None:

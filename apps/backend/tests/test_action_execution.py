@@ -19,6 +19,7 @@ from devsupport_backend.agent.state import (
     PolicyDecision,
     PolicyOutcome,
     PolicyReasonCode,
+    TerminalReason,
     create_initial_agent_state,
 )
 from devsupport_backend.models import Action, Approval, Incident
@@ -124,6 +125,7 @@ def test_approved_action_executes_only_after_live_deployment_matches(
     assert updated["execution_outcome"].approval_id == approval.id
     assert updated["execution_outcome"].target_version == "v1.0.0"
     assert updated["execution_outcome"].status is ToolStatus.SUCCESS
+    assert updated["terminal_reason"] is None
 
 
 def test_stale_live_deployment_fails_closed_without_a_rollback_call(
@@ -146,6 +148,7 @@ def test_stale_live_deployment_fails_closed_without_a_rollback_call(
     assert action.executed_at is None
     assert incident.status == "NEEDS_MANUAL_ACTION"
     assert updated["current_stage"] is AgentStage.NEEDS_MANUAL_ACTION
+    assert updated["terminal_reason"] is TerminalReason.ACTION_EXECUTION_FAILED
 
 
 def test_binding_failure_does_not_invent_action_or_approval_ids(database_session: Session) -> None:
@@ -172,6 +175,7 @@ def test_binding_failure_does_not_invent_action_or_approval_ids(database_session
     assert outcome.target_version is None
     assert outcome.executed is False
     assert incident.status == "NEEDS_MANUAL_ACTION"
+    assert updated["terminal_reason"] is TerminalReason.ACTION_EXECUTION_FAILED
 
 
 def test_invalid_action_parameters_do_not_invent_a_target_version(

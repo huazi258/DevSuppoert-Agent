@@ -496,6 +496,7 @@ def project_workflow_response(
             if state["report_outcome"]
             else None
         ),
+        terminal_reason=state.get("terminal_reason"),
         retry_available=retry_available,
     )
 

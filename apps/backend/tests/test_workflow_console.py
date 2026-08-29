@@ -25,6 +25,7 @@ from devsupport_backend.agent.state import (
     PolicyOutcome,
     PolicyReasonCode,
     ProposedAction,
+    TerminalReason,
     VerificationOutcome,
     VerificationStatus,
     create_initial_agent_state,
@@ -211,6 +212,24 @@ def test_projector_exposes_only_bound_public_facts(database_session: Session) ->
         "target_version": "v1.0.0",
         "reason": "Verified deployment facts require rollback.",
     }
+
+
+def test_projector_exposes_terminal_reason_and_accepts_legacy_state(
+    database_session: Session,
+) -> None:
+    incident = _incident(database_session)
+    state = _state(incident)
+    state["terminal_reason"] = TerminalReason.INVESTIGATION_INCONCLUSIVE
+
+    response = project_workflow_response(incident, state, None)
+
+    assert response.terminal_reason is TerminalReason.INVESTIGATION_INCONCLUSIVE
+
+    legacy_state = state.copy()
+    del legacy_state["terminal_reason"]
+    legacy_response = project_workflow_response(incident, legacy_state, None)
+
+    assert legacy_response.terminal_reason is None
 
 
 def test_projector_rejects_action_and_incident_binding_mismatches(

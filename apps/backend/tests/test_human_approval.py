@@ -26,6 +26,7 @@ from devsupport_backend.agent.state import (
     PolicyDecision,
     PolicyOutcome,
     PolicyReasonCode,
+    TerminalReason,
     create_initial_agent_state,
 )
 from devsupport_backend.approvals import (
@@ -33,6 +34,7 @@ from devsupport_backend.approvals import (
     ApprovalValidationError,
     ApprovalWaitService,
     PostgresWorkflowStateReader,
+    approval_decision_node,
     approval_interrupt_node,
     approval_wait_node,
 )
@@ -300,6 +302,37 @@ def test_approval_api_rejects_an_already_executed_action(
 
     assert response.status_code == 409
     assert database_session.query(Approval).filter(Approval.action_id == action.id).count() == 0
+
+
+@pytest.mark.parametrize(
+    ("status", "stage", "terminal_reason"),
+    [
+        (ApprovalStatus.APPROVED, AgentStage.ACTION_EXECUTION, None),
+        (
+            ApprovalStatus.REJECTED,
+            AgentStage.NEEDS_MANUAL_ACTION,
+            TerminalReason.APPROVAL_REJECTED,
+        ),
+    ],
+)
+def test_approval_decision_node_projects_rejection_terminal_reason(
+    database_session: Session,
+    status: ApprovalStatus,
+    stage: AgentStage,
+    terminal_reason: TerminalReason | None,
+) -> None:
+    incident = _incident(database_session)
+    state = create_initial_agent_state(incident)
+
+    class StaticApprovalDecision:
+        def resolve(self, current: object) -> ApprovalOutcome:
+            del current
+            return ApprovalOutcome(approval_id=uuid4(), action_id=uuid4(), status=status)
+
+    updated = approval_decision_node(state, StaticApprovalDecision())
+
+    assert updated["current_stage"] is stage
+    assert updated["terminal_reason"] is terminal_reason
 
 
 def test_duplicate_matching_decision_is_idempotent_and_conflicting_one_is_rejected(

@@ -29,6 +29,7 @@ from devsupport_backend.agent.state import (
     ApprovalStatus,
     PolicyDecision,
     PolicyOutcome,
+    TerminalReason,
 )
 from devsupport_backend.database import SessionLocal
 from devsupport_backend.models import Action, Approval, Incident
@@ -385,6 +386,11 @@ def approval_decision_node(
     return {
         **state,
         "approval_outcome": outcome,
+        "terminal_reason": (
+            TerminalReason.APPROVAL_REJECTED
+            if outcome.status is ApprovalStatus.REJECTED
+            else None
+        ),
         "current_stage": (
             AgentStage.ACTION_EXECUTION
             if outcome.status is ApprovalStatus.APPROVED

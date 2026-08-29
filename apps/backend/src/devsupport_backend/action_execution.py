@@ -15,6 +15,7 @@ from devsupport_backend.agent.state import (
     ApprovalStatus,
     PolicyDecision,
     PolicyOutcome,
+    TerminalReason,
 )
 from devsupport_backend.models import Action, Approval, Incident
 from devsupport_backend.tools.deployments import (
@@ -217,6 +218,11 @@ def controlled_action_execution_node(
     return {
         **state,
         "execution_outcome": outcome,
+        "terminal_reason": (
+            None
+            if outcome.status is ToolStatus.SUCCESS
+            else TerminalReason.ACTION_EXECUTION_FAILED
+        ),
         "current_stage": (
             AgentStage.RECOVERY_VERIFICATION
             if outcome.status is ToolStatus.SUCCESS

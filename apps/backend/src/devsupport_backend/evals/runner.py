@@ -41,6 +41,7 @@ from devsupport_backend.agent.state import (
     FinalConclusion,
     HypothesisStatus,
     ProposedAction,
+    TerminalReason,
     create_initial_agent_state,
 )
 from devsupport_backend.agent.workflow import (
@@ -583,6 +584,7 @@ class EvalRunOutput:
     failure_category: str | None = None
     failure_node: str | None = None
     failure_retryable: bool | None = None
+    terminal_reason: str | None = None
     error: str | None = None
 
     def machine_output(self) -> dict[str, object]:
@@ -630,6 +632,7 @@ class EvalRunOutput:
             "failure_category": self.failure_category,
             "failure_node": self.failure_node,
             "failure_retryable": self.failure_retryable,
+            "terminal_reason": self.terminal_reason,
             "passed": self.passed,
             "error": self.error,
         }
@@ -1173,7 +1176,17 @@ def _execute_full_workflow(
         latency_ms=result.latency_ms,
         llm_call_count=result.llm_call_count,
         llm_total_latency_ms=result.llm_total_latency_ms,
+        terminal_reason=_terminal_reason_value(state.get("terminal_reason")),
     )
+
+
+def _terminal_reason_value(reason: object) -> str | None:
+    """Project a persisted terminal reason without depending on checkpoint hydration."""
+    if reason is None:
+        return None
+    if isinstance(reason, TerminalReason):
+        return reason.value
+    return str(reason)
 
 
 def _build_runner_graph(
