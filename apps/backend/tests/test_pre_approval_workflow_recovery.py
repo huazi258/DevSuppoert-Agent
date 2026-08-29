@@ -13,6 +13,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
 import devsupport_backend.agent.workflow as workflow_module
+from devsupport_backend.agent.budget import InvestigationBudget, effective_llm_timeout_seconds
 from devsupport_backend.agent.llm import LLMError
 from devsupport_backend.agent.nodes.planner import PlanningError, investigation_planner_node
 from devsupport_backend.agent.persistence import open_postgres_checkpointer
@@ -23,7 +24,10 @@ from devsupport_backend.agent.state import (
     EvaluationDecision,
     create_initial_agent_state,
 )
-from devsupport_backend.agent.workflow import InvestigationLoopLimits
+from devsupport_backend.agent.workflow import (
+    InvestigationLoopLimits,
+    _enforce_active_execution_budget_node,
+)
 from devsupport_backend.workflow_console import PostgresWorkflowRuntime
 
 
@@ -190,6 +194,18 @@ class _RecoveryIncident:
     description: str = "durable planner retry regression"
     time_range_start: datetime = datetime(2026, 8, 11, tzinfo=UTC)
     time_range_end: datetime = datetime(2026, 8, 11, tzinfo=UTC)
+    thread_id: str | None = None
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
 
 
 class _SequencedPlannerLLM:
@@ -217,17 +233,54 @@ class _SequencedPlannerLLM:
         )
 
 
+class _TimedSequencedPlannerLLM(_SequencedPlannerLLM):
+    """Fail the controlled Planner call after deterministic active execution time."""
+
+    def __init__(self, clock: _FakeClock) -> None:
+        super().__init__()
+        self._clock = clock
+        self.effective_timeouts: list[float] = []
+
+    def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+        del system_prompt, user_prompt
+        self.calls += 1
+        if self.calls == 1:
+            self.effective_timeouts.append(effective_llm_timeout_seconds(50.0))
+            self._clock.advance(50.0)
+            raise LLMError("controlled planner provider failure")
+        self.effective_timeouts.append(effective_llm_timeout_seconds(50.0))
+        return json.dumps(
+            {
+                "investigation_goal": "Inspect payment latency.",
+                "tool_name": "query_metrics",
+                "tool_arguments": {
+                    "service": "synthetic-service",
+                    "environment": "local",
+                },
+                "reason": "Correlate latency.",
+            }
+        )
+
+
 def _durable_agent_state_retry_graph(
     *,
     checkpointer: object,
     planner_llm: _SequencedPlannerLLM,
     calls: dict[str, int],
+    budget: InvestigationBudget | None = None,
+    predecessor_elapsed_seconds: float = 0.0,
+    clock: _FakeClock | None = None,
 ):
     """Use the actual Planner node and routing branch around a persisted failure."""
 
     def planning_guard(state: AgentState) -> AgentState:
         calls["planning_guard"] += 1
-        return workflow_module._planning_guard_node(state, InvestigationLoopLimits())
+        if predecessor_elapsed_seconds and clock is not None:
+            clock.advance(predecessor_elapsed_seconds)
+        return workflow_module._planning_guard_node(
+            {**state, "current_stage": AgentStage.INVESTIGATION_PLANNING},
+            InvestigationLoopLimits(),
+        )
 
     def planning(state: AgentState) -> AgentState:
         calls["planning"] += 1
@@ -238,8 +291,16 @@ def _durable_agent_state_retry_graph(
         return {**state, "current_stage": AgentStage.NEEDS_MANUAL_ACTION}
 
     graph = StateGraph(AgentState)
-    graph.add_node("planning_guard", planning_guard)
-    graph.add_node("investigation_planning", planning)
+    graph.add_node(
+        "planning_guard",
+        _enforce_active_execution_budget_node(planning_guard, budget)
+        if budget is not None
+        else planning_guard,
+    )
+    graph.add_node(
+        "investigation_planning",
+        _enforce_active_execution_budget_node(planning, budget) if budget is not None else planning,
+    )
     graph.add_node("tool_execution", tool_execution)
     graph.add_edge(START, "planning_guard")
     graph.add_conditional_edges(
@@ -315,6 +376,76 @@ def test_postgres_retry_usage_update_preserves_failed_planner_continuation(
             assert result["current_stage"] != AgentStage.INVESTIGATION_PLANNING
             assert result["workflow_retry_count"] == 1
             assert result["active_execution_seconds"] == 70.0
+            assert list(second_graph.get_state(config).next) == []
+    finally:
+        with open_postgres_checkpointer() as checkpointer:
+            checkpointer.delete_thread(thread_id)
+
+
+def test_postgres_failed_planner_persists_active_usage_without_replaying_predecessor(
+    database_session,
+) -> None:
+    """Failure accounting must preserve the durable failed Planner continuation."""
+
+    thread_id = str(uuid4())
+    config = WorkflowService.config_for(thread_id)
+    clock = _FakeClock()
+    budget = InvestigationBudget(max_active_execution_seconds=95.0)
+    planner_llm = _TimedSequencedPlannerLLM(clock)
+    calls = {"planning_guard": 0, "planning": 0, "tool_execution": 0}
+    incident = _RecoveryIncident(id=uuid4(), thread_id=thread_id)
+
+    try:
+        with open_postgres_checkpointer() as first_checkpointer:
+            first_graph = _durable_agent_state_retry_graph(
+                checkpointer=first_checkpointer,
+                planner_llm=planner_llm,
+                calls=calls,
+                budget=budget,
+                predecessor_elapsed_seconds=20.0,
+                clock=clock,
+            )
+            first_service = WorkflowService(
+                first_graph, budget, monotonic_clock=clock
+            )
+            with pytest.raises(PlanningError, match="planner provider failed"):
+                first_service.start(incident)
+
+            failed_state = first_service.get_state(thread_id)
+            failure = first_service.get_failure(thread_id)
+            assert failed_state["active_execution_seconds"] == 70.0
+            assert failure is not None
+            assert failure.failed_node == "investigation_planning"
+            assert calls == {"planning_guard": 1, "planning": 1, "tool_execution": 0}
+
+            first_service.record_retry_attempt(thread_id)
+
+        runtime = PostgresWorkflowRuntime(database_session)
+        recorded_state = runtime.get_state(thread_id)
+        recorded_failure = runtime.get_failure(thread_id)
+        assert recorded_state is not None
+        assert recorded_state["active_execution_seconds"] == 70.0
+        assert recorded_state["workflow_retry_count"] == 1
+        assert recorded_failure is not None
+        assert recorded_failure.failed_node == "investigation_planning"
+
+        with open_postgres_checkpointer() as second_checkpointer:
+            second_graph = _durable_agent_state_retry_graph(
+                checkpointer=second_checkpointer,
+                planner_llm=planner_llm,
+                calls=calls,
+                budget=budget,
+                predecessor_elapsed_seconds=20.0,
+                clock=clock,
+            )
+            result = WorkflowService(
+                second_graph, budget, monotonic_clock=clock
+            ).retry_failed_task(thread_id)
+
+            assert planner_llm.effective_timeouts == [50.0, 20.0]
+            assert calls == {"planning_guard": 1, "planning": 2, "tool_execution": 1}
+            assert result["active_execution_seconds"] == 70.0
+            assert result["workflow_retry_count"] == 1
             assert list(second_graph.get_state(config).next) == []
     finally:
         with open_postgres_checkpointer() as checkpointer:

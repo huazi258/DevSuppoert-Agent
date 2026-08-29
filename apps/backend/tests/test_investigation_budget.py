@@ -448,6 +448,201 @@ def test_active_execution_usage_carries_into_retry_without_a_new_full_budget() -
     assert result["workflow_retry_count"] == 1
 
 
+def test_failed_invocation_persists_active_usage_and_retries_from_the_remaining_budget() -> None:
+    incident = _incident()
+    clock = FakeClock()
+    budget = InvestigationBudget(max_active_execution_seconds=95.0)
+    calls = {"predecessor": 0, "planning": 0, "terminal": 0}
+    retry_timeouts: list[float] = []
+    graph = StateGraph(AgentState)
+
+    def predecessor(state: AgentState) -> AgentState:
+        calls["predecessor"] += 1
+        clock.advance(20.0)
+        return state
+
+    def investigation_planning(state: AgentState) -> AgentState:
+        calls["planning"] += 1
+        if calls["planning"] == 1:
+            clock.advance(50.0)
+            raise RuntimeError("controlled failed LLM invocation")
+        retry_timeouts.append(effective_llm_timeout_seconds(50.0))
+        return state
+
+    def terminal(state: AgentState) -> AgentState:
+        calls["terminal"] += 1
+        return state
+
+    graph.add_node("predecessor", _enforce_active_execution_budget_node(predecessor, budget))
+    graph.add_node(
+        "investigation_planning",
+        _enforce_active_execution_budget_node(investigation_planning, budget),
+    )
+    graph.add_node("terminal", _enforce_active_execution_budget_node(terminal, budget))
+    graph.add_edge(START, "predecessor")
+    graph.add_edge("predecessor", "investigation_planning")
+    graph.add_edge("investigation_planning", "terminal")
+    graph.add_edge("terminal", END)
+    service = WorkflowService(
+        graph.compile(checkpointer=InMemorySaver()), budget, monotonic_clock=clock
+    )
+
+    with pytest.raises(RuntimeError, match="controlled failed LLM invocation"):
+        service.start(incident)
+
+    failed_state = service.get_state(incident.thread_id)
+    failure = service.get_failure(incident.thread_id)
+    assert failed_state["active_execution_seconds"] == 70.0
+    assert failure is not None
+    assert failure.failed_node == "investigation_planning"
+    assert calls == {"predecessor": 1, "planning": 1, "terminal": 0}
+
+    service.record_retry_attempt(incident.thread_id)
+    result = service.retry_failed_task(incident.thread_id)
+
+    assert retry_timeouts == [20.0]
+    assert result["active_execution_seconds"] == 70.0
+    assert result["workflow_retry_count"] == 1
+    assert calls == {"predecessor": 1, "planning": 2, "terminal": 1}
+    assert service.get_failure(incident.thread_id) is None
+
+
+def test_second_failed_retry_accumulates_active_usage_and_remains_continuable() -> None:
+    incident = _incident()
+    clock = FakeClock()
+    budget = InvestigationBudget(max_active_execution_seconds=95.0)
+    calls = {"predecessor": 0, "planning": 0}
+    graph = StateGraph(AgentState)
+
+    def predecessor(state: AgentState) -> AgentState:
+        calls["predecessor"] += 1
+        clock.advance(20.0)
+        return state
+
+    def investigation_planning(state: AgentState) -> AgentState:
+        del state
+        calls["planning"] += 1
+        clock.advance(50.0 if calls["planning"] == 1 else 20.0)
+        raise RuntimeError("controlled retryable failure")
+
+    graph.add_node("predecessor", _enforce_active_execution_budget_node(predecessor, budget))
+    graph.add_node(
+        "investigation_planning",
+        _enforce_active_execution_budget_node(investigation_planning, budget),
+    )
+    graph.add_edge(START, "predecessor")
+    graph.add_edge("predecessor", "investigation_planning")
+    graph.add_edge("investigation_planning", END)
+    service = WorkflowService(
+        graph.compile(checkpointer=InMemorySaver()), budget, monotonic_clock=clock
+    )
+
+    with pytest.raises(RuntimeError, match="controlled retryable failure"):
+        service.start(incident)
+    service.record_retry_attempt(incident.thread_id)
+    with pytest.raises(RuntimeError, match="controlled retryable failure"):
+        service.retry_failed_task(incident.thread_id)
+
+    failed_state = service.get_state(incident.thread_id)
+    failure = service.get_failure(incident.thread_id)
+    assert failed_state["active_execution_seconds"] == 90.0
+    assert failed_state["workflow_retry_count"] == 1
+    assert failure is not None
+    assert failure.failed_node == "investigation_planning"
+    assert calls == {"predecessor": 1, "planning": 2}
+
+
+def test_failed_retry_from_pre_active_budget_checkpoint_starts_at_zero() -> None:
+    incident = _incident()
+    clock = FakeClock()
+    graph = StateGraph(AgentState)
+    attempts = [0]
+
+    def investigation_planning(state: AgentState) -> AgentState:
+        del state
+        attempts[0] += 1
+        if attempts[0] == 2:
+            clock.advance(3.0)
+        raise RuntimeError("controlled legacy checkpoint failure")
+
+    graph.add_node("investigation_planning", investigation_planning)
+    graph.add_edge(START, "investigation_planning")
+    graph.add_edge("investigation_planning", END)
+    compiled = graph.compile(checkpointer=InMemorySaver())
+    state = create_initial_agent_state(incident)
+    del state["active_execution_seconds"]
+    config = WorkflowService.config_for(incident.thread_id)
+
+    with pytest.raises(RuntimeError, match="controlled legacy checkpoint failure"):
+        compiled.invoke(state, config)
+    service = WorkflowService(compiled, monotonic_clock=clock)
+    with pytest.raises(RuntimeError, match="controlled legacy checkpoint failure"):
+        service.retry_failed_task(incident.thread_id)
+
+    assert service.get_state(incident.thread_id)["active_execution_seconds"] == 3.0
+    assert service.get_failure(incident.thread_id) is not None
+
+
+def test_failed_resume_persists_active_usage() -> None:
+    incident = _incident()
+    clock = FakeClock()
+    graph = StateGraph(AgentState)
+
+    def wait_then_fail(state: AgentState) -> AgentState:
+        interrupt("resume controlled failure")
+        clock.advance(4.0)
+        raise RuntimeError("controlled resumed workflow failure")
+
+    graph.add_node("wait_then_fail", wait_then_fail)
+    graph.add_edge(START, "wait_then_fail")
+    graph.add_edge("wait_then_fail", END)
+    service = WorkflowService(
+        graph.compile(checkpointer=InMemorySaver()), monotonic_clock=clock
+    )
+
+    service.start(incident)
+    with pytest.raises(RuntimeError, match="controlled resumed workflow failure"):
+        service.resume(incident.thread_id, {"continue": True})
+
+    assert service.get_state(incident.thread_id)["active_execution_seconds"] == 4.0
+    failure = service.get_failure(incident.thread_id)
+    assert failure is not None
+    assert failure.failed_node == "wait_then_fail"
+
+
+def test_active_usage_persistence_failure_does_not_replace_workflow_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    incident = _incident()
+    clock = FakeClock()
+    graph = StateGraph(AgentState)
+
+    def fails(state: AgentState) -> AgentState:
+        del state
+        clock.advance(7.0)
+        raise RuntimeError("original workflow failure")
+
+    graph.add_node("fails", fails)
+    graph.add_edge(START, "fails")
+    graph.add_edge("fails", END)
+    service = WorkflowService(
+        graph.compile(checkpointer=InMemorySaver()), monotonic_clock=clock
+    )
+
+    def accounting_failure(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise RuntimeError("usage persistence failed")
+
+    monkeypatch.setattr(service, "_update_failed_checkpoint_fields", accounting_failure)
+
+    with pytest.raises(RuntimeError, match="original workflow failure"):
+        service.start(incident)
+
+    failure = service.get_failure(incident.thread_id)
+    assert failure is not None
+    assert failure.failed_node == "fails"
+
+
 class _BudgetLimitedTimeoutLLM:
     def complete(self, *, system_prompt: str, user_prompt: str) -> str:
         del system_prompt, user_prompt
