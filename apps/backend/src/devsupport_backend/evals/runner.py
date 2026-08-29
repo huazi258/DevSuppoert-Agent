@@ -111,6 +111,8 @@ from devsupport_backend.tools.traces import FaultLabTracesAdapter, TracesAdapter
 from devsupport_backend.workflow_console import WorkflowConsoleService
 
 DEFAULT_SUITE_PATH = Path(__file__).resolve().parents[5] / "evals" / "initial_suite.yaml"
+_EVAL_IPC_POLL_SECONDS = 0.1
+_EVAL_IPC_FINAL_DRAIN_SECONDS = 0.2
 
 
 class EvalRunnerError(RuntimeError):
@@ -720,9 +722,11 @@ class EvaluationRunner:
         *,
         session_factory: Callable[[], Session] = SessionLocal,
         fault_lab: FaultLabController | None = None,
+        watchdog_clock: Callable[[], float] = perf_counter,
     ) -> None:
         self._session_factory = session_factory
         self._fault_lab = fault_lab or LiveFaultLabController()
+        self._watchdog_clock = watchdog_clock
 
     def run_suite(
         self, suite: EvalFixtureSuite, *, case_id: str | None = None
@@ -780,9 +784,9 @@ class EvaluationRunner:
         timed_out = False
         cleanup_error: str | None = None
 
-        def collect_child_messages() -> None:
+        def collect_child_messages(*, wait_timeout: float = 0.0) -> None:
             nonlocal incident_id, thread_id, llm_call_count, llm_total_latency_ms, output
-            for message in _drain_child_messages(queue):
+            for message in _drain_child_messages(queue, wait_timeout=wait_timeout):
                 if observability.accept(message):
                     continue
                 if message[0] == "incident":
@@ -811,13 +815,22 @@ class EvaluationRunner:
 
         try:
             process.start()
-            process.join(fixture.runner_preparation.case_timeout_seconds)
-            collect_child_messages()
+            deadline = (
+                self._watchdog_clock() + fixture.runner_preparation.case_timeout_seconds
+            )
+            while process.is_alive():
+                collect_child_messages()
+                remaining_seconds = deadline - self._watchdog_clock()
+                if remaining_seconds <= 0:
+                    break
+                process.join(min(_EVAL_IPC_POLL_SECONDS, remaining_seconds))
+                collect_child_messages()
             if process.is_alive():
                 timed_out = True
+                collect_child_messages()
                 process.terminate()
                 process.join()
-                collect_child_messages()
+                collect_child_messages(wait_timeout=_EVAL_IPC_FINAL_DRAIN_SECONDS)
                 output = EvalRunOutput(
                     fixture_id=fixture.id,
                     execution_scope=fixture.execution_scope,
@@ -835,6 +848,9 @@ class EvaluationRunner:
                         f"{fixture.runner_preparation.case_timeout_seconds} seconds"
                     ),
                 )
+            else:
+                process.join()
+                collect_child_messages(wait_timeout=_EVAL_IPC_FINAL_DRAIN_SECONDS)
             if output is None:
                 output = EvalRunOutput(
                     fixture_id=fixture.id,
@@ -857,6 +873,7 @@ class EvaluationRunner:
                 )
             output = replace(output, observability=observability.snapshot(timed_out=timed_out))
         finally:
+            _close_eval_queue(queue)
             try:
                 self._fault_lab.reset()
             except Exception as error:
@@ -1045,13 +1062,31 @@ def _full_workflow_child(fixture: EvalFixture, run_started_at: datetime, queue) 
         queue.put(("error", f"{type(error).__name__}: {error}"))
 
 
-def _drain_child_messages(queue) -> list[tuple]:
+def _drain_child_messages(queue, *, wait_timeout: float = 0.0) -> list[tuple]:
+    """Drain immediately, optionally waiting once for the child feeder's final message."""
     messages: list[tuple] = []
     while True:
         try:
-            messages.append(queue.get(timeout=0.2))
+            if messages or wait_timeout <= 0:
+                messages.append(queue.get_nowait())
+            else:
+                messages.append(queue.get(timeout=wait_timeout))
         except Empty:
             return messages
+
+
+def _close_eval_queue(queue) -> None:
+    """Release the parent queue handle after all child messages were consumed.
+
+    The parent only consumes this queue, so joining a parent feeder thread is unnecessary.
+    """
+    close = getattr(queue, "close", None)
+    if close is None:
+        return
+    try:
+        close()
+    except Exception:
+        pass
 
 
 def _execute_full_workflow(

@@ -87,6 +87,20 @@ class FailingFaultLab:
         raise AssertionError("runner must stop after reset failure")
 
 
+class _TrackingFaultLab:
+    def __init__(self) -> None:
+        self.resets = 0
+
+    def reset(self) -> None:
+        self.resets += 1
+
+    def inject(self, fixture: EvalFixture) -> None:
+        raise AssertionError("child owns injection")
+
+    def generate_failure_signal(self, fixture: EvalFixture) -> None:
+        raise AssertionError("child owns signal generation")
+
+
 def _suite() -> object:
     return load_eval_fixture_suite(SUITE_PATH)
 
@@ -712,6 +726,18 @@ def test_timeout_returns_machine_failure_preserves_incident_and_cleans_up(
     )
     incident_id = uuid4()
 
+    class WatchdogClock:
+        def __init__(self) -> None:
+            self.now = 0.0
+
+        def __call__(self) -> float:
+            return self.now
+
+        def advance(self, seconds: float) -> None:
+            self.now += seconds
+
+    clock = WatchdogClock()
+
     class TrackingFaultLab:
         def __init__(self) -> None:
             self.resets = 0
@@ -739,8 +765,9 @@ def test_timeout_returns_machine_failure_preserves_incident_and_cleans_up(
             self._queue.put(("llm_started", 3, "hypothesis_generation"))
             self._queue.put(("llm", 2, 12.5))
 
-        def join(self, timeout: object = None) -> None:
-            return None
+        def join(self, timeout: float | None = None) -> None:
+            if timeout is not None:
+                clock.advance(fixture.runner_preparation.case_timeout_seconds)
 
         def is_alive(self) -> bool:
             return self._alive
@@ -764,7 +791,7 @@ def test_timeout_returns_machine_failure_preserves_incident_and_cleans_up(
         lambda *_: PartialEvalFacts(),
     )
 
-    output = EvaluationRunner(fault_lab=fault_lab).run_case(fixture)
+    output = EvaluationRunner(fault_lab=fault_lab, watchdog_clock=clock).run_case(fixture)
 
     assert output.passed is False
     assert output.incident_id == incident_id
@@ -782,3 +809,241 @@ def test_timeout_returns_machine_failure_preserves_incident_and_cleans_up(
     assert output.observability.timeout_classification == "workflow_timeout"
     assert output.machine_output()["investigation_observability"] is not None
     assert fault_lab.resets == 2
+
+
+def test_parent_final_drain_collects_fast_child_output_and_observability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _full_fixture("a-approve-happy")
+    incident_id = uuid4()
+    expected = EvalRunOutput(
+        fixture_id=fixture.id,
+        execution_scope=fixture.execution_scope,
+        incident_id=incident_id,
+        thread_id="fast-child-thread",
+        final_outcome="NEEDS_MANUAL_ACTION",
+        score=_aggregate_score(tool_call_count=1, latency_ms=1.0),
+        result=_aggregate_result(tool_call_count=1, latency_ms=1.0),
+        passed=True,
+        latency_ms=1.0,
+    )
+
+    class FastExitProcess:
+        def __init__(self, *, args, **_: object) -> None:
+            self._queue = args[2]
+            self._alive = True
+
+        def start(self) -> None:
+            self._queue.put(("incident", str(incident_id), "fast-child-thread"))
+            self._queue.put(("eval_phase", "workflow_started"))
+            for _ in range(32):
+                self._queue.put(("node_started", "planning_guard"))
+                self._queue.put(("node_finished", "planning_guard", 1.0, "completed"))
+            for phase in (
+                "workflow_returned",
+                "workflow_execution_completed",
+                "result_persisted",
+                "result_collected",
+                "scoring_completed",
+                "output_ready",
+            ):
+                self._queue.put(("eval_phase", phase))
+            self._queue.put(("output", expected))
+            self._alive = False
+
+        def join(self, timeout: float | None = None) -> None:
+            del timeout
+
+        def is_alive(self) -> bool:
+            return self._alive
+
+    class FakeContext:
+        def Queue(self):
+            return Queue()
+
+        def Process(self, **kwargs):
+            return FastExitProcess(**kwargs)
+
+    monkeypatch.setattr(
+        "devsupport_backend.evals.runner.multiprocessing.get_context", lambda _: FakeContext()
+    )
+
+    output = EvaluationRunner(fault_lab=_TrackingFaultLab()).run_case(fixture)
+
+    assert output.error is None
+    assert output.passed is True
+    assert output.incident_id == incident_id
+    assert output.observability is not None
+    assert len(output.observability.node_calls) == 32
+    assert output.observability.last_completed_node == "planning_guard"
+    assert [event.phase for event in output.observability.lifecycle_events][-1] == "output_ready"
+
+
+def test_parent_drains_bounded_queue_while_child_is_producing_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _full_fixture("a-approve-happy")
+    expected = EvalRunOutput(
+        fixture_id=fixture.id,
+        execution_scope=fixture.execution_scope,
+        incident_id=uuid4(),
+        thread_id="bounded-queue-thread",
+        final_outcome="NEEDS_MANUAL_ACTION",
+        score=_aggregate_score(tool_call_count=1, latency_ms=1.0),
+        result=_aggregate_result(tool_call_count=1, latency_ms=1.0),
+        passed=True,
+        latency_ms=1.0,
+    )
+
+    class BoundedProducerProcess:
+        def __init__(self, *, args, **_: object) -> None:
+            self._queue = args[2]
+            self._alive = True
+            self.join_calls = 0
+
+        def start(self) -> None:
+            self._queue.put(("incident", str(expected.incident_id), expected.thread_id))
+
+        def join(self, timeout: float | None = None) -> None:
+            del timeout
+            if not self._alive:
+                return
+            assert not self._queue.full(), "parent must drain before the next child write"
+            self.join_calls += 1
+            if self.join_calls <= 24:
+                self._queue.put(("unrecognized", "x" * 128_000))
+                return
+            self._queue.put(("output", expected))
+            self._alive = False
+
+        def is_alive(self) -> bool:
+            return self._alive
+
+    process: BoundedProducerProcess | None = None
+
+    class FakeContext:
+        def Queue(self):
+            return Queue(maxsize=1)
+
+        def Process(self, **kwargs):
+            nonlocal process
+            process = BoundedProducerProcess(**kwargs)
+            return process
+
+    monkeypatch.setattr(
+        "devsupport_backend.evals.runner.multiprocessing.get_context", lambda _: FakeContext()
+    )
+
+    output = EvaluationRunner(fault_lab=_TrackingFaultLab()).run_case(fixture)
+
+    assert output.error is None
+    assert output.passed is True
+    assert process is not None
+    assert process.join_calls == 25
+
+
+def test_post_processing_timeout_keeps_existing_classification_with_ipc_drain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _full_fixture("a-approve-happy").model_copy(
+        update={
+            "runner_preparation": _full_fixture("a-approve-happy")
+            .runner_preparation.model_copy(update={"case_timeout_seconds": 10})
+        }
+    )
+
+    class WatchdogClock:
+        def __init__(self) -> None:
+            self.now = 0.0
+
+        def __call__(self) -> float:
+            return self.now
+
+        def advance(self, seconds: float) -> None:
+            self.now += seconds
+
+    clock = WatchdogClock()
+
+    class PostProcessingHangProcess:
+        def __init__(self, *, args, **_: object) -> None:
+            self._queue = args[2]
+            self._alive = True
+
+        def start(self) -> None:
+            for phase in (
+                "workflow_started",
+                "workflow_returned",
+                "workflow_execution_completed",
+                "result_persisted",
+                "result_collected",
+                "scoring_completed",
+                "output_ready",
+            ):
+                self._queue.put(("eval_phase", phase))
+
+        def join(self, timeout: float | None = None) -> None:
+            if timeout is not None:
+                clock.advance(fixture.runner_preparation.case_timeout_seconds)
+
+        def is_alive(self) -> bool:
+            return self._alive
+
+        def terminate(self) -> None:
+            self._alive = False
+
+    class FakeContext:
+        def Queue(self):
+            return Queue()
+
+        def Process(self, **kwargs):
+            return PostProcessingHangProcess(**kwargs)
+
+    monkeypatch.setattr(
+        "devsupport_backend.evals.runner.multiprocessing.get_context", lambda _: FakeContext()
+    )
+
+    output = EvaluationRunner(
+        fault_lab=_TrackingFaultLab(), watchdog_clock=clock
+    ).run_case(fixture)
+
+    assert output.error == "TIMEOUT: workflow exceeded 10 seconds"
+    assert output.observability is not None
+    assert output.observability.workflow_execution_completed_before_timeout is True
+    assert output.observability.active_eval_phase_at_timeout == "output_delivery"
+    assert output.observability.timeout_classification == "eval_post_processing_timeout"
+
+
+def test_child_error_message_is_collected_after_process_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _full_fixture("a-approve-happy")
+
+    class ErrorExitProcess:
+        def __init__(self, *, args, **_: object) -> None:
+            self._queue = args[2]
+            self._alive = True
+
+        def start(self) -> None:
+            self._queue.put(("error", "EvalRunnerError: controlled child failure"))
+            self._alive = False
+
+        def join(self, timeout: float | None = None) -> None:
+            del timeout
+
+        def is_alive(self) -> bool:
+            return self._alive
+
+    class FakeContext:
+        def Queue(self):
+            return Queue()
+
+        def Process(self, **kwargs):
+            return ErrorExitProcess(**kwargs)
+
+    monkeypatch.setattr(
+        "devsupport_backend.evals.runner.multiprocessing.get_context", lambda _: FakeContext()
+    )
+
+    output = EvaluationRunner(fault_lab=_TrackingFaultLab()).run_case(fixture)
+
+    assert output.error == "EvalRunnerError: controlled child failure"
