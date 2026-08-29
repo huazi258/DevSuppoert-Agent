@@ -32,6 +32,7 @@ from devsupport_backend.evals.contracts import (
     TokenUsage,
     score_eval_case,
 )
+from devsupport_backend.evals.runner import _normalize_direction
 from devsupport_backend.tools.registry import ToolName
 from devsupport_backend.tools.schemas import ToolStatus
 
@@ -324,6 +325,59 @@ def test_diagnostic_term_groups_match_natural_language_without_matching_wrong_di
 
     assert score_eval_case(fixture, correct).root_cause_accuracy.correct is True
     assert score_eval_case(fixture, wrong).root_cause_accuracy.correct is False
+
+
+def test_observed_hypothesis_accepts_a_normalized_production_length_direction() -> None:
+    summary = "Payment-service " + "x" * (2_000 - len("Payment-service "))
+    diagnostic_direction = _normalize_direction(summary)
+
+    observed = ObservedHypothesis(
+        diagnostic_direction=diagnostic_direction,
+        status=HypothesisStatus.SUPPORTED,
+    )
+
+    assert len(diagnostic_direction) == 2_000
+    assert observed.diagnostic_direction == diagnostic_direction
+
+
+def test_diagnostic_scoring_uses_the_full_observed_direction() -> None:
+    fixture = EvalFixture.model_validate(_fixture_payload())
+    full_direction = "x" * 1_962 + " missing required configuration"
+    result = _result(fixture.id)
+    result = result.model_copy(
+        update={
+            "strongest_hypothesis": ObservedHypothesis(
+                diagnostic_direction=full_direction,
+                status=HypothesisStatus.CONFIRMED,
+                evidence_ids=[result.evidence[0].evidence_id],
+            )
+        }
+    )
+
+    assert len(full_direction) > 200
+    assert result.strongest_hypothesis is not None
+    assert result.strongest_hypothesis.diagnostic_direction == full_direction
+    assert score_eval_case(fixture, result).root_cause_accuracy.diagnostic_direction_correct is True
+
+
+def test_observed_hypothesis_rejects_a_direction_longer_than_production_summary_limit() -> None:
+    with pytest.raises(ValidationError, match="at most 2000 characters"):
+        ObservedHypothesis(
+            diagnostic_direction="x" * 2_001,
+            status=HypothesisStatus.SUPPORTED,
+        )
+
+
+def test_fixture_owned_canonical_direction_keeps_its_short_label_limit() -> None:
+    payload = _fixture_payload()
+    expectations = payload["expectations"]
+    assert isinstance(expectations, dict)
+    expected_direction = expectations["expected_diagnostic_direction"]
+    assert isinstance(expected_direction, dict)
+    expected_direction["canonical_direction"] = "x" * 201
+
+    with pytest.raises(ValidationError, match="at most 200 characters"):
+        EvalFixture.model_validate(payload)
 
 
 def test_key_evidence_recall_matches_production_evidence_data_shapes() -> None:

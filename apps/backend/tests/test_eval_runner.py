@@ -55,9 +55,10 @@ from devsupport_backend.evals.runner import (
     _persist_and_collect_result,
     _QueueEvalLifecycleObserver,
     _recover_partial_workflow_facts,
+    _strongest_hypothesis,
     aggregate_eval_outputs,
 )
-from devsupport_backend.models import Action, Incident
+from devsupport_backend.models import Action, Hypothesis, Incident
 from devsupport_backend.tools.logs import LogsAdapterError
 from devsupport_backend.tools.schemas import QueryLogsInput, ToolStatus
 
@@ -308,6 +309,36 @@ def test_persisted_collection_constructs_and_scores_eval_case_result(
     assert result.latency_ms == 12.5
     assert result.fixture_id == fixture.id
     assert score_eval_case(fixture, result).fixture_id == fixture.id
+
+
+def test_strongest_hypothesis_projects_a_full_production_length_summary() -> None:
+    incident = Incident(
+        id=uuid4(),
+        service="order-service",
+        environment="local",
+        status="NEEDS_MANUAL_ACTION",
+        description="A runtime failure was observed.",
+        time_range_start=RUN_STARTED_AT - timedelta(minutes=5),
+        time_range_end=RUN_STARTED_AT,
+        thread_id=str(uuid4()),
+    )
+    summary = "payment-service " + "x" * (2_000 - len("payment-service "))
+    hypothesis = Hypothesis(
+        id=uuid4(),
+        incident_id=incident.id,
+        summary=summary,
+        status=HypothesisStatus.SUPPORTED.value,
+        confidence=0.9,
+        details={"supporting_evidence_ids": []},
+    )
+
+    observed = _strongest_hypothesis([hypothesis], create_initial_agent_state(incident))
+
+    assert observed is not None
+    assert len(observed.diagnostic_direction or "") == 2_000
+    assert observed.diagnostic_direction == "payment_service_" + "x" * (
+        2_000 - len("payment-service ")
+    )
 
 
 def test_case_failure_is_reported_as_not_passed() -> None:

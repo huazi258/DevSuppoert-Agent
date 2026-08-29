@@ -373,7 +373,7 @@ class ObservedEvidence(EvalModel):
 class ObservedHypothesis(EvalModel):
     """Strongest final hypothesis, expressed without relying on its volatile UUID."""
 
-    diagnostic_direction: str | None = Field(default=None, min_length=1, max_length=200)
+    diagnostic_direction: str | None = Field(default=None, min_length=1, max_length=2_000)
     status: HypothesisStatus
     root_cause: str | None = Field(default=None, min_length=1, max_length=2_000)
     evidence_ids: list[UUID] = Field(default_factory=list, max_length=100)
