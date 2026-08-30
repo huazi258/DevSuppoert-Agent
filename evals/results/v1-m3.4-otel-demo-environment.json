@@ -1,0 +1,163 @@
+{
+  "schema_version": "v1-m3.4",
+  "purpose": "OpenTelemetry Demo 3.0.0 real-integration environment baseline",
+  "upstream": {
+    "repository": "https://github.com/open-telemetry/opentelemetry-demo",
+    "release": "3.0.0",
+    "commit": "1755859a9de82c2e5e225be68abc401a5ebf2b4f"
+  },
+  "deployment": {
+    "compose_layers": [
+      "compose.yaml",
+      "compose.observability.yaml",
+      "compose.extras.yaml"
+    ],
+    "local_resource_override": {
+      "applied": true,
+      "scope": [
+        "checkout",
+        "product-catalog"
+      ],
+      "changed_setting": "container memory limit",
+      "value": "128MiB",
+      "tracked_in_devsupport": false
+    }
+  },
+  "container_health_diagnosis": {
+    "before_resource_override": {
+      "checkout": {
+        "observed_healthcheck_timeouts": true,
+        "restart_count": 2,
+        "oom_killed": false,
+        "memory_limit": "20MiB",
+        "manual_grpc_probe": {
+          "successful_attempts": 3,
+          "latency_ms": [
+            627,
+            890,
+            719
+          ]
+        }
+      },
+      "product_catalog": {
+        "container_health": "unhealthy",
+        "restart_count": 2,
+        "oom_killed": false,
+        "memory_limit": "20MiB",
+        "manual_grpc_probe": {
+          "successful_attempts": 0,
+          "failed_attempts": 3,
+          "latency_ms": [
+            2920,
+            6431,
+            3644
+          ],
+          "failure_kind": "grpc connection timeout"
+        }
+      },
+      "deterministic_checkout": {
+        "successful_transactions": 0,
+        "failed_transactions": 3,
+        "checkout_http_status": 504,
+        "checkout_latency_ms": [
+          15157,
+          15133,
+          15132
+        ]
+      }
+    },
+    "after_resource_override": {
+      "checkout": {
+        "container_health": "healthy",
+        "restart_count": 0,
+        "oom_killed": false,
+        "manual_grpc_probe": {
+          "successful_attempts": 3,
+          "latency_ms": [
+            335,
+            242,
+            247
+          ]
+        }
+      },
+      "product_catalog": {
+        "container_health": "healthy",
+        "restart_count": 0,
+        "oom_killed": false,
+        "manual_grpc_probe": {
+          "successful_attempts": 3,
+          "latency_ms": [
+            245,
+            251,
+            225
+          ]
+        }
+      }
+    }
+  },
+  "functional_probes": {
+    "frontend": {
+      "http_status": 200
+    },
+    "deterministic_checkout_transactions": [
+      {
+        "cart_http_status": 200,
+        "cart_latency_ms": 78,
+        "checkout_http_status": 200,
+        "checkout_latency_ms": 43
+      },
+      {
+        "cart_http_status": 200,
+        "cart_latency_ms": 40,
+        "checkout_http_status": 200,
+        "checkout_latency_ms": 50
+      },
+      {
+        "cart_http_status": 200,
+        "cart_latency_ms": 10,
+        "checkout_http_status": 200,
+        "checkout_latency_ms": 41
+      }
+    ],
+    "jaeger": {
+      "endpoint": "http://localhost:1411/jaeger/ui",
+      "endpoint_resolution": "runtime-resolved",
+      "checkout_service_present": true,
+      "payment_service_present": true,
+      "queried_checkout_traces": 20,
+      "traces_with_checkout_and_payment": 19,
+      "payment_spans_with_checkout_parent_reference": 19,
+      "checkout_to_payment_edge_verified": true
+    },
+    "prometheus": {
+      "endpoint": "http://localhost:9090",
+      "ready": true,
+      "service_label": "service_name",
+      "observed_services": [
+        "checkout",
+        "payment"
+      ],
+      "metric_family": "traces_span_metrics_duration_milliseconds_*"
+    },
+    "opensearch": {
+      "endpoint": "http://localhost:1406",
+      "endpoint_resolution": "runtime-resolved",
+      "log_index_pattern": "otel-logs-*",
+      "service_field": "resource.service.name",
+      "observed_fields": [
+        "@timestamp",
+        "body",
+        "severity",
+        "resource",
+        "attributes"
+      ],
+      "checkout_and_payment_log_count": 647
+    }
+  },
+  "classification": {
+    "environment_functional": true,
+    "checkout_to_payment_telemetry_functional": true,
+    "docker_health_false_negative": false,
+    "external_environment_limitation": "The upstream 20MiB checkout and product-catalog limits are insufficient on this host; the untracked external 128MiB override is required for the verified functional path."
+  }
+}
