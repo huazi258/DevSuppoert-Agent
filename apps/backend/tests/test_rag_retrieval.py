@@ -219,6 +219,26 @@ def test_metadata_filters_include_shared_platform_scope_on_both_retrieval_paths(
         source="platform-common",
         section="Platform common",
     )
+    checkout_common = _add_document(
+        database_session,
+        service="checkout",
+        environment="common",
+        document_type="architecture",
+        content="shared retrieval scope evidence",
+        embedding=[1.0, 0.0],
+        source="checkout-common",
+        section="Checkout common",
+    )
+    payment_common_otel = _add_document(
+        database_session,
+        service="payment",
+        environment="common",
+        document_type="runbook",
+        content="shared retrieval scope evidence",
+        embedding=[1.0, 0.0],
+        source="payment-common-otel",
+        section="Payment common OTel",
+    )
     payment_common = _add_document(
         database_session,
         service="payment-service",
@@ -271,6 +291,16 @@ def test_metadata_filters_include_shared_platform_scope_on_both_retrieval_paths(
     )
     assert [result.chunk_id for result in platform_results] == [platform_common.id]
 
+    checkout_results = service.search(
+        "shared retrieval scope",
+        filters=RetrievalFilters(service="checkout", environment="local"),
+        top_k=10,
+    )
+    assert {result.chunk_id for result in checkout_results} == {
+        checkout_common.id,
+        platform_common.id,
+    }
+
     unrestricted_results = service.search(
         "shared retrieval scope",
         filters=RetrievalFilters(environment="local"),
@@ -281,6 +311,8 @@ def test_metadata_filters_include_shared_platform_scope_on_both_retrieval_paths(
         order_common.id,
         platform_common.id,
         payment_common.id,
+        checkout_common.id,
+        payment_common_otel.id,
     }
 
     architecture_results = service.search(

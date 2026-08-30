@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from devsupport_backend.models import KnowledgeChunk, KnowledgeDocument
-from devsupport_backend.rag.ingest import collect_documents, ingest_documents
+from devsupport_backend.rag.ingest import DEFAULT_KNOWLEDGE_DIR, collect_documents, ingest_documents
 from devsupport_backend.rag.markdown import KnowledgeDocumentParseError, chunk_markdown
 
 
@@ -99,6 +99,33 @@ def test_collect_documents_parses_metadata_and_chunks_by_heading(knowledge_dir: 
     assert order_document.metadata["document_id"] == "rb-order-500"
     assert [chunk.section for chunk in chunks] == ["Symptoms", "Evidence"]
     assert all(chunk.content.startswith("## ") for chunk in chunks)
+
+
+def test_real_integration_architecture_documents_are_isolated_from_shared_overview() -> None:
+    documents = {
+        document.metadata["document_id"]: document
+        for document in collect_documents(DEFAULT_KNOWLEDGE_DIR)
+    }
+
+    assert documents["arch-otel-demo-checkout"].metadata == {
+        "document_id": "arch-otel-demo-checkout",
+        "service": "checkout",
+        "environment": "common",
+        "document_type": "architecture",
+        "source": "opentelemetry-demo-official-docs",
+    }
+    assert documents["arch-otel-demo-payment"].metadata == {
+        "document_id": "arch-otel-demo-payment",
+        "service": "payment",
+        "environment": "common",
+        "document_type": "architecture",
+        "source": "opentelemetry-demo-official-docs",
+    }
+    shared_overview = documents["arch-system-overview"].content.lower()
+    assert all(
+        term not in shared_overview
+        for term in ("fault lab", "order-service", "payment-service", "post /orders", "checkout")
+    )
 
 
 def test_ingestion_persists_vectors_metadata_and_generated_fts(

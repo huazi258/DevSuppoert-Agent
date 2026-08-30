@@ -1,0 +1,651 @@
+{
+  "inventory": [
+    {
+      "document_id": "arch-order-service",
+      "service": "order-service",
+      "environment": "common",
+      "document_type": "architecture",
+      "source": "order-service-service-catalog"
+    },
+    {
+      "document_id": "arch-otel-demo-checkout",
+      "service": "checkout",
+      "environment": "common",
+      "document_type": "architecture",
+      "source": "opentelemetry-demo-official-docs"
+    },
+    {
+      "document_id": "arch-otel-demo-payment",
+      "service": "payment",
+      "environment": "common",
+      "document_type": "architecture",
+      "source": "opentelemetry-demo-official-docs"
+    },
+    {
+      "document_id": "arch-payment-service",
+      "service": "payment-service",
+      "environment": "common",
+      "document_type": "architecture",
+      "source": "payment-service-service-catalog"
+    },
+    {
+      "document_id": "arch-system-overview",
+      "service": "platform",
+      "environment": "common",
+      "document_type": "architecture",
+      "source": "engineering-architecture-handbook"
+    },
+    {
+      "document_id": "pm-database-pool-exhaustion-2025-01",
+      "service": "order-service",
+      "environment": "production",
+      "document_type": "postmortem",
+      "source": "incident-review-2025-01-database-pool"
+    },
+    {
+      "document_id": "pm-missing-runtime-setting-2025-02",
+      "service": "order-service",
+      "environment": "staging",
+      "document_type": "postmortem",
+      "source": "incident-review-2025-02-configuration"
+    },
+    {
+      "document_id": "pm-payment-contract-mismatch-2025-03",
+      "service": "payment-service",
+      "environment": "production",
+      "document_type": "postmortem",
+      "source": "incident-review-2025-03-payment-contract"
+    },
+    {
+      "document_id": "pm-payment-dependency-latency-2025-04",
+      "service": "payment-service",
+      "environment": "staging",
+      "document_type": "postmortem",
+      "source": "incident-review-2025-04-payment-latency"
+    },
+    {
+      "document_id": "pm-traffic-spike-rate-limit-2025-06",
+      "service": "platform",
+      "environment": "production",
+      "document_type": "postmortem",
+      "source": "incident-review-2025-06-traffic-rate-limit"
+    },
+    {
+      "document_id": "rb-downstream-timeout-latency",
+      "service": "platform",
+      "environment": "common",
+      "document_type": "runbook",
+      "source": "dependency-operations-runbook"
+    },
+    {
+      "document_id": "rb-order-service-500-triage",
+      "service": "order-service",
+      "environment": "local",
+      "document_type": "runbook",
+      "source": "order-service-oncall-runbook"
+    },
+    {
+      "document_id": "rb-post-deployment-anomaly",
+      "service": "platform",
+      "environment": "common",
+      "document_type": "runbook",
+      "source": "release-operations-runbook"
+    },
+    {
+      "document_id": "rb-request-correlation",
+      "service": "platform",
+      "environment": "common",
+      "document_type": "runbook",
+      "source": "observability-handbook"
+    }
+  ],
+  "cases": [
+    {
+      "id": "order-500-post-release",
+      "query": "POST /orders began returning 500 after the latest release",
+      "filters": {
+        "service": "order-service",
+        "environment": "local"
+      },
+      "top_k": 5,
+      "required_document_id": "rb-order-service-500-triage",
+      "diagnostic_documents": [
+        {
+          "document_id": "rb-post-deployment-anomaly",
+          "eligible": true,
+          "reasons": [],
+          "retrieved_rank": null,
+          "requested_service": "order-service",
+          "document_service": "platform",
+          "requested_environment": "local",
+          "document_environment": "common"
+        }
+      ],
+      "documents": [
+        {
+          "rank": 1,
+          "document_id": "rb-order-service-500-triage",
+          "section": "\u73b0\u8c61",
+          "source": "order-service-oncall-runbook",
+          "vector_score": 0.6866153442951434,
+          "keyword_score": null,
+          "fusion_score": 0.01639344262295082,
+          "citation": {
+            "id": "knowledge:6bf3b162-2ac1-498f-a80b-d4ebf61e8623:4c08ae82-593a-46a3-9baa-2d45cae3597a",
+            "document_id": "6bf3b162-2ac1-498f-a80b-d4ebf61e8623",
+            "chunk_id": "4c08ae82-593a-46a3-9baa-2d45cae3597a",
+            "source": "order-service-oncall-runbook",
+            "section": "\u73b0\u8c61",
+            "document_reference": "rb-order-service-500-triage"
+          }
+        },
+        {
+          "rank": 2,
+          "document_id": "arch-order-service",
+          "section": "\u804c\u8d23",
+          "source": "order-service-service-catalog",
+          "vector_score": 0.5159414968630083,
+          "keyword_score": null,
+          "fusion_score": 0.016129032258064516,
+          "citation": {
+            "id": "knowledge:f1a14020-611c-4a50-b15b-9f81680009cb:f0081ab3-618a-46cb-b70e-35b39c76638f",
+            "document_id": "f1a14020-611c-4a50-b15b-9f81680009cb",
+            "chunk_id": "f0081ab3-618a-46cb-b70e-35b39c76638f",
+            "source": "order-service-service-catalog",
+            "section": "\u804c\u8d23",
+            "document_reference": "arch-order-service"
+          }
+        }
+      ],
+      "passed": true,
+      "required_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "id": "order-500-natural-wording",
+      "query": "New order requests started failing immediately after deployment",
+      "filters": {
+        "service": "order-service",
+        "environment": "local"
+      },
+      "top_k": 5,
+      "required_document_id": "rb-order-service-500-triage",
+      "diagnostic_documents": [
+        {
+          "document_id": "rb-post-deployment-anomaly",
+          "eligible": true,
+          "reasons": [],
+          "retrieved_rank": null,
+          "requested_service": "order-service",
+          "document_service": "platform",
+          "requested_environment": "local",
+          "document_environment": "common"
+        }
+      ],
+      "documents": [
+        {
+          "rank": 1,
+          "document_id": "rb-order-service-500-triage",
+          "section": "\u73b0\u8c61",
+          "source": "order-service-oncall-runbook",
+          "vector_score": 0.6445554110672836,
+          "keyword_score": null,
+          "fusion_score": 0.01639344262295082,
+          "citation": {
+            "id": "knowledge:6bf3b162-2ac1-498f-a80b-d4ebf61e8623:4c08ae82-593a-46a3-9baa-2d45cae3597a",
+            "document_id": "6bf3b162-2ac1-498f-a80b-d4ebf61e8623",
+            "chunk_id": "4c08ae82-593a-46a3-9baa-2d45cae3597a",
+            "source": "order-service-oncall-runbook",
+            "section": "\u73b0\u8c61",
+            "document_reference": "rb-order-service-500-triage"
+          }
+        },
+        {
+          "rank": 2,
+          "document_id": "arch-order-service",
+          "section": "\u4f9d\u8d56\u548c\u9519\u8bef\u8fb9\u754c",
+          "source": "order-service-service-catalog",
+          "vector_score": 0.5494777232719834,
+          "keyword_score": null,
+          "fusion_score": 0.015873015873015872,
+          "citation": {
+            "id": "knowledge:f1a14020-611c-4a50-b15b-9f81680009cb:cedb14e4-e5c7-46f4-b343-1c6026aa723b",
+            "document_id": "f1a14020-611c-4a50-b15b-9f81680009cb",
+            "chunk_id": "cedb14e4-e5c7-46f4-b343-1c6026aa723b",
+            "source": "order-service-service-catalog",
+            "section": "\u4f9d\u8d56\u548c\u9519\u8bef\u8fb9\u754c",
+            "document_reference": "arch-order-service"
+          }
+        }
+      ],
+      "passed": true,
+      "required_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "id": "payment-latency-orders",
+      "query": "Order requests take several seconds and then fail",
+      "filters": {
+        "service": "order-service",
+        "environment": "local"
+      },
+      "top_k": 5,
+      "required_document_id": "arch-order-service",
+      "diagnostic_documents": [
+        {
+          "document_id": "rb-downstream-timeout-latency",
+          "eligible": true,
+          "reasons": [],
+          "retrieved_rank": 3,
+          "requested_service": "order-service",
+          "document_service": "platform",
+          "requested_environment": "local",
+          "document_environment": "common"
+        }
+      ],
+      "documents": [
+        {
+          "rank": 1,
+          "document_id": "rb-order-service-500-triage",
+          "section": "\u73b0\u8c61",
+          "source": "order-service-oncall-runbook",
+          "vector_score": 0.6579945887330432,
+          "keyword_score": null,
+          "fusion_score": 0.01639344262295082,
+          "citation": {
+            "id": "knowledge:6bf3b162-2ac1-498f-a80b-d4ebf61e8623:4c08ae82-593a-46a3-9baa-2d45cae3597a",
+            "document_id": "6bf3b162-2ac1-498f-a80b-d4ebf61e8623",
+            "chunk_id": "4c08ae82-593a-46a3-9baa-2d45cae3597a",
+            "source": "order-service-oncall-runbook",
+            "section": "\u73b0\u8c61",
+            "document_reference": "rb-order-service-500-triage"
+          }
+        },
+        {
+          "rank": 2,
+          "document_id": "arch-order-service",
+          "section": "\u4f9d\u8d56\u548c\u9519\u8bef\u8fb9\u754c",
+          "source": "order-service-service-catalog",
+          "vector_score": 0.5884300715666977,
+          "keyword_score": null,
+          "fusion_score": 0.016129032258064516,
+          "citation": {
+            "id": "knowledge:f1a14020-611c-4a50-b15b-9f81680009cb:cedb14e4-e5c7-46f4-b343-1c6026aa723b",
+            "document_id": "f1a14020-611c-4a50-b15b-9f81680009cb",
+            "chunk_id": "cedb14e4-e5c7-46f4-b343-1c6026aa723b",
+            "source": "order-service-service-catalog",
+            "section": "\u4f9d\u8d56\u548c\u9519\u8bef\u8fb9\u754c",
+            "document_reference": "arch-order-service"
+          }
+        },
+        {
+          "rank": 3,
+          "document_id": "rb-downstream-timeout-latency",
+          "section": "\u73b0\u8c61",
+          "source": "dependency-operations-runbook",
+          "vector_score": 0.5186084508895874,
+          "keyword_score": null,
+          "fusion_score": 0.015625,
+          "citation": {
+            "id": "knowledge:3790c5ac-e5ea-441a-8795-fe9f52720462:34b01b8a-eaf1-4d0e-ae8e-d82801065d01",
+            "document_id": "3790c5ac-e5ea-441a-8795-fe9f52720462",
+            "chunk_id": "34b01b8a-eaf1-4d0e-ae8e-d82801065d01",
+            "source": "dependency-operations-runbook",
+            "section": "\u73b0\u8c61",
+            "document_reference": "rb-downstream-timeout-latency"
+          }
+        }
+      ],
+      "passed": true,
+      "required_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "id": "payment-latency-noisy-wording",
+      "query": "Checkout is sluggish and customers report no order release",
+      "filters": {
+        "service": "order-service",
+        "environment": "local"
+      },
+      "top_k": 5,
+      "required_document_id": "arch-order-service",
+      "diagnostic_documents": [
+        {
+          "document_id": "rb-downstream-timeout-latency",
+          "eligible": true,
+          "reasons": [],
+          "retrieved_rank": null,
+          "requested_service": "order-service",
+          "document_service": "platform",
+          "requested_environment": "local",
+          "document_environment": "common"
+        }
+      ],
+      "documents": [
+        {
+          "rank": 1,
+          "document_id": "rb-order-service-500-triage",
+          "section": "\u73b0\u8c61",
+          "source": "order-service-oncall-runbook",
+          "vector_score": 0.5222486827077052,
+          "keyword_score": null,
+          "fusion_score": 0.01639344262295082,
+          "citation": {
+            "id": "knowledge:6bf3b162-2ac1-498f-a80b-d4ebf61e8623:4c08ae82-593a-46a3-9baa-2d45cae3597a",
+            "document_id": "6bf3b162-2ac1-498f-a80b-d4ebf61e8623",
+            "chunk_id": "4c08ae82-593a-46a3-9baa-2d45cae3597a",
+            "source": "order-service-oncall-runbook",
+            "section": "\u73b0\u8c61",
+            "document_reference": "rb-order-service-500-triage"
+          }
+        },
+        {
+          "rank": 2,
+          "document_id": "arch-order-service",
+          "section": "\u4f9d\u8d56\u548c\u9519\u8bef\u8fb9\u754c",
+          "source": "order-service-service-catalog",
+          "vector_score": 0.4817350528556046,
+          "keyword_score": null,
+          "fusion_score": 0.016129032258064516,
+          "citation": {
+            "id": "knowledge:f1a14020-611c-4a50-b15b-9f81680009cb:cedb14e4-e5c7-46f4-b343-1c6026aa723b",
+            "document_id": "f1a14020-611c-4a50-b15b-9f81680009cb",
+            "chunk_id": "cedb14e4-e5c7-46f4-b343-1c6026aa723b",
+            "source": "order-service-service-catalog",
+            "section": "\u4f9d\u8d56\u548c\u9519\u8bef\u8fb9\u754c",
+            "document_reference": "arch-order-service"
+          }
+        }
+      ],
+      "passed": true,
+      "required_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "id": "order-architecture",
+      "query": "Which downstream dependency does order-service call for payment processing?",
+      "filters": {
+        "service": "order-service",
+        "environment": "local"
+      },
+      "top_k": 5,
+      "required_document_id": "arch-order-service",
+      "diagnostic_documents": [],
+      "documents": [
+        {
+          "rank": 1,
+          "document_id": "arch-order-service",
+          "section": "\u804c\u8d23",
+          "source": "order-service-service-catalog",
+          "vector_score": 0.7239271731463516,
+          "keyword_score": null,
+          "fusion_score": 0.01639344262295082,
+          "citation": {
+            "id": "knowledge:f1a14020-611c-4a50-b15b-9f81680009cb:f0081ab3-618a-46cb-b70e-35b39c76638f",
+            "document_id": "f1a14020-611c-4a50-b15b-9f81680009cb",
+            "chunk_id": "f0081ab3-618a-46cb-b70e-35b39c76638f",
+            "source": "order-service-service-catalog",
+            "section": "\u804c\u8d23",
+            "document_reference": "arch-order-service"
+          }
+        },
+        {
+          "rank": 2,
+          "document_id": "rb-order-service-500-triage",
+          "section": "\u73b0\u8c61",
+          "source": "order-service-oncall-runbook",
+          "vector_score": 0.5588605070793337,
+          "keyword_score": null,
+          "fusion_score": 0.015873015873015872,
+          "citation": {
+            "id": "knowledge:6bf3b162-2ac1-498f-a80b-d4ebf61e8623:4c08ae82-593a-46a3-9baa-2d45cae3597a",
+            "document_id": "6bf3b162-2ac1-498f-a80b-d4ebf61e8623",
+            "chunk_id": "4c08ae82-593a-46a3-9baa-2d45cae3597a",
+            "source": "order-service-oncall-runbook",
+            "section": "\u73b0\u8c61",
+            "document_reference": "rb-order-service-500-triage"
+          }
+        },
+        {
+          "rank": 3,
+          "document_id": "rb-post-deployment-anomaly",
+          "section": "\u5224\u65ad\u8def\u5f84",
+          "source": "release-operations-runbook",
+          "vector_score": 0.4073624368093953,
+          "keyword_score": null,
+          "fusion_score": 0.015384615384615385,
+          "citation": {
+            "id": "knowledge:69470cdb-5cfc-4d0a-a0f7-ffd7073e78e9:84b8dcb3-bda3-43b9-af54-1ec5cbafbc31",
+            "document_id": "69470cdb-5cfc-4d0a-a0f7-ffd7073e78e9",
+            "chunk_id": "84b8dcb3-bda3-43b9-af54-1ec5cbafbc31",
+            "source": "release-operations-runbook",
+            "section": "\u5224\u65ad\u8def\u5f84",
+            "document_reference": "rb-post-deployment-anomaly"
+          }
+        }
+      ],
+      "passed": true,
+      "required_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "id": "payment-architecture",
+      "query": "What is the payment service responsibility and request boundary?",
+      "filters": {
+        "service": "payment-service",
+        "environment": "common"
+      },
+      "top_k": 5,
+      "required_document_id": "arch-payment-service",
+      "diagnostic_documents": [],
+      "documents": [
+        {
+          "rank": 1,
+          "document_id": "arch-payment-service",
+          "section": "\u804c\u8d23",
+          "source": "payment-service-service-catalog",
+          "vector_score": 0.6711439286298885,
+          "keyword_score": null,
+          "fusion_score": 0.01639344262295082,
+          "citation": {
+            "id": "knowledge:42eb508c-225d-43bf-9afd-d56e9f85ddf2:9ac53ea9-c3c6-4d58-90a5-04877e571339",
+            "document_id": "42eb508c-225d-43bf-9afd-d56e9f85ddf2",
+            "chunk_id": "9ac53ea9-c3c6-4d58-90a5-04877e571339",
+            "source": "payment-service-service-catalog",
+            "section": "\u804c\u8d23",
+            "document_reference": "arch-payment-service"
+          }
+        },
+        {
+          "rank": 2,
+          "document_id": "arch-system-overview",
+          "section": "\u8c03\u67e5\u8303\u56f4",
+          "source": "engineering-architecture-handbook",
+          "vector_score": 0.49081343521912024,
+          "keyword_score": null,
+          "fusion_score": 0.015625,
+          "citation": {
+            "id": "knowledge:9fa26729-47a4-4e23-b2ab-2ea79d8e1230:8ae71b9d-1f50-4781-b4e8-8e3999f07e9b",
+            "document_id": "9fa26729-47a4-4e23-b2ab-2ea79d8e1230",
+            "chunk_id": "8ae71b9d-1f50-4781-b4e8-8e3999f07e9b",
+            "source": "engineering-architecture-handbook",
+            "section": "\u8c03\u67e5\u8303\u56f4",
+            "document_reference": "arch-system-overview"
+          }
+        }
+      ],
+      "passed": true,
+      "required_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "id": "otel-demo-checkout-purchase-failure",
+      "query": "Customers cannot complete checkout and purchase requests are failing",
+      "filters": {
+        "service": "checkout",
+        "environment": "local"
+      },
+      "top_k": 5,
+      "required_document_id": "arch-otel-demo-checkout",
+      "diagnostic_documents": [
+        {
+          "document_id": "rb-downstream-timeout-latency",
+          "eligible": true,
+          "reasons": [],
+          "retrieved_rank": 2,
+          "requested_service": "checkout",
+          "document_service": "platform",
+          "requested_environment": "local",
+          "document_environment": "common"
+        }
+      ],
+      "documents": [
+        {
+          "rank": 1,
+          "document_id": "arch-otel-demo-checkout",
+          "section": "\u8c03\u67e5\u8fb9\u754c",
+          "source": "opentelemetry-demo-official-docs",
+          "vector_score": 0.5499666661004234,
+          "keyword_score": null,
+          "fusion_score": 0.01639344262295082,
+          "citation": {
+            "id": "knowledge:91c5bd2a-2992-4621-85d5-93b97173c246:4b48e86a-e1dc-445b-800a-91481ed5e2ab",
+            "document_id": "91c5bd2a-2992-4621-85d5-93b97173c246",
+            "chunk_id": "4b48e86a-e1dc-445b-800a-91481ed5e2ab",
+            "source": "opentelemetry-demo-official-docs",
+            "section": "\u8c03\u67e5\u8fb9\u754c",
+            "document_reference": "arch-otel-demo-checkout"
+          }
+        },
+        {
+          "rank": 2,
+          "document_id": "rb-downstream-timeout-latency",
+          "section": "\u73b0\u8c61",
+          "source": "dependency-operations-runbook",
+          "vector_score": 0.3993520140647888,
+          "keyword_score": null,
+          "fusion_score": 0.015873015873015872,
+          "citation": {
+            "id": "knowledge:3790c5ac-e5ea-441a-8795-fe9f52720462:34b01b8a-eaf1-4d0e-ae8e-d82801065d01",
+            "document_id": "3790c5ac-e5ea-441a-8795-fe9f52720462",
+            "chunk_id": "34b01b8a-eaf1-4d0e-ae8e-d82801065d01",
+            "source": "dependency-operations-runbook",
+            "section": "\u73b0\u8c61",
+            "document_reference": "rb-downstream-timeout-latency"
+          }
+        },
+        {
+          "rank": 3,
+          "document_id": "rb-request-correlation",
+          "section": "\u8d28\u91cf\u68c0\u67e5",
+          "source": "observability-handbook",
+          "vector_score": 0.3757537677434828,
+          "keyword_score": null,
+          "fusion_score": 0.015384615384615385,
+          "citation": {
+            "id": "knowledge:ad4b7eec-5df6-4724-bfcb-fb7880e6c8c3:04c2c648-ee7d-4cfb-98e6-7146c34f8d7b",
+            "document_id": "ad4b7eec-5df6-4724-bfcb-fb7880e6c8c3",
+            "chunk_id": "04c2c648-ee7d-4cfb-98e6-7146c34f8d7b",
+            "source": "observability-handbook",
+            "section": "\u8d28\u91cf\u68c0\u67e5",
+            "document_reference": "rb-request-correlation"
+          }
+        }
+      ],
+      "passed": true,
+      "required_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "id": "otel-demo-payment-investigation",
+      "query": "Payment processing is failing during checkout and needs service-boundary investigation",
+      "filters": {
+        "service": "payment",
+        "environment": "local"
+      },
+      "top_k": 5,
+      "required_document_id": "arch-otel-demo-payment",
+      "diagnostic_documents": [],
+      "documents": [
+        {
+          "rank": 1,
+          "document_id": "arch-otel-demo-payment",
+          "section": "\u804c\u8d23\u4e0e\u8c03\u7528\u5173\u7cfb",
+          "source": "opentelemetry-demo-official-docs",
+          "vector_score": 0.6873373948328397,
+          "keyword_score": null,
+          "fusion_score": 0.01639344262295082,
+          "citation": {
+            "id": "knowledge:dd60bcde-f197-48a0-a0d2-3b7e1a9ed9ab:e8963d29-8e29-421f-8b8c-bed01c572929",
+            "document_id": "dd60bcde-f197-48a0-a0d2-3b7e1a9ed9ab",
+            "chunk_id": "e8963d29-8e29-421f-8b8c-bed01c572929",
+            "source": "opentelemetry-demo-official-docs",
+            "section": "\u804c\u8d23\u4e0e\u8c03\u7528\u5173\u7cfb",
+            "document_reference": "arch-otel-demo-payment"
+          }
+        },
+        {
+          "rank": 2,
+          "document_id": "rb-request-correlation",
+          "section": "\u4f7f\u7528\u573a\u666f",
+          "source": "observability-handbook",
+          "vector_score": 0.4039428944655812,
+          "keyword_score": null,
+          "fusion_score": 0.015873015873015872,
+          "citation": {
+            "id": "knowledge:ad4b7eec-5df6-4724-bfcb-fb7880e6c8c3:7943399b-af20-45aa-8e29-a40b2dcad0da",
+            "document_id": "ad4b7eec-5df6-4724-bfcb-fb7880e6c8c3",
+            "chunk_id": "7943399b-af20-45aa-8e29-a40b2dcad0da",
+            "source": "observability-handbook",
+            "section": "\u4f7f\u7528\u573a\u666f",
+            "document_reference": "rb-request-correlation"
+          }
+        },
+        {
+          "rank": 3,
+          "document_id": "rb-post-deployment-anomaly",
+          "section": "\u5224\u65ad\u8def\u5f84",
+          "source": "release-operations-runbook",
+          "vector_score": 0.4028121108748721,
+          "keyword_score": null,
+          "fusion_score": 0.015625,
+          "citation": {
+            "id": "knowledge:69470cdb-5cfc-4d0a-a0f7-ffd7073e78e9:84b8dcb3-bda3-43b9-af54-1ec5cbafbc31",
+            "document_id": "69470cdb-5cfc-4d0a-a0f7-ffd7073e78e9",
+            "chunk_id": "84b8dcb3-bda3-43b9-af54-1ec5cbafbc31",
+            "source": "release-operations-runbook",
+            "section": "\u5224\u65ad\u8def\u5f84",
+            "document_reference": "rb-post-deployment-anomaly"
+          }
+        },
+        {
+          "rank": 4,
+          "document_id": "rb-downstream-timeout-latency",
+          "section": "\u5904\u7f6e",
+          "source": "dependency-operations-runbook",
+          "vector_score": 0.39394884217700277,
+          "keyword_score": null,
+          "fusion_score": 0.015384615384615385,
+          "citation": {
+            "id": "knowledge:3790c5ac-e5ea-441a-8795-fe9f52720462:00763b11-7d26-4542-a15d-c537c778ae69",
+            "document_id": "3790c5ac-e5ea-441a-8795-fe9f52720462",
+            "chunk_id": "00763b11-7d26-4542-a15d-c537c778ae69",
+            "source": "dependency-operations-runbook",
+            "section": "\u5904\u7f6e",
+            "document_reference": "rb-downstream-timeout-latency"
+          }
+        }
+      ],
+      "passed": true,
+      "required_rank": 1,
+      "reciprocal_rank": 1.0
+    }
+  ],
+  "aggregate": {
+    "passed": 8,
+    "total": 8,
+    "hit_at_k": 1.0,
+    "mrr": 0.875
+  },
+  "embedding_model": "text-embedding-v4"
+}

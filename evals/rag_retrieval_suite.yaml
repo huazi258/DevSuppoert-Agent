@@ -43,3 +43,17 @@ cases:
     environment: common
     top_k: 5
     required_document_id: arch-payment-service
+  - id: otel-demo-checkout-purchase-failure
+    query: Customers cannot complete checkout and purchase requests are failing
+    service: checkout
+    environment: local
+    top_k: 5
+    required_document_id: arch-otel-demo-checkout
+    diagnostic_relevant_document_ids:
+      - rb-downstream-timeout-latency
+  - id: otel-demo-payment-investigation
+    query: Payment processing is failing during checkout and needs service-boundary investigation
+    service: payment
+    environment: local
+    top_k: 5
+    required_document_id: arch-otel-demo-payment
