@@ -28,4 +28,8 @@ The deterministic checkout path is the upstream telemetry-test flow: add one cat
 | OpenSearch | Runtime port must be resolved with `docker compose port opensearch 9200` (observed local endpoint: `http://localhost:1406`). Logs are in `otel-logs-*`; relevant fields are `@timestamp`, `body`, `severity`, `resource`, and `attributes`, with service at `resource.service.name`. |
 | Jaeger | Runtime port must be resolved with `docker compose port jaeger 16686` (observed local endpoint: `http://localhost:1411/jaeger/ui`). Query the UI-prefixed API, including `/jaeger/ui/api/services` and `/jaeger/ui/api/traces`. |
 
-This task only establishes the environment and its telemetry shape. It does not add a DevSupport adapter or query implementation.
+M3.4 established only the environment and telemetry shape; M3.5 adds the logs-provider boundary below without switching the production workflow provider.
+
+## Logs Adapter
+
+`OpenSearchLogsAdapter` reads the runtime-resolved `OPENSEARCH_URL` and searches `otel-logs-*` with bounded JSON DSL. It maps `@timestamp`, `body`, `severity.text`, `resource["service.name"]`, and optional `traceId` into the existing normalized LogsAdapter contract. The OpenSearch request filters `resource.service.name`, inclusive `@timestamp`, optional severity/query values, and the Tool limit; it does not expose provider hit metadata or raw documents.

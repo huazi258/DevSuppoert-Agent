@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     )
     fault_lab_order_service_url: str = "http://127.0.0.1:8000"
     fault_lab_payment_service_url: str = "http://127.0.0.1:8001"
+    opensearch_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("OPENSEARCH_URL", "DEVSUPPORT_OPENSEARCH_URL"),
+    )
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="DEVSUPPORT_")
 

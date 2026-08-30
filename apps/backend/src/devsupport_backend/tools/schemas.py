@@ -117,7 +117,7 @@ class TimeRangeToolInput(ToolInput):
 
 
 class QueryLogsInput(TimeRangeToolInput):
-    """Bounded query for structured Fault Lab logs."""
+    """Bounded query for structured runtime logs."""
 
     level: str | None = Field(default=None, min_length=1, max_length=20)
     query: str | None = Field(default=None, min_length=1, max_length=1_000)
@@ -151,7 +151,7 @@ class LogSample(BaseModel):
 
 
 class QueryLogsOutput(ToolOutput):
-    """Structured, bounded result from the Fault Lab logs adapter."""
+    """Structured, bounded result from a logs adapter."""
 
     match_count: int = Field(default=0, ge=0)
     first_seen: datetime | None = None

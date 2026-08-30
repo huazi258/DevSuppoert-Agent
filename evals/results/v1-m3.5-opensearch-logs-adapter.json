@@ -1,0 +1,62 @@
+{
+  "schema_version": "v1-m3.5",
+  "purpose": "OpenSearchLogsAdapter live validation against OpenTelemetry Demo telemetry",
+  "upstream": {
+    "release": "3.0.0",
+    "commit": "1755859a9de82c2e5e225be68abc401a5ebf2b4f"
+  },
+  "opensearch": {
+    "endpoint": "http://127.0.0.1:1406",
+    "runtime_resolved": true,
+    "index_pattern": "otel-logs-*",
+    "validated_field_mapping": {
+      "timestamp": "@timestamp",
+      "message": "body",
+      "severity": "severity.text",
+      "service_filter": "resource.service.name",
+      "source_service": "resource[\"service.name\"]",
+      "trace_id": "traceId",
+      "error_type": "attributes.exception.type"
+    }
+  },
+  "query_window": {
+    "start": "2026-08-30T10:20:24.583546+00:00",
+    "end": "2026-08-30T10:30:24.583546+00:00"
+  },
+  "tool_queries": [
+    {
+      "service": "checkout",
+      "tool_status": "success",
+      "match_count": 144,
+      "sample_count": 20,
+      "first_seen": "2026-08-30T10:29:14.012648+00:00",
+      "last_seen": "2026-08-30T10:30:09.518305+00:00",
+      "trace_id_count": 5,
+      "all_samples_match_requested_service": true
+    },
+    {
+      "service": "payment",
+      "tool_status": "success",
+      "match_count": 144,
+      "sample_count": 20,
+      "first_seen": "2026-08-30T10:29:14.143000+00:00",
+      "last_seen": "2026-08-30T10:30:09.482000+00:00",
+      "trace_id_count": 5,
+      "all_samples_match_requested_service": true
+    }
+  ],
+  "additional_filter_validation": {
+    "service": "checkout",
+    "filter_type": "level",
+    "requested_level": "info",
+    "tool_status": "success",
+    "match_count": 144,
+    "sample_count": 10,
+    "all_returned_levels_canonical_info": true
+  },
+  "payload_safety": {
+    "raw_log_bodies_persisted": false,
+    "raw_opensearch_hits_persisted": false,
+    "trace_ids_persisted": false
+  }
+}
