@@ -24,12 +24,22 @@ class WorkflowHypothesisResponse(WorkflowResponseModel):
     next_check: str | None
 
 
+class WorkflowEvidenceCitationResponse(WorkflowResponseModel):
+    id: str
+    document_id: UUID
+    chunk_id: UUID
+    source: str
+    section: str
+    document_reference: str
+
+
 class WorkflowEvidenceResponse(WorkflowResponseModel):
     id: UUID
     evidence_type: str
     source: str
     summary: str
     reference: str | None
+    citation: WorkflowEvidenceCitationResponse | None = None
 
 
 class WorkflowToolErrorResponse(WorkflowResponseModel):

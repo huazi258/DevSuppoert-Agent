@@ -102,6 +102,32 @@ def test_manual_report_has_no_remediation_facts_and_is_idempotent(
     )
 
 
+def test_report_preserves_knowledge_evidence_citation(database_session: Session) -> None:
+    incident = _incident(database_session, "NEEDS_MANUAL_ACTION")
+    state = _state(incident)
+    citation = {
+        "id": "knowledge:runbook#1",
+        "document_id": str(uuid4()),
+        "chunk_id": str(uuid4()),
+        "source": "runbook",
+        "section": "Checks",
+        "document_reference": "knowledge/runbook.md#checks",
+    }
+    state["evidence"] = [
+        state["evidence"][0].model_copy(
+            update={
+                "evidence_type": "knowledge_retrieval",
+                "source": "search_knowledge",
+                "data": {"citation": citation},
+            }
+        )
+    ]
+    outcome = FinalReportService(database_session).generate(state)
+    report = database_session.get(Report, outcome.report_id)
+    assert report is not None
+    assert report.content["key_evidence"][0]["citation"] == citation
+
+
 def test_resolved_report_persists_exact_execution_chain_as_jsonb(database_session: Session) -> None:
     incident = _incident(database_session, "RESOLVED")
     state = _state(incident)

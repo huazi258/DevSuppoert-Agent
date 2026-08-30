@@ -204,6 +204,7 @@ def test_projector_exposes_only_bound_public_facts(database_session: Session) ->
     assert body["incident_id"] == str(incident.id)
     assert body["evidence"][0].get("data") is None
     assert "data" not in body["evidence"][0]
+    assert body["evidence"][0]["citation"] is None
     assert body["proposed_action"].get("parameters") is None
     assert body["action"]["parameters"] == {
         "service": "order-service",
@@ -212,6 +213,34 @@ def test_projector_exposes_only_bound_public_facts(database_session: Session) ->
         "target_version": "v1.0.0",
         "reason": "Verified deployment facts require rollback.",
     }
+
+
+def test_projector_preserves_only_validated_knowledge_citation(database_session: Session) -> None:
+    incident = _incident(database_session)
+    state = _state(incident)
+    evidence = state["evidence"][0].model_copy(
+        update={
+            "evidence_type": "knowledge_retrieval",
+            "source": "search_knowledge",
+            "data": {
+                "citation": {
+                    "id": "knowledge:runbook#1",
+                    "document_id": str(uuid4()),
+                    "chunk_id": str(uuid4()),
+                    "source": "runbook",
+                    "section": "Checks",
+                    "document_reference": "knowledge/runbook.md#checks",
+                }
+            },
+        }
+    )
+    state["evidence"] = [evidence]
+    response = project_workflow_response(incident, state, None)
+    assert response.evidence[0].citation is not None
+    assert response.evidence[0].citation.document_reference == "knowledge/runbook.md#checks"
+
+    state["evidence"] = [evidence.model_copy(update={"data": {"citation": {"private": "nope"}}})]
+    assert project_workflow_response(incident, state, None).evidence[0].citation is None
 
 
 def test_projector_exposes_terminal_reason_and_accepts_legacy_state(
@@ -643,7 +672,9 @@ def test_retry_available_rejects_persisted_action_approval_and_postapproval_outc
         WorkflowConsoleService(
             database_session,
             FakeRuntime(state=_state(action_incident), failure=failure),
-        ).read(action_incident.id).retry_available
+        )
+        .read(action_incident.id)
+        .retry_available
         is False
     )
 
@@ -661,7 +692,9 @@ def test_retry_available_rejects_persisted_action_approval_and_postapproval_outc
         WorkflowConsoleService(
             database_session,
             FakeRuntime(state=_state(approval_incident), failure=failure),
-        ).read(approval_incident.id).retry_available
+        )
+        .read(approval_incident.id)
+        .retry_available
         is False
     )
 
@@ -675,7 +708,9 @@ def test_retry_available_rejects_persisted_action_approval_and_postapproval_outc
         WorkflowConsoleService(
             database_session,
             FakeRuntime(state=execution_state, failure=failure),
-        ).read(execution_incident.id).retry_available
+        )
+        .read(execution_incident.id)
+        .retry_available
         is False
     )
 
@@ -689,6 +724,8 @@ def test_retry_available_rejects_persisted_action_approval_and_postapproval_outc
         WorkflowConsoleService(
             database_session,
             FakeRuntime(state=verification_state, failure=failure),
-        ).read(verification_incident.id).retry_available
+        )
+        .read(verification_incident.id)
+        .retry_available
         is False
     )

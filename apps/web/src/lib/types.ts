@@ -44,6 +44,16 @@ export interface WorkflowEvidence {
   source: string;
   summary: string;
   reference: string | null;
+  citation: WorkflowEvidenceCitation | null;
+}
+
+export interface WorkflowEvidenceCitation {
+  id: string;
+  document_id: string;
+  chunk_id: string;
+  source: string;
+  section: string;
+  document_reference: string;
 }
 
 export interface WorkflowToolError {
@@ -187,6 +197,7 @@ export interface FinalReportEvidence {
   source: string;
   summary: string;
   reference: string | null;
+  citation?: WorkflowEvidenceCitation | null;
 }
 
 export interface FinalReportRecommendedAction {

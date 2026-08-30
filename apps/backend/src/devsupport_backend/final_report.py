@@ -19,6 +19,7 @@ from devsupport_backend.agent.state import (
     VerificationOutcome,
 )
 from devsupport_backend.models import Action, Approval, Incident, Report, Verification
+from devsupport_backend.tools.schemas import CitationOutput
 
 
 class StrictReportModel(BaseModel):
@@ -63,6 +64,16 @@ class EvidenceReportItem(StrictReportModel):
     source: str
     summary: str
     reference: str | None
+    citation: "EvidenceCitationReportSection | None" = None
+
+
+class EvidenceCitationReportSection(StrictReportModel):
+    id: str
+    document_id: UUID
+    chunk_id: UUID
+    source: str
+    section: str
+    document_reference: str
 
 
 class RecommendedActionReportSection(StrictReportModel):
@@ -168,9 +179,7 @@ class FinalReportService:
     def _content_for(self, incident: Incident, state: AgentState) -> FinalReportContent:
         policy = state["policy_outcome"]
         action = (
-            self._session.get(Action, policy.action_id)
-            if policy and policy.action_id
-            else None
+            self._session.get(Action, policy.action_id) if policy and policy.action_id else None
         )
         approval_state = state["approval_outcome"]
         approval = (
@@ -213,13 +222,12 @@ class FinalReportService:
                     source=evidence[evidence_id].source,
                     summary=evidence[evidence_id].summary,
                     reference=evidence[evidence_id].reference,
+                    citation=_evidence_citation(evidence[evidence_id]),
                 )
                 for evidence_id in sorted(referenced, key=str)
             ],
             recommended_action=(
-                RecommendedActionReportSection(
-                    **proposed.model_dump(exclude={"parameters"})
-                )
+                RecommendedActionReportSection(**proposed.model_dump(exclude={"parameters"}))
                 if proposed is not None
                 else None
             ),
@@ -307,9 +315,7 @@ class FinalReportService:
         """Retain only failure facts which still bind to authoritative Action records."""
         if execution.executed:
             raise FinalReportError("Failed execution cannot report execution")
-        if execution.action_id is not None and (
-            action is None or execution.action_id != action.id
-        ):
+        if execution.action_id is not None and (action is None or execution.action_id != action.id):
             raise FinalReportError("Failed execution Action binding mismatch")
         if execution.approval_id is not None and (
             approval is None or execution.approval_id != approval.id
@@ -323,13 +329,15 @@ class FinalReportService:
                 raise FinalReportError("Failed execution parameters lack an Action")
             parameters = ActionExecutionParameters.model_validate(action.parameters)
             if (
-                execution.service is not None and execution.service != parameters.service
-            ) or (
-                execution.environment is not None
-                and execution.environment != parameters.environment
-            ) or (
-                execution.target_version is not None
-                and execution.target_version != parameters.target_version
+                (execution.service is not None and execution.service != parameters.service)
+                or (
+                    execution.environment is not None
+                    and execution.environment != parameters.environment
+                )
+                or (
+                    execution.target_version is not None
+                    and execution.target_version != parameters.target_version
+                )
             ):
                 raise FinalReportError("Failed execution parameters mismatch")
 
@@ -364,49 +372,79 @@ def _referenced_evidence(state: AgentState) -> set[UUID]:
     return referenced
 
 
+def _evidence_citation(item) -> EvidenceCitationReportSection | None:
+    """Keep structured provenance only for validated current knowledge evidence."""
+    if item.source != "search_knowledge" or item.evidence_type != "knowledge_retrieval":
+        return None
+    raw = item.data.get("citation")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        citation = CitationOutput.model_validate(raw)
+    except Exception:
+        return None
+    return EvidenceCitationReportSection(**citation.model_dump())
+
+
 def _action_section(action: Action | None) -> ActionReportSection | None:
-    return None if action is None else ActionReportSection(
-        action_id=action.id,
-        action_type=action.action_type,
-        status=action.status,
-        parameters=action.parameters,
-        created_at=action.created_at,
-        executed_at=action.executed_at,
+    return (
+        None
+        if action is None
+        else ActionReportSection(
+            action_id=action.id,
+            action_type=action.action_type,
+            status=action.status,
+            parameters=action.parameters,
+            created_at=action.created_at,
+            executed_at=action.executed_at,
+        )
     )
 
 
 def _approval_section(approval: Approval | None) -> ApprovalReportSection | None:
-    return None if approval is None else ApprovalReportSection(
-        approval_id=approval.id,
-        action_id=approval.action_id,
-        status=approval.status,
-        created_at=approval.created_at,
-        updated_at=approval.updated_at,
+    return (
+        None
+        if approval is None
+        else ApprovalReportSection(
+            approval_id=approval.id,
+            action_id=approval.action_id,
+            status=approval.status,
+            created_at=approval.created_at,
+            updated_at=approval.updated_at,
+        )
     )
 
 
 def _execution_section(state: AgentState) -> ExecutionReportSection | None:
     execution = state["execution_outcome"]
-    return None if execution is None else ExecutionReportSection(
-        action_id=execution.action_id,
-        approval_id=execution.approval_id,
-        status=execution.status.value,
-        service=execution.service,
-        environment=execution.environment,
-        target_version=execution.target_version,
-        executed=execution.executed,
+    return (
+        None
+        if execution is None
+        else ExecutionReportSection(
+            action_id=execution.action_id,
+            approval_id=execution.approval_id,
+            status=execution.status.value,
+            service=execution.service,
+            environment=execution.environment,
+            target_version=execution.target_version,
+            executed=execution.executed,
+        )
     )
 
 
 def _verification_section(verification: Verification | None) -> VerificationReportSection | None:
-    return None if verification is None else VerificationReportSection(
-        verification_id=verification.id,
-        action_id=verification.action_id,
-        status=verification.status,
-        summary=verification.summary,
-        details=verification.details,
-        created_at=verification.created_at,
-        updated_at=verification.updated_at,
+    return (
+        None
+        if verification is None
+        else VerificationReportSection(
+            verification_id=verification.id,
+            action_id=verification.action_id,
+            status=verification.status,
+            summary=verification.summary,
+            details=verification.details,
+            created_at=verification.created_at,
+            updated_at=verification.updated_at,
+        )
     )
 
 

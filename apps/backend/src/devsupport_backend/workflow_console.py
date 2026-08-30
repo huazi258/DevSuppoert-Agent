@@ -34,6 +34,7 @@ from devsupport_backend.schemas.workflows import (
     WorkflowActionParametersResponse,
     WorkflowActionResponse,
     WorkflowApprovalResponse,
+    WorkflowEvidenceCitationResponse,
     WorkflowEvidenceResponse,
     WorkflowExecutionResponse,
     WorkflowFinalConclusionResponse,
@@ -49,6 +50,7 @@ from devsupport_backend.schemas.workflows import (
 from devsupport_backend.tools.deployments import FaultLabDeploymentAdapter
 from devsupport_backend.tools.logs import FaultLabLogsAdapter
 from devsupport_backend.tools.metrics import FaultLabMetricsAdapter
+from devsupport_backend.tools.schemas import CitationOutput
 from devsupport_backend.tools.traces import FaultLabTracesAdapter
 
 
@@ -342,12 +344,18 @@ class WorkflowConsoleService:
         failure: WorkflowFailure | None,
     ) -> bool:
         """Apply the one authoritative policy shared by read and retry mutation paths."""
-        action_exists = self._session.scalar(
-            select(Action.id).where(Action.incident_id == incident.id).limit(1)
-        ) is not None
-        approval_exists = self._session.scalar(
-            select(Approval.id).where(Approval.incident_id == incident.id).limit(1)
-        ) is not None
+        action_exists = (
+            self._session.scalar(
+                select(Action.id).where(Action.incident_id == incident.id).limit(1)
+            )
+            is not None
+        )
+        approval_exists = (
+            self._session.scalar(
+                select(Approval.id).where(Approval.incident_id == incident.id).limit(1)
+            )
+            is not None
+        )
         if (
             incident.status != "INVESTIGATING"
             or not incident.thread_id
@@ -413,6 +421,7 @@ def project_workflow_response(
                 source=item.source,
                 summary=item.summary,
                 reference=item.reference,
+                citation=_evidence_citation(item),
             )
             for item in state["evidence"]
         ],
@@ -499,6 +508,20 @@ def project_workflow_response(
         terminal_reason=state.get("terminal_reason"),
         retry_available=retry_available,
     )
+
+
+def _evidence_citation(item) -> WorkflowEvidenceCitationResponse | None:
+    """Project only a validated knowledge citation; legacy and runtime data remain opaque."""
+    if item.source != "search_knowledge" or item.evidence_type != "knowledge_retrieval":
+        return None
+    raw = item.data.get("citation")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        citation = CitationOutput.model_validate(raw)
+    except Exception:
+        return None
+    return WorkflowEvidenceCitationResponse(**citation.model_dump())
 
 
 def _validate_incident_binding(incident: Incident, state: AgentState) -> None:
