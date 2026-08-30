@@ -4,6 +4,7 @@ import type {
   FinalReport,
   Incident,
   WorkflowResponse,
+  WorkflowProgressResponse,
   WorkflowStartResponse,
 } from "./types";
 
@@ -84,6 +85,10 @@ export function retryWorkflow(id: string): Promise<WorkflowResponse> {
 
 export function getWorkflow(id: string): Promise<WorkflowResponse> {
   return request<WorkflowResponse>(`/incidents/${id}/workflow`);
+}
+
+export function getWorkflowProgress(id: string): Promise<WorkflowProgressResponse> {
+  return request<WorkflowProgressResponse>(`/incidents/${id}/workflow/progress`);
 }
 
 export async function submitApproval(id: string, decision: ApprovalDecision): Promise<void> {

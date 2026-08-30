@@ -41,6 +41,10 @@ from devsupport_backend.schemas.workflows import (
     WorkflowFinalConclusionResponse,
     WorkflowHypothesisResponse,
     WorkflowPolicyResponse,
+    WorkflowProgressFailureResponse,
+    WorkflowProgressLatestToolResponse,
+    WorkflowProgressPhase,
+    WorkflowProgressResponse,
     WorkflowProposedActionResponse,
     WorkflowReportOutcomeResponse,
     WorkflowResponse,
@@ -105,6 +109,11 @@ _POST_APPROVAL_OR_TERMINAL_STAGES = frozenset(
         AgentStage.RESOLVED,
         AgentStage.NEEDS_MANUAL_ACTION,
     }
+)
+
+_TERMINAL_INCIDENT_STATUSES = frozenset({"RESOLVED", "NEEDS_MANUAL_ACTION"})
+_TERMINAL_WORKFLOW_STAGES = frozenset(
+    {AgentStage.RESOLVED, AgentStage.NEEDS_MANUAL_ACTION}
 )
 
 _PERSISTED_WORKFLOW_NODE_NAMES = (
@@ -266,6 +275,54 @@ class WorkflowConsoleService:
             retry_available=self._retry_available(incident, state),
         )
 
+    def read_progress(self, incident_id: UUID) -> WorkflowProgressResponse:
+        """Read persisted progress; the stage is the latest checkpoint, not a live trace."""
+        incident = self._get_incident(incident_id)
+        state = self._runtime.get_state(incident.thread_id)
+        if state is None:
+            return self._progress_without_checkpoint(incident)
+        _validate_incident_binding(incident, state)
+        failure = self._runtime.get_failure(incident.thread_id)
+        phase = self._progress_phase(incident, state, failure)
+        latest_entry = state["tool_history"][-1] if state["tool_history"] else None
+        pending_tool = state["pending_tool_call"]
+        return WorkflowProgressResponse(
+            incident_id=incident.id,
+            incident_status=incident.status,
+            phase=phase,
+            checkpoint_available=True,
+            current_stage=state["current_stage"],
+            current_goal=state["current_goal"],
+            pending_tool_name=pending_tool.tool_name.value if pending_tool else None,
+            hypothesis_count=len(state["hypotheses"]),
+            evidence_count=len(state["evidence"]),
+            tool_call_count=state["tool_call_count"],
+            investigation_round=state["investigation_round"],
+            llm_call_count=state["llm_call_count"],
+            workflow_retry_count=state["workflow_retry_count"],
+            latest_tool=(
+                WorkflowProgressLatestToolResponse(
+                    tool_name=latest_entry.tool_name.value,
+                    status=latest_entry.status.value,
+                    duration_ms=latest_entry.duration_ms,
+                )
+                if latest_entry
+                else None
+            ),
+            failure=(
+                WorkflowProgressFailureResponse(
+                    failed_node=failure.failed_node,
+                    category=failure.category,
+                    message=failure.safe_error,
+                    retryable=failure.retryable,
+                )
+                if failure
+                else None
+            ),
+            terminal_reason=state.get("terminal_reason"),
+            retry_available=self._retry_available(incident, state),
+        )
+
     def accept_start(self, incident_id: UUID) -> WorkflowStartResponse:
         """Atomically accept one new OPEN Incident without executing its graph."""
         incident = self._session.scalar(
@@ -384,6 +441,59 @@ class WorkflowConsoleService:
         if state is None:
             raise WorkflowNotStartedError("Workflow not started")
         return state
+
+    def _progress_without_checkpoint(self, incident: Incident) -> WorkflowProgressResponse:
+        if incident.status == "OPEN":
+            phase = "not_started"
+        elif incident.status == "INVESTIGATING":
+            phase = "accepted"
+        else:
+            raise WorkflowStateConflict("Incident status requires a persisted workflow checkpoint")
+        return WorkflowProgressResponse(
+            incident_id=incident.id,
+            incident_status=incident.status,
+            phase=phase,
+            checkpoint_available=False,
+            current_stage=None,
+            current_goal=None,
+            pending_tool_name=None,
+            hypothesis_count=0,
+            evidence_count=0,
+            tool_call_count=0,
+            investigation_round=0,
+            llm_call_count=0,
+            workflow_retry_count=0,
+            latest_tool=None,
+            failure=None,
+            terminal_reason=None,
+        )
+
+    @staticmethod
+    def _progress_phase(
+        incident: Incident,
+        state: AgentState,
+        failure: WorkflowFailure | None,
+    ) -> WorkflowProgressPhase:
+        terminal = (
+            incident.status in _TERMINAL_INCIDENT_STATUSES
+            or state["current_stage"] in _TERMINAL_WORKFLOW_STAGES
+        )
+        if terminal:
+            if failure is not None:
+                raise WorkflowStateConflict("Terminal workflow has an active persisted failure")
+            return "completed"
+        if (
+            incident.status == "WAITING_APPROVAL"
+            or state["current_stage"] is AgentStage.WAITING_APPROVAL
+        ):
+            if failure is not None:
+                raise WorkflowStateConflict(
+                    "Waiting approval workflow has an active persisted failure"
+                )
+            return "waiting_approval"
+        if failure is not None:
+            return "failed"
+        return "running"
 
     def _action_for_state(self, incident: Incident, state: AgentState) -> Action | None:
         policy = state["policy_outcome"]

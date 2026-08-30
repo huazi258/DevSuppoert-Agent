@@ -165,6 +165,47 @@ export interface WorkflowStartResponse {
   accepted: true;
 }
 
+export type WorkflowProgressPhase =
+  | "not_started"
+  | "accepted"
+  | "running"
+  | "failed"
+  | "waiting_approval"
+  | "completed";
+
+export interface WorkflowProgressLatestTool {
+  tool_name: string;
+  status: string;
+  duration_ms: number | null;
+}
+
+export interface WorkflowProgressFailure {
+  failed_node: string;
+  category: string;
+  message: string;
+  retryable: boolean;
+}
+
+export interface WorkflowProgressResponse {
+  incident_id: string;
+  incident_status: string;
+  phase: WorkflowProgressPhase;
+  checkpoint_available: boolean;
+  current_stage: string | null;
+  current_goal: string | null;
+  pending_tool_name: string | null;
+  hypothesis_count: number;
+  evidence_count: number;
+  tool_call_count: number;
+  investigation_round: number;
+  llm_call_count: number;
+  workflow_retry_count: number;
+  latest_tool: WorkflowProgressLatestTool | null;
+  failure: WorkflowProgressFailure | null;
+  terminal_reason: string | null;
+  retry_available: boolean;
+}
+
 export type ApprovalDecision = "APPROVE" | "REJECT";
 
 export interface FinalReportIncidentSummary {

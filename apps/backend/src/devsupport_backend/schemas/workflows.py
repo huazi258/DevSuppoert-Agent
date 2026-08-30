@@ -1,11 +1,21 @@
 """Strict public workflow projections for the V0 Web Console."""
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, JsonValue
 
-from devsupport_backend.agent.state import AgentStage, TerminalReason
+from devsupport_backend.agent.state import AgentStage, FailureCategory, TerminalReason
+
+WorkflowProgressPhase = Literal[
+    "not_started",
+    "accepted",
+    "running",
+    "failed",
+    "waiting_approval",
+    "completed",
+]
 
 
 class WorkflowResponseModel(BaseModel):
@@ -20,6 +30,45 @@ class WorkflowStartResponse(WorkflowResponseModel):
     incident_id: UUID
     incident_status: str
     accepted: bool = True
+
+
+class WorkflowProgressLatestToolResponse(WorkflowResponseModel):
+    """Small persisted summary of the latest completed or unavailable Tool call."""
+
+    tool_name: str
+    status: str
+    duration_ms: float | None
+
+
+class WorkflowProgressFailureResponse(WorkflowResponseModel):
+    """Safe persisted workflow task failure facts for polling clients."""
+
+    failed_node: str
+    category: FailureCategory
+    message: str
+    retryable: bool
+
+
+class WorkflowProgressResponse(WorkflowResponseModel):
+    """Read-only persisted investigation progress without a synthetic completion estimate."""
+
+    incident_id: UUID
+    incident_status: str
+    phase: WorkflowProgressPhase
+    checkpoint_available: bool
+    current_stage: AgentStage | None
+    current_goal: str | None
+    pending_tool_name: str | None
+    hypothesis_count: int
+    evidence_count: int
+    tool_call_count: int
+    investigation_round: int
+    llm_call_count: int
+    workflow_retry_count: int
+    latest_tool: WorkflowProgressLatestToolResponse | None
+    failure: WorkflowProgressFailureResponse | None
+    terminal_reason: TerminalReason | None
+    retry_available: bool = False
 
 
 class WorkflowHypothesisResponse(WorkflowResponseModel):

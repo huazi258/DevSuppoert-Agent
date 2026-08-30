@@ -22,7 +22,11 @@ from devsupport_backend.database import SessionLocal, get_session
 from devsupport_backend.models import Approval, Incident, Report
 from devsupport_backend.schemas.approvals import ApprovalCreate, ApprovalResponse
 from devsupport_backend.schemas.incidents import IncidentCreate, IncidentResponse, ReportResponse
-from devsupport_backend.schemas.workflows import WorkflowResponse, WorkflowStartResponse
+from devsupport_backend.schemas.workflows import (
+    WorkflowProgressResponse,
+    WorkflowResponse,
+    WorkflowStartResponse,
+)
 from devsupport_backend.workflow_console import (
     PostgresWorkflowRuntime,
     WorkflowConflictError,
@@ -147,6 +151,21 @@ def get_workflow(
     except LookupError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
     except WorkflowNotStartedError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except (WorkflowConflictError, WorkflowStateConflict) as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+
+@router.get("/{incident_id}/workflow/progress", response_model=WorkflowProgressResponse)
+def get_workflow_progress(
+    incident_id: UUID,
+    session: SessionDependency,
+    workflow_runtime: WorkflowRuntimeDependency,
+) -> WorkflowProgressResponse:
+    """Return the latest safe persisted progress, including accepted starts without checkpoints."""
+    try:
+        return WorkflowConsoleService(session, workflow_runtime).read_progress(incident_id)
+    except LookupError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
     except (WorkflowConflictError, WorkflowStateConflict) as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error

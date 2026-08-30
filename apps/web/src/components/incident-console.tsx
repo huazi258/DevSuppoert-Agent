@@ -8,11 +8,19 @@ import {
   getFinalReport,
   getIncident,
   getWorkflow,
+  getWorkflowProgress,
   retryWorkflow,
   startWorkflow,
   submitApproval,
 } from "../lib/api";
-import { formatDate, type ApprovalDecision, type FinalReport, type Incident, type WorkflowResponse } from "../lib/types";
+import {
+  formatDate,
+  type ApprovalDecision,
+  type FinalReport,
+  type Incident,
+  type WorkflowProgressResponse,
+  type WorkflowResponse,
+} from "../lib/types";
 import { FinalReportView } from "./final-report";
 import { StatusBadge } from "./status-badge";
 import { WorkflowView } from "./workflow-view";
@@ -34,6 +42,7 @@ function messageFor(error: unknown, fallback: string): string {
 export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
   const [incident, setIncident] = useState<Incident | null>(null);
   const [workflow, setWorkflow] = useState<WorkflowResponse | null>(null);
+  const [progress, setProgress] = useState<WorkflowProgressResponse | null>(null);
   const [report, setReport] = useState<FinalReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [workflowLoading, setWorkflowLoading] = useState(false);
@@ -42,6 +51,7 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [approvalRetryDecision, setApprovalRetryDecision] = useState<ApprovalDecision | null>(null);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
+  const [progressError, setProgressError] = useState<string | null>(null);
   const [reportError, setReportError] = useState<string | null>(null);
   const refreshInFlight = useRef(false);
   const reportRequested = useRef(false);
@@ -52,6 +62,14 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
       const nextIncident = await getIncident(incidentId);
       setIncident(nextIncident);
       setError(null);
+      try {
+        const nextProgress = await getWorkflowProgress(incidentId);
+        setProgress(nextProgress);
+        setProgressError(null);
+      } catch (progressLoadError: unknown) {
+        setProgress(null);
+        setProgressError(messageFor(progressLoadError, "Unable to load investigation progress."));
+      }
       try {
         const nextWorkflow = await getWorkflow(incidentId);
         setWorkflow(nextWorkflow);
@@ -67,9 +85,11 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
     } catch (incidentLoadError: unknown) {
       setIncident(null);
       setWorkflow(null);
+      setProgress(null);
       setReport(null);
       setApprovalRetryDecision(null);
       setWorkflowError(null);
+      setProgressError(null);
       setReportError(null);
       setError(messageFor(incidentLoadError, "Unable to load the Incident."));
     } finally {
@@ -82,11 +102,13 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
     reportRequested.current = false;
     setIncident(null);
     setWorkflow(null);
+    setProgress(null);
     setReport(null);
     setError(null);
     setMutationError(null);
     setApprovalRetryDecision(null);
     setWorkflowError(null);
+    setProgressError(null);
     setReportError(null);
     setLoading(true);
     void refresh();
@@ -111,7 +133,7 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
       });
     }, 2500);
     return () => window.clearInterval(interval);
-  }, [incident, mutationPending, refresh, workflow]);
+  }, [incident, mutationPending, refresh]);
 
   const shouldFetchReport = Boolean(
     incident && (terminalStatuses.has(incident.status) || workflow?.report_outcome !== null && workflow?.report_outcome !== undefined),
@@ -242,6 +264,7 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
       {error ? <p className="error-banner" role="alert">{error}</p> : null}
       {mutationError ? <p className="error-banner" role="alert">{mutationError}</p> : null}
       {workflowError ? <p className="error-banner" role="alert">{workflowError}</p> : null}
+      {progressError ? <p className="error-banner" role="alert">{progressError}</p> : null}
       {reportError ? <p className="empty-state">{reportError}</p> : null}
 
       {canStart ? (
@@ -253,9 +276,27 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
         </section>
       ) : null}
 
-      {incident.status === "INVESTIGATING" && workflow === null ? (
-        <section className="panel pending-workflow-panel">
-          <p>Investigation accepted. Waiting for the first persisted workflow checkpoint…</p>
+      {progress ? (
+        <section className="panel pending-workflow-panel" aria-labelledby="progress-heading">
+          <p className="eyebrow">Workflow</p>
+          <h2 id="progress-heading">Investigation Progress</h2>
+          <dl className="detail-grid">
+            <div><dt>Phase</dt><dd><StatusBadge value={progress.phase} /></dd></div>
+            <div><dt>Latest persisted stage</dt><dd>{progress.current_stage ?? "No persisted checkpoint"}</dd></div>
+            <div className="full-detail"><dt>Current goal</dt><dd>{progress.current_goal ?? "—"}</dd></div>
+            <div><dt>Hypotheses</dt><dd>{progress.hypothesis_count}</dd></div>
+            <div><dt>Evidence</dt><dd>{progress.evidence_count}</dd></div>
+            <div><dt>Tools</dt><dd>{progress.tool_call_count}</dd></div>
+          </dl>
+          {progress.phase === "accepted" ? (
+            <p>Investigation accepted. Waiting for the first persisted workflow checkpoint…</p>
+          ) : null}
+          {progress.pending_tool_name ? <p>Current Tool: {progress.pending_tool_name}</p> : null}
+          {progress.failure ? (
+            <p>
+              Failure: {progress.failure.category} at {progress.failure.failed_node} — {progress.failure.message}
+            </p>
+          ) : null}
         </section>
       ) : null}
 

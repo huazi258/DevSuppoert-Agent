@@ -274,6 +274,47 @@ def test_workflow_api_unknown_and_not_started_responses(
     assert unknown_post.status_code == unknown_get.status_code == before_start.status_code == 404
 
 
+def test_workflow_progress_api_covers_accepted_start_before_first_checkpoint(
+    api_client: TestClient,
+    database_session: Session,
+    incident_payload: dict[str, str],
+) -> None:
+    runtime = FakeWorkflowRuntime()
+    client = workflow_client(api_client, runtime)
+    created = create_incident(client, incident_payload)
+
+    before_start = client.get(f"/incidents/{created['id']}/workflow/progress")
+    accepted = client.post(f"/incidents/{created['id']}/workflow")
+    full_workflow = client.get(f"/incidents/{created['id']}/workflow")
+    progress = client.get(f"/incidents/{created['id']}/workflow/progress")
+
+    assert before_start.status_code == 200
+    assert before_start.json()["phase"] == "not_started"
+    assert accepted.status_code == 202
+    assert full_workflow.status_code == 404
+    assert progress.status_code == 200
+    assert progress.json() == {
+        "incident_id": created["id"],
+        "incident_status": "INVESTIGATING",
+        "phase": "accepted",
+        "checkpoint_available": False,
+        "current_stage": None,
+        "current_goal": None,
+        "pending_tool_name": None,
+        "hypothesis_count": 0,
+        "evidence_count": 0,
+        "tool_call_count": 0,
+        "investigation_round": 0,
+        "llm_call_count": 0,
+        "workflow_retry_count": 0,
+        "latest_tool": None,
+        "failure": None,
+        "terminal_reason": None,
+        "retry_available": False,
+    }
+    assert runtime.start_calls == runtime.retry_calls == 0
+
+
 def test_workflow_api_duplicate_and_non_open_start_are_conflicts(
     api_client: TestClient, database_session: Session, incident_payload: dict[str, str]
 ) -> None:

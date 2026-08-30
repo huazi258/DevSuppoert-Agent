@@ -9,6 +9,7 @@ import pytest
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy.orm import Session
 
+from devsupport_backend.agent.budget import InvestigationBudget
 from devsupport_backend.agent.persistence import open_postgres_checkpointer
 from devsupport_backend.agent.runtime import WorkflowFailure, WorkflowService
 from devsupport_backend.agent.state import (
@@ -21,16 +22,19 @@ from devsupport_backend.agent.state import (
     FinalConclusion,
     HypothesisContext,
     HypothesisStatus,
+    PendingToolCall,
     PolicyDecision,
     PolicyOutcome,
     PolicyReasonCode,
     ProposedAction,
     TerminalReason,
+    ToolHistoryEntry,
     VerificationOutcome,
     VerificationStatus,
     create_initial_agent_state,
 )
 from devsupport_backend.models import Action, Approval, Incident
+from devsupport_backend.tools.registry import ToolName
 from devsupport_backend.tools.schemas import ToolStatus
 from devsupport_backend.workflow_console import (
     PostgresWorkflowRuntime,
@@ -259,6 +263,169 @@ def test_projector_exposes_terminal_reason_and_accepts_legacy_state(
     legacy_response = project_workflow_response(incident, legacy_state, None)
 
     assert legacy_response.terminal_reason is None
+
+
+def test_progress_projects_open_and_accepted_incidents_without_checkpoint(
+    database_session: Session,
+) -> None:
+    open_incident = _incident(database_session)
+    accepted_incident = _incident(database_session, status="INVESTIGATING")
+    runtime = FakeRuntime(state=None)
+    service = WorkflowConsoleService(database_session, runtime)
+
+    not_started = service.read_progress(open_incident.id)
+    accepted = service.read_progress(accepted_incident.id)
+
+    assert not_started.phase == "not_started"
+    assert accepted.phase == "accepted"
+    for progress in (not_started, accepted):
+        assert progress.checkpoint_available is False
+        assert progress.current_stage is None
+        assert progress.current_goal is None
+        assert progress.pending_tool_name is None
+        assert progress.latest_tool is None
+        assert progress.failure is None
+        assert progress.hypothesis_count == progress.evidence_count == progress.tool_call_count == 0
+    assert runtime.start_calls == runtime.retry_calls == 0
+
+
+def test_progress_projects_running_checkpoint_facts_without_tool_arguments(
+    database_session: Session,
+) -> None:
+    incident = _incident(database_session, status="INVESTIGATING")
+    state = _state(incident)
+    state.update(
+        {
+            "current_stage": AgentStage.TOOL_EXECUTION,
+            "current_goal": "Collect recent order-service logs.",
+            "pending_tool_call": PendingToolCall(
+                investigation_goal="Inspect current failures.",
+                tool_name=ToolName.QUERY_LOGS,
+                tool_arguments={"secret": "not-for-progress"},
+                reason="Logs are the next bounded evidence source.",
+            ),
+            "tool_history": [
+                ToolHistoryEntry(
+                    tool_name=ToolName.QUERY_METRICS,
+                    tool_arguments={"secret": "not-for-progress"},
+                    status=ToolStatus.SUCCESS,
+                    duration_ms=12.5,
+                )
+            ],
+            "tool_call_count": 3,
+            "investigation_round": 2,
+            "llm_call_count": 4,
+            "workflow_retry_count": 1,
+        }
+    )
+    runtime = FakeRuntime(state=state)
+
+    progress = WorkflowConsoleService(database_session, runtime).read_progress(incident.id)
+
+    assert progress.phase == "running"
+    assert progress.checkpoint_available is True
+    assert progress.current_stage is AgentStage.TOOL_EXECUTION
+    assert progress.current_goal == "Collect recent order-service logs."
+    assert progress.pending_tool_name == "query_logs"
+    assert progress.hypothesis_count == len(state["hypotheses"])
+    assert progress.evidence_count == len(state["evidence"])
+    assert progress.tool_call_count == 3
+    assert progress.investigation_round == 2
+    assert progress.llm_call_count == 4
+    assert progress.workflow_retry_count == 1
+    assert progress.latest_tool is not None
+    assert progress.latest_tool.model_dump() == {
+        "tool_name": "query_metrics",
+        "status": "success",
+        "duration_ms": 12.5,
+    }
+    assert progress.failure is None
+    assert runtime.start_calls == runtime.retry_calls == 0
+
+
+def test_progress_projects_failure_separately_from_retry_policy(database_session: Session) -> None:
+    incident = _incident(database_session, status="INVESTIGATING")
+    state = _state(incident)
+    state["current_stage"] = AgentStage.INVESTIGATION_PLANNING
+    runtime = FakeRuntime(state=state, failure=_retryable_failure("investigation_planning"))
+
+    progress = WorkflowConsoleService(database_session, runtime).read_progress(incident.id)
+
+    assert progress.phase == "failed"
+    assert progress.failure is not None
+    assert progress.failure.model_dump() == {
+        "failed_node": "investigation_planning",
+        "category": "LLM_PROVIDER_TIMEOUT",
+        "message": "LLM provider request timed out",
+        "retryable": True,
+    }
+    assert progress.retry_available is True
+
+
+def test_progress_keeps_failure_retryability_when_retry_budget_is_exhausted(
+    database_session: Session,
+) -> None:
+    incident = _incident(database_session, status="INVESTIGATING")
+    state = _state(incident)
+    state["current_stage"] = AgentStage.INVESTIGATION_PLANNING
+    state["workflow_retry_count"] = 1
+    runtime = FakeRuntime(state=state, failure=_retryable_failure("investigation_planning"))
+
+    progress = WorkflowConsoleService(
+        database_session,
+        runtime,
+        budget=InvestigationBudget(max_workflow_retries=1),
+    ).read_progress(incident.id)
+
+    assert progress.failure is not None and progress.failure.retryable is True
+    assert progress.retry_available is False
+
+
+def test_progress_projects_waiting_and_terminal_states(database_session: Session) -> None:
+    waiting = _incident(database_session, status="WAITING_APPROVAL")
+    waiting_state = _state(waiting)
+    waiting_state["current_stage"] = AgentStage.WAITING_APPROVAL
+    waiting_progress = WorkflowConsoleService(
+        database_session, FakeRuntime(state=waiting_state)
+    ).read_progress(waiting.id)
+    assert waiting_progress.phase == "waiting_approval"
+
+    for status, stage in (
+        ("RESOLVED", AgentStage.RESOLVED),
+        ("NEEDS_MANUAL_ACTION", AgentStage.NEEDS_MANUAL_ACTION),
+    ):
+        incident = _incident(database_session, status=status)
+        state = _state(incident)
+        state["current_stage"] = stage
+        state["terminal_reason"] = TerminalReason.INVESTIGATION_INCONCLUSIVE
+
+        progress = WorkflowConsoleService(database_session, FakeRuntime(state=state)).read_progress(
+            incident.id
+        )
+
+        assert progress.phase == "completed"
+        assert progress.terminal_reason is TerminalReason.INVESTIGATION_INCONCLUSIVE
+
+
+def test_progress_fails_closed_for_checkpoint_or_lifecycle_conflicts(
+    database_session: Session,
+) -> None:
+    incident = _incident(database_session, status="INVESTIGATING")
+    mismatched = _state(incident)
+    mismatched["incident"] = mismatched["incident"].model_copy(
+        update={"service": "payment-service"}
+    )
+    with pytest.raises(WorkflowStateConflict, match="binding"):
+        WorkflowConsoleService(database_session, FakeRuntime(state=mismatched)).read_progress(
+            incident.id
+        )
+
+    for status in ("WAITING_APPROVAL", "RESOLVED", "NEEDS_MANUAL_ACTION"):
+        later_incident = _incident(database_session, status=status)
+        with pytest.raises(WorkflowStateConflict, match="requires"):
+            WorkflowConsoleService(database_session, FakeRuntime(state=None)).read_progress(
+                later_incident.id
+            )
 
 
 def test_projector_rejects_action_and_incident_binding_mismatches(
