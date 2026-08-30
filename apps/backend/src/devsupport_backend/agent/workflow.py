@@ -523,19 +523,34 @@ def _tool_execution_with_initial_evidence_batch(
 ) -> AgentState:
     """Collect the complementary initial probe before spending an LLM update call."""
     updated = tool_execution_node(state, dependencies)
-    if not _should_collect_complementary_initial_probe(updated):
+    if not _should_collect_complementary_initial_probe(updated, dependencies.available_tools):
         return updated
     return {**updated, "current_stage": AgentStage.INVESTIGATION_PLANNING}
 
 
-def _should_collect_complementary_initial_probe(state: AgentState) -> bool:
+def _should_collect_complementary_initial_probe(
+    state: AgentState,
+    available_tools: frozenset[ToolName] = READ_ONLY_INVESTIGATION_TOOLS,
+) -> bool:
     if state["current_stage"] is not AgentStage.HYPOTHESIS_UPDATE:
         return False
     history = state["tool_history"]
     if not history or history[0].tool_name.value != "search_knowledge":
         return False
-    runtime_tools = [item.tool_name.value for item in history[1:]]
-    return len(runtime_tools) == 1 and runtime_tools[0] in {"query_logs", "query_traces"}
+    runtime_tools = [item.tool_name for item in history[1:]]
+    if len(runtime_tools) != 1:
+        return False
+    first_runtime_tool = runtime_tools[0]
+    if first_runtime_tool is ToolName.QUERY_TRACES:
+        return ToolName.QUERY_METRICS in available_tools or ToolName.QUERY_LOGS in available_tools
+    if first_runtime_tool is ToolName.QUERY_LOGS:
+        return (
+            ToolName.GET_DEPLOYMENT_HISTORY in available_tools
+            or ToolName.QUERY_METRICS in available_tools
+        )
+    if first_runtime_tool is ToolName.QUERY_METRICS:
+        return ToolName.QUERY_LOGS in available_tools
+    return False
 
 
 def _hypothesis_update_round_node(state: AgentState, llm_client: LLMClient) -> AgentState:

@@ -186,7 +186,9 @@ def test_deterministic_initial_plan_degrades_to_logs_then_metrics_without_traces
     assert first.tool_name is ToolName.QUERY_METRICS
 
     state["tool_history"].append(SimpleNamespace(tool_name=ToolName.QUERY_METRICS))  # type: ignore[arg-type]
-    assert deterministic_initial_evidence_plan(state, available) is None
+    second = deterministic_initial_evidence_plan(state, available)
+    assert second is not None
+    assert second.tool_name is ToolName.QUERY_LOGS
 
 
 def test_deterministic_initial_plan_degrades_to_logs_then_metrics_without_deployment() -> None:
@@ -205,6 +207,34 @@ def test_deterministic_initial_plan_degrades_to_logs_then_metrics_without_deploy
     second = deterministic_initial_evidence_plan(state, available)
     assert second is not None
     assert second.tool_name is ToolName.QUERY_METRICS
+
+
+def test_initial_metrics_probe_without_logs_has_no_nonexistent_complement() -> None:
+    available = frozenset({ToolName.SEARCH_KNOWLEDGE, ToolName.QUERY_METRICS})
+    state = _state("Checkout latency is high.")
+    state["current_stage"] = AgentStage.INVESTIGATION_PLANNING
+    state["tool_history"].extend(
+        [
+            SimpleNamespace(tool_name=ToolName.SEARCH_KNOWLEDGE),  # type: ignore[arg-type]
+            SimpleNamespace(tool_name=ToolName.QUERY_METRICS),  # type: ignore[arg-type]
+        ]
+    )
+
+    assert deterministic_initial_evidence_plan(state, available) is None
+
+
+def test_initial_logs_probe_without_deployment_or_metrics_has_no_nonexistent_complement() -> None:
+    available = frozenset({ToolName.SEARCH_KNOWLEDGE, ToolName.QUERY_LOGS})
+    state = _state("Checkout requests fail.")
+    state["current_stage"] = AgentStage.INVESTIGATION_PLANNING
+    state["tool_history"].extend(
+        [
+            SimpleNamespace(tool_name=ToolName.SEARCH_KNOWLEDGE),  # type: ignore[arg-type]
+            SimpleNamespace(tool_name=ToolName.QUERY_LOGS),  # type: ignore[arg-type]
+        ]
+    )
+
+    assert deterministic_initial_evidence_plan(state, available) is None
 
 
 def test_disabled_persisted_tool_is_recorded_unavailable_without_dispatch(

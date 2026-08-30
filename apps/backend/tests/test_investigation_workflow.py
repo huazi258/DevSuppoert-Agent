@@ -440,6 +440,38 @@ def test_initial_evidence_batch_skips_intermediate_llm_update_after_first_runtim
     assert workflow_module._should_collect_complementary_initial_probe(state) is True
 
 
+def test_initial_evidence_batch_collects_logs_after_metrics_only_when_logs_are_available() -> None:
+    state = _build_initial_state()
+    state.update(
+        {
+            "current_stage": AgentStage.HYPOTHESIS_UPDATE,
+            "tool_history": [
+                ToolHistoryEntry(
+                    tool_name=ToolName.SEARCH_KNOWLEDGE,
+                    tool_arguments={"query": "catalog latency"},
+                    status=ToolStatus.SUCCESS,
+                ),
+                ToolHistoryEntry(
+                    tool_name=ToolName.QUERY_METRICS,
+                    tool_arguments={"service": "catalog-service", "environment": "local"},
+                    status=ToolStatus.SUCCESS,
+                ),
+            ],
+        }
+    )
+
+    assert workflow_module._should_collect_complementary_initial_probe(
+        state,
+        frozenset(
+            {ToolName.SEARCH_KNOWLEDGE, ToolName.QUERY_LOGS, ToolName.QUERY_METRICS}
+        ),
+    )
+    assert not workflow_module._should_collect_complementary_initial_probe(
+        state,
+        frozenset({ToolName.SEARCH_KNOWLEDGE, ToolName.QUERY_METRICS}),
+    )
+
+
 def test_workflow_service_default_budget_reaches_five_round_terminalization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

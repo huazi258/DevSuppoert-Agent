@@ -139,6 +139,8 @@ def deterministic_initial_evidence_plan(
         tool_name = _first_available(
             available_tools, ToolName.GET_DEPLOYMENT_HISTORY, ToolName.QUERY_METRICS
         )
+    elif len(runtime_tools) == 1 and runtime_tools[0] is ToolName.QUERY_METRICS:
+        tool_name = _first_available(available_tools, ToolName.QUERY_LOGS)
     else:
         return None
     if tool_name is None:
