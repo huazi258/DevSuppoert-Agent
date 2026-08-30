@@ -2,26 +2,21 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from devsupport_backend.config import Settings, settings
+from devsupport_backend.tools.adapter_contracts import AdapterError, MetricsQueryResult
 from devsupport_backend.tools.schemas import QueryMetricsInput
 
 SUPPORTED_ENVIRONMENT = "local"
 ServiceName = Literal["order-service", "payment-service"]
 
 
-class MetricsAdapterError(RuntimeError):
+class MetricsAdapterError(AdapterError):
     """A safe, structured failure returned by the Fault Lab metrics adapter."""
-
-    def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:
-        super().__init__(message)
-        self.code = code
-        self.retryable = retryable
 
 
 class FaultLabMetricsResponse(BaseModel):
@@ -44,26 +39,6 @@ class FaultLabHealthResponse(BaseModel):
 
     service: ServiceName
     status: str = Field(min_length=1)
-
-
-@dataclass(frozen=True)
-class MetricQueryResult:
-    """Combined metrics and health facts from one service snapshot."""
-
-    service: ServiceName
-    health_status: str
-    request_count: int
-    success_count: int
-    error_count: int
-    last_request_duration_ms: float | None
-    average_request_duration_ms: float | None
-
-    @property
-    def error_rate(self) -> float:
-        """Calculate error rate from current count facts without inventing history."""
-        if self.request_count == 0:
-            return 0.0
-        return self.error_count / self.request_count
 
 
 class FaultLabMetricsAdapter:
@@ -90,7 +65,7 @@ class FaultLabMetricsAdapter:
             payment_service_url=config.fault_lab_payment_service_url,
         )
 
-    def query(self, tool_input: QueryMetricsInput) -> MetricQueryResult:
+    def query(self, tool_input: QueryMetricsInput) -> MetricsQueryResult:
         """Fetch current metrics and health from exactly one permitted local service."""
         if tool_input.service not in self._service_urls:
             raise MetricsAdapterError(
@@ -128,7 +103,7 @@ class FaultLabMetricsAdapter:
                 "service_mismatch",
                 f"Fault Lab endpoint did not return metrics and health for {service_name}",
             )
-        return MetricQueryResult(
+        return MetricsQueryResult(
             service=service_name,
             health_status=health.status,
             request_count=metrics.request_count,

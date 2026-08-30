@@ -1,11 +1,8 @@
-"""Structured Tool executor for current Fault Lab deployment facts."""
+"""Structured Tool executor for current deployment facts."""
 
 from time import perf_counter
 
-from devsupport_backend.tools.deployments import (
-    DeploymentAdapterError,
-    FaultLabDeploymentAdapter,
-)
+from devsupport_backend.tools.adapter_contracts import AdapterError, DeploymentAdapter
 from devsupport_backend.tools.schemas import (
     DeploymentRecord,
     GetDeploymentHistoryInput,
@@ -17,13 +14,13 @@ from devsupport_backend.tools.schemas import (
 
 def get_deployment_history(
     tool_input: GetDeploymentHistoryInput,
-    deployment_adapter: FaultLabDeploymentAdapter,
+    deployment_adapter: DeploymentAdapter,
 ) -> GetDeploymentHistoryOutput:
     """Return the current-plus-previous fact snapshot without inventing history entries."""
     started_at = perf_counter()
     try:
         result = deployment_adapter.query(tool_input)
-    except DeploymentAdapterError as error:
+    except AdapterError as error:
         return GetDeploymentHistoryOutput(
             status=ToolStatus.FAILURE,
             error=ToolError(code=error.code, message=str(error), retryable=error.retryable),

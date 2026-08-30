@@ -28,7 +28,8 @@ from devsupport_backend.agent.state import (
     create_initial_agent_state,
 )
 from devsupport_backend.models import Action, Incident
-from devsupport_backend.tools.deployments import DeploymentAdapterError, DeploymentQueryResult
+from devsupport_backend.tools.adapter_contracts import DeploymentQueryResult
+from devsupport_backend.tools.deployments import DeploymentAdapterError
 from devsupport_backend.tools.registry import ToolName
 from devsupport_backend.tools.schemas import GetDeploymentHistoryInput
 

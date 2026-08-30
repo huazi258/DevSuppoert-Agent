@@ -23,7 +23,8 @@ from devsupport_backend.agent.state import (
     create_initial_agent_state,
 )
 from devsupport_backend.models import Action, Approval, Incident
-from devsupport_backend.tools.deployments import DeploymentQueryResult, RollbackResult
+from devsupport_backend.tools.adapter_contracts import DeploymentQueryResult
+from devsupport_backend.tools.deployments import RollbackResult
 from devsupport_backend.tools.schemas import ToolStatus
 
 

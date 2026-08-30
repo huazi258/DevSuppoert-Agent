@@ -5,9 +5,10 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 
+from devsupport_backend.tools.adapter_contracts import TraceSpanRecord
 from devsupport_backend.tools.query_traces import _summarize_traces, query_traces
 from devsupport_backend.tools.schemas import QueryTracesInput, ToolStatus
-from devsupport_backend.tools.traces import FaultLabTracesAdapter, FaultLabTraceSpan
+from devsupport_backend.tools.traces import FaultLabTracesAdapter
 
 
 def _adapter(handler: httpx.MockTransport) -> FaultLabTracesAdapter:
@@ -42,6 +43,25 @@ def _span(
         "status": status,
         "error": error,
     }
+
+
+def _contract_record(payload: dict[str, object]) -> TraceSpanRecord:
+    return TraceSpanRecord(
+        trace_id=str(payload["trace_id"]),
+        span_id=str(payload["span_id"]),
+        parent_span_id=(
+            payload["parent_span_id"]
+            if isinstance(payload["parent_span_id"], str)
+            else None
+        ),
+        service=str(payload["service"]),
+        operation=str(payload["operation"]),
+        start_time=datetime.fromisoformat(str(payload["start_time"])),
+        end_time=datetime.fromisoformat(str(payload["end_time"])),
+        duration_ms=float(payload["duration_ms"]),
+        status=str(payload["status"]),
+        error=payload["error"] if isinstance(payload["error"], str) else None,
+    )
 
 
 def test_query_traces_aggregates_cross_service_spans_and_identifies_slowest_span() -> None:
@@ -142,7 +162,7 @@ def test_query_traces_aggregates_cross_service_spans_and_identifies_slowest_span
 def test_trace_summary_filters_by_anchor_service_and_applies_limit() -> None:
     now = datetime.now(UTC)
     records = [
-        FaultLabTraceSpan.model_validate(
+        _contract_record(
             _span(
                 trace_id="trace-order",
                 span_id="order-span",
@@ -153,7 +173,7 @@ def test_trace_summary_filters_by_anchor_service_and_applies_limit() -> None:
                 duration_ms=10,
             )
         ),
-        FaultLabTraceSpan.model_validate(
+        _contract_record(
             _span(
                 trace_id="trace-payment",
                 span_id="payment-span",
@@ -164,7 +184,7 @@ def test_trace_summary_filters_by_anchor_service_and_applies_limit() -> None:
                 duration_ms=10,
             )
         ),
-        FaultLabTraceSpan.model_validate(
+        _contract_record(
             _span(
                 trace_id="trace-order-later",
                 span_id="order-later-span",

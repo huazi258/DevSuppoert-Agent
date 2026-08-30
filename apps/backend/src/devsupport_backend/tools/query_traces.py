@@ -1,8 +1,10 @@
-"""Structured Tool executor for bounded Fault Lab distributed trace evidence."""
+"""Structured Tool executor for bounded distributed trace evidence."""
 
 from collections import defaultdict
+from collections.abc import Sequence
 from time import perf_counter
 
+from devsupport_backend.tools.adapter_contracts import AdapterError, TracesAdapter, TraceSpanRecord
 from devsupport_backend.tools.schemas import (
     QueryTracesInput,
     QueryTracesOutput,
@@ -12,22 +14,17 @@ from devsupport_backend.tools.schemas import (
     TraceSpan,
     TraceSummary,
 )
-from devsupport_backend.tools.traces import (
-    FaultLabTracesAdapter,
-    FaultLabTraceSpan,
-    TracesAdapterError,
-)
 
 
 def query_traces(
     tool_input: QueryTracesInput,
-    traces_adapter: FaultLabTracesAdapter,
+    traces_adapter: TracesAdapter,
 ) -> QueryTracesOutput:
     """Collect fixed-service span buffers and return reconstructed trace evidence."""
     started_at = perf_counter()
     try:
         result = traces_adapter.query(tool_input)
-    except TracesAdapterError as error:
+    except AdapterError as error:
         return QueryTracesOutput(
             status=ToolStatus.FAILURE,
             error=ToolError(code=error.code, message=str(error), retryable=error.retryable),
@@ -46,13 +43,13 @@ def query_traces(
 
 
 def _summarize_traces(
-    records: list[FaultLabTraceSpan],
+    records: Sequence[TraceSpanRecord],
     *,
     anchor_service: str,
     limit: int,
 ) -> list[TraceSummary]:
     """Merge service-local spans by trace ID while retaining parent/child facts."""
-    grouped: dict[str, dict[str, FaultLabTraceSpan]] = defaultdict(dict)
+    grouped: dict[str, dict[str, TraceSpanRecord]] = defaultdict(dict)
     for record in records:
         grouped[record.trace_id][record.span_id] = record
 
@@ -91,7 +88,7 @@ def _summarize_traces(
     return [summary for _, summary in newest_first[:limit]]
 
 
-def _to_trace_span(record: FaultLabTraceSpan) -> TraceSpan:
+def _to_trace_span(record: TraceSpanRecord) -> TraceSpan:
     """Convert the adapter contract without dropping timing or relationship facts."""
     return TraceSpan(
         span_id=record.span_id,

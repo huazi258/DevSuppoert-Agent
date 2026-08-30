@@ -1,9 +1,9 @@
-"""Structured Tool executor for bounded Fault Lab log investigation."""
+"""Structured Tool executor for bounded log investigation."""
 
 from collections import Counter
 from time import perf_counter
 
-from devsupport_backend.tools.logs import FaultLabLogsAdapter, LogsAdapterError
+from devsupport_backend.tools.adapter_contracts import AdapterError, LogsAdapter
 from devsupport_backend.tools.schemas import (
     ErrorPattern,
     LogSample,
@@ -16,13 +16,13 @@ from devsupport_backend.tools.schemas import (
 
 def query_logs(
     tool_input: QueryLogsInput,
-    logs_adapter: FaultLabLogsAdapter,
+    logs_adapter: LogsAdapter,
 ) -> QueryLogsOutput:
     """Call the fixed logs adapter and summarize only bounded structured records."""
     started_at = perf_counter()
     try:
         result = logs_adapter.query(tool_input)
-    except LogsAdapterError as error:
+    except AdapterError as error:
         return QueryLogsOutput(
             status=ToolStatus.FAILURE,
             error=ToolError(code=error.code, message=str(error), retryable=error.retryable),

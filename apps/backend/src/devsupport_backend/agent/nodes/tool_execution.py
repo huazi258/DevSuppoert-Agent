@@ -11,10 +11,13 @@ from pydantic import BaseModel, ValidationError
 from devsupport_backend.agent.nodes.retrieval import _append_unique_evidence
 from devsupport_backend.agent.state import AgentStage, AgentState, EvidenceContext, ToolHistoryEntry
 from devsupport_backend.rag.retrieval import RAGService
-from devsupport_backend.tools.deployments import FaultLabDeploymentAdapter
+from devsupport_backend.tools.adapter_contracts import (
+    DeploymentAdapter,
+    LogsAdapter,
+    MetricsAdapter,
+    TracesAdapter,
+)
 from devsupport_backend.tools.get_deployment_history import get_deployment_history
-from devsupport_backend.tools.logs import FaultLabLogsAdapter
-from devsupport_backend.tools.metrics import FaultLabMetricsAdapter
 from devsupport_backend.tools.query_logs import query_logs
 from devsupport_backend.tools.query_metrics import query_metrics
 from devsupport_backend.tools.query_traces import query_traces
@@ -35,7 +38,6 @@ from devsupport_backend.tools.schemas import (
     TraceSpan,
 )
 from devsupport_backend.tools.search_knowledge import search_knowledge
-from devsupport_backend.tools.traces import FaultLabTracesAdapter
 
 MAX_LOG_ERROR_PATTERNS = 10
 MAX_LOG_TRACE_IDS = 20
@@ -66,10 +68,10 @@ class ToolExecutionDependencies:
     """Existing Tool dependencies; this node owns no external-call implementation."""
 
     rag_service: RAGService
-    logs_adapter: FaultLabLogsAdapter
-    metrics_adapter: FaultLabMetricsAdapter
-    traces_adapter: FaultLabTracesAdapter
-    deployment_adapter: FaultLabDeploymentAdapter
+    logs_adapter: LogsAdapter
+    metrics_adapter: MetricsAdapter
+    traces_adapter: TracesAdapter
+    deployment_adapter: DeploymentAdapter
 
 
 def tool_execution_node(state: AgentState, dependencies: ToolExecutionDependencies) -> AgentState:

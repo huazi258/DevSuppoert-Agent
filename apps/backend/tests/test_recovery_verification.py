@@ -25,9 +25,14 @@ from devsupport_backend.recovery_verification import (
     RecoveryVerificationService,
     recovery_verification_node,
 )
-from devsupport_backend.tools.deployments import DeploymentAdapterError, DeploymentQueryResult
-from devsupport_backend.tools.logs import LogQueryResult, LogsAdapterError
-from devsupport_backend.tools.metrics import MetricQueryResult, MetricsAdapterError
+from devsupport_backend.tools.adapter_contracts import (
+    DeploymentQueryResult,
+    LogQueryResult,
+    MetricsQueryResult,
+)
+from devsupport_backend.tools.deployments import DeploymentAdapterError
+from devsupport_backend.tools.logs import LogsAdapterError
+from devsupport_backend.tools.metrics import MetricsAdapterError
 from devsupport_backend.tools.recovery_probe import RecoveryProbeResult
 
 
@@ -47,7 +52,7 @@ class MetricsAdapter:
 
     def query(self, _input):
         self.calls += 1
-        return MetricQueryResult(
+        return MetricsQueryResult(
             "order-service",
             self.health,
             10 + self.calls,
@@ -63,7 +68,7 @@ class LogsAdapter:
         self.count = count
 
     def query(self, _input):
-        return LogQueryResult(self.count, [])
+        return LogQueryResult(self.count, ())
 
 
 class ProbeAdapter:
@@ -203,7 +208,7 @@ class RaisingMetricsAdapter:
         self.calls += 1
         if not self.after or self.calls > 1:
             raise MetricsAdapterError("unavailable", "unavailable")
-        return MetricQueryResult("order-service", "ok", 10, 5, 5, None, None)
+        return MetricsQueryResult("order-service", "ok", 10, 5, 5, None, None)
 
 
 class RaisingLogsAdapter:

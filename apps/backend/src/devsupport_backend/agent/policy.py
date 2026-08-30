@@ -19,11 +19,11 @@ from devsupport_backend.agent.state import (
     TerminalReason,
 )
 from devsupport_backend.models import Action
+from devsupport_backend.tools.adapter_contracts import DeploymentQueryResult
 from devsupport_backend.tools.deployments import (
     ROLLBACK_SUPPORTED_SERVICES,
     SUPPORTED_ENVIRONMENT,
     DeploymentAdapterError,
-    DeploymentQueryResult,
     FaultLabDeploymentAdapter,
 )
 from devsupport_backend.tools.schemas import GetDeploymentHistoryInput

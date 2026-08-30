@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
@@ -10,19 +9,15 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from devsupport_backend.config import Settings, settings
+from devsupport_backend.tools.adapter_contracts import AdapterError, LogEvent, LogQueryResult
 from devsupport_backend.tools.schemas import QueryLogsInput
 
 SUPPORTED_ENVIRONMENT = "local"
 ServiceName = Literal["order-service", "payment-service"]
 
 
-class LogsAdapterError(RuntimeError):
+class LogsAdapterError(AdapterError):
     """A safe, structured failure returned by the Fault Lab logs adapter."""
-
-    def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:
-        super().__init__(message)
-        self.code = code
-        self.retryable = retryable
 
 
 class FaultLabLogEvent(BaseModel):
@@ -55,14 +50,6 @@ class FaultLabLogsResponse(BaseModel):
 
     service: ServiceName
     match_count: int = Field(ge=0)
-    events: list[FaultLabLogEvent]
-
-
-@dataclass(frozen=True)
-class LogQueryResult:
-    """Validated bounded log events from one Fault Lab service."""
-
-    match_count: int
     events: list[FaultLabLogEvent]
 
 
@@ -133,4 +120,21 @@ class FaultLabLogsAdapter:
                 "service_mismatch",
                 f"Fault Lab endpoint returned logs for {payload.service}, expected {service_name}",
             )
-        return LogQueryResult(match_count=payload.match_count, events=payload.events)
+        return LogQueryResult(
+            match_count=payload.match_count,
+            events=tuple(
+                LogEvent(
+                    timestamp=event.timestamp,
+                    service=event.service,
+                    level=event.level,
+                    message=event.message,
+                    request_id=event.request_id,
+                    trace_id=event.trace_id,
+                    error_type=event.error_type,
+                    status_code=event.status_code,
+                    duration_ms=event.duration_ms,
+                    downstream_service=event.downstream_service,
+                )
+                for event in payload.events
+            ),
+        )

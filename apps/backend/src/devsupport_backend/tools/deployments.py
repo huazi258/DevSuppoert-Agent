@@ -10,6 +10,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from devsupport_backend.config import Settings, settings
+from devsupport_backend.tools.adapter_contracts import AdapterError, DeploymentQueryResult
 from devsupport_backend.tools.schemas import GetDeploymentHistoryInput, RollbackDeploymentInput
 
 SUPPORTED_ENVIRONMENT = "local"
@@ -18,13 +19,8 @@ SUPPORTED_SERVICES = frozenset(("order-service", "payment-service"))
 ROLLBACK_SUPPORTED_SERVICES = frozenset(("order-service",))
 
 
-class DeploymentAdapterError(RuntimeError):
+class DeploymentAdapterError(AdapterError):
     """A safe, structured failure returned by the Fault Lab deployment adapter."""
-
-    def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:
-        super().__init__(message)
-        self.code = code
-        self.retryable = retryable
 
 
 class FaultLabDeploymentResponse(BaseModel):
@@ -36,16 +32,6 @@ class FaultLabDeploymentResponse(BaseModel):
     current_version: str = Field(min_length=1, max_length=100)
     previous_version: str | None = Field(default=None, max_length=100)
     deployed_at: datetime | None = None
-
-
-@dataclass(frozen=True)
-class DeploymentQueryResult:
-    """One service-local deployment snapshot, without manufactured history."""
-
-    service: ServiceName
-    current_version: str
-    previous_version: str | None
-    deployed_at: datetime | None
 
 
 class FaultLabRollbackResponse(FaultLabDeploymentResponse):

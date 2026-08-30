@@ -1,8 +1,8 @@
-"""Structured Tool executor for current Fault Lab metric snapshots."""
+"""Structured Tool executor for current metric snapshots."""
 
 from time import perf_counter
 
-from devsupport_backend.tools.metrics import FaultLabMetricsAdapter, MetricsAdapterError
+from devsupport_backend.tools.adapter_contracts import AdapterError, MetricsAdapter
 from devsupport_backend.tools.schemas import (
     MetricSnapshot,
     QueryMetricsInput,
@@ -14,13 +14,13 @@ from devsupport_backend.tools.schemas import (
 
 def query_metrics(
     tool_input: QueryMetricsInput,
-    metrics_adapter: FaultLabMetricsAdapter,
+    metrics_adapter: MetricsAdapter,
 ) -> QueryMetricsOutput:
     """Return one real runtime snapshot without manufacturing metric time series."""
     started_at = perf_counter()
     try:
         result = metrics_adapter.query(tool_input)
-    except MetricsAdapterError as error:
+    except AdapterError as error:
         return QueryMetricsOutput(
             status=ToolStatus.FAILURE,
             error=ToolError(code=error.code, message=str(error), retryable=error.retryable),

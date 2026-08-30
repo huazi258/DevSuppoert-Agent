@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
@@ -10,19 +9,19 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from devsupport_backend.config import Settings, settings
+from devsupport_backend.tools.adapter_contracts import (
+    AdapterError,
+    TraceQueryResult,
+    TraceSpanRecord,
+)
 from devsupport_backend.tools.schemas import QueryTracesInput
 
 SUPPORTED_ENVIRONMENT = "local"
 ServiceName = Literal["order-service", "payment-service"]
 
 
-class TracesAdapterError(RuntimeError):
+class TracesAdapterError(AdapterError):
     """A safe, structured failure returned by the Fault Lab trace adapter."""
-
-    def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:
-        super().__init__(message)
-        self.code = code
-        self.retryable = retryable
 
 
 class FaultLabTraceSpan(BaseModel):
@@ -49,13 +48,6 @@ class FaultLabTracesResponse(BaseModel):
 
     service: ServiceName
     match_count: int = Field(ge=0)
-    spans: list[FaultLabTraceSpan]
-
-
-@dataclass(frozen=True)
-class TraceQueryResult:
-    """All bounded span facts fetched from both fixed Fault Lab services."""
-
     spans: list[FaultLabTraceSpan]
 
 
@@ -130,4 +122,20 @@ class FaultLabTracesAdapter:
                     f"{payload.service}, expected {service_name}",
                 )
             spans.extend(payload.spans)
-        return TraceQueryResult(spans=spans)
+        return TraceQueryResult(
+            spans=tuple(
+                TraceSpanRecord(
+                    trace_id=span.trace_id,
+                    span_id=span.span_id,
+                    parent_span_id=span.parent_span_id,
+                    service=span.service,
+                    operation=span.operation,
+                    start_time=span.start_time,
+                    end_time=span.end_time,
+                    duration_ms=span.duration_ms,
+                    status=span.status,
+                    error=span.error,
+                )
+                for span in spans
+            )
+        )
