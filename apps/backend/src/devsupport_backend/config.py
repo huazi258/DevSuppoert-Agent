@@ -53,6 +53,10 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("OPENSEARCH_URL", "DEVSUPPORT_OPENSEARCH_URL"),
     )
+    prometheus_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PROMETHEUS_URL", "DEVSUPPORT_PROMETHEUS_URL"),
+    )
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="DEVSUPPORT_")
 

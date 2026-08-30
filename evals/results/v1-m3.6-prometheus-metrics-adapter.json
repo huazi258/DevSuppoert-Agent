@@ -1,0 +1,58 @@
+{
+  "schema_version": "v1-m3.6",
+  "purpose": "PrometheusMetricsAdapter live validation against OpenTelemetry Demo telemetry",
+  "upstream": {
+    "release": "3.0.0",
+    "commit": "1755859a9de82c2e5e225be68abc401a5ebf2b4f"
+  },
+  "prometheus": {
+    "endpoint": "http://127.0.0.1:9090",
+    "runtime_resolved": true,
+    "ready": true,
+    "snapshot_semantics": "cumulative instant server-span metric snapshot",
+    "validated_metrics": {
+      "presence": "target_info",
+      "calls": "traces_span_metrics_calls_total",
+      "duration_sum": "traces_span_metrics_duration_milliseconds_sum",
+      "duration_count": "traces_span_metrics_duration_milliseconds_count"
+    },
+    "labels": {
+      "service": "service_name",
+      "span_kind": "span_kind",
+      "server_span_kind": "SPAN_KIND_SERVER",
+      "status": "status_code",
+      "error_status": "STATUS_CODE_ERROR",
+      "observed_non_error_status": "STATUS_CODE_UNSET"
+    }
+  },
+  "observed_at": "2026-08-30T11:02:36.173842+00:00",
+  "tool_queries": [
+    {
+      "service": "checkout",
+      "tool_status": "success",
+      "request_count": 287,
+      "success_count": 279,
+      "error_count": 8,
+      "error_rate": 0.027874564459930314,
+      "average_request_duration_ms": 9047.711423811843,
+      "last_request_duration_ms": null,
+      "health_status": "unknown"
+    },
+    {
+      "service": "payment",
+      "tool_status": "success",
+      "request_count": 287,
+      "success_count": 287,
+      "error_count": 0,
+      "error_rate": 0.0,
+      "average_request_duration_ms": 42.80531085017422,
+      "last_request_duration_ms": null,
+      "health_status": "unknown"
+    }
+  ],
+  "payload_safety": {
+    "raw_prometheus_responses_persisted": false,
+    "promql_queries_persisted": false,
+    "provider_labels_beyond_validated_contract_persisted": false
+  }
+}

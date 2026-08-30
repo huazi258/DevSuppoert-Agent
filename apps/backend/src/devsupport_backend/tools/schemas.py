@@ -162,14 +162,14 @@ class QueryLogsOutput(ToolOutput):
 
 
 class QueryMetricsInput(ToolInput):
-    """One current runtime snapshot from a fixed Fault Lab service."""
+    """One current runtime metric snapshot from a service."""
 
     service: str = Field(min_length=1, max_length=100)
     environment: str = Field(min_length=1, max_length=50)
 
 
 class MetricSnapshot(BaseModel):
-    """The fields actually exposed by the Fault Lab metric snapshot."""
+    """A normalized current runtime metric snapshot."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -185,7 +185,7 @@ class MetricSnapshot(BaseModel):
 
 
 class QueryMetricsOutput(ToolOutput):
-    """Structured outcome for a single current Fault Lab metric snapshot."""
+    """Structured outcome for a single current metric snapshot."""
 
     metrics: MetricSnapshot | None = None
 

@@ -33,3 +33,7 @@ M3.4 established only the environment and telemetry shape; M3.5 adds the logs-pr
 ## Logs Adapter
 
 `OpenSearchLogsAdapter` reads the runtime-resolved `OPENSEARCH_URL` and searches `otel-logs-*` with bounded JSON DSL. It maps `@timestamp`, `body`, `severity.text`, `resource["service.name"]`, and optional `traceId` into the existing normalized LogsAdapter contract. The OpenSearch request filters `resource.service.name`, inclusive `@timestamp`, optional severity/query values, and the Tool limit; it does not expose provider hit metadata or raw documents.
+
+## Metrics Adapter
+
+`PrometheusMetricsAdapter` reads the runtime-resolved `PROMETHEUS_URL`. It uses cumulative instant `traces_span_metrics_calls_total` and `traces_span_metrics_duration_milliseconds_{sum,count}` values, scoped to `service_name` and `span_kind="SPAN_KIND_SERVER"`; `STATUS_CODE_ERROR` is the failure subset. `target_info` establishes telemetry presence only. It deliberately returns `health_status="unknown"`, because span metrics are not a health probe, and `last_request_duration_ms=None`, because an aggregate histogram cannot identify the last request duration.
