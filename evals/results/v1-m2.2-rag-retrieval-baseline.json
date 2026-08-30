@@ -95,6 +95,19 @@
       },
       "top_k": 5,
       "required_document_id": "rb-order-service-500-triage",
+      "diagnostic_documents": [
+        {
+          "document_id": "rb-post-deployment-anomaly",
+          "eligible": false,
+          "reasons": [
+            "service_mismatch"
+          ],
+          "requested_service": "order-service",
+          "document_service": "platform",
+          "requested_environment": "local",
+          "document_environment": "common"
+        }
+      ],
       "documents": [
         {
           "rank": 1,
@@ -144,6 +157,19 @@
       },
       "top_k": 5,
       "required_document_id": "rb-order-service-500-triage",
+      "diagnostic_documents": [
+        {
+          "document_id": "rb-post-deployment-anomaly",
+          "eligible": false,
+          "reasons": [
+            "service_mismatch"
+          ],
+          "requested_service": "order-service",
+          "document_service": "platform",
+          "requested_environment": "local",
+          "document_environment": "common"
+        }
+      ],
       "documents": [
         {
           "rank": 1,
@@ -193,6 +219,19 @@
       },
       "top_k": 5,
       "required_document_id": "arch-order-service",
+      "diagnostic_documents": [
+        {
+          "document_id": "rb-downstream-timeout-latency",
+          "eligible": false,
+          "reasons": [
+            "service_mismatch"
+          ],
+          "requested_service": "order-service",
+          "document_service": "platform",
+          "requested_environment": "local",
+          "document_environment": "common"
+        }
+      ],
       "documents": [
         {
           "rank": 1,
@@ -242,6 +281,19 @@
       },
       "top_k": 5,
       "required_document_id": "arch-order-service",
+      "diagnostic_documents": [
+        {
+          "document_id": "rb-downstream-timeout-latency",
+          "eligible": false,
+          "reasons": [
+            "service_mismatch"
+          ],
+          "requested_service": "order-service",
+          "document_service": "platform",
+          "requested_environment": "local",
+          "document_environment": "common"
+        }
+      ],
       "documents": [
         {
           "rank": 1,
@@ -291,6 +343,7 @@
       },
       "top_k": 5,
       "required_document_id": "arch-order-service",
+      "diagnostic_documents": [],
       "documents": [
         {
           "rank": 1,
@@ -340,6 +393,7 @@
       },
       "top_k": 5,
       "required_document_id": "arch-payment-service",
+      "diagnostic_documents": [],
       "documents": [
         {
           "rank": 1,

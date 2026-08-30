@@ -5,24 +5,32 @@ cases:
     environment: local
     top_k: 5
     required_document_id: rb-order-service-500-triage
+    diagnostic_relevant_document_ids:
+      - rb-post-deployment-anomaly
   - id: order-500-natural-wording
     query: New order requests started failing immediately after deployment
     service: order-service
     environment: local
     top_k: 5
     required_document_id: rb-order-service-500-triage
+    diagnostic_relevant_document_ids:
+      - rb-post-deployment-anomaly
   - id: payment-latency-orders
     query: Order requests take several seconds and then fail
     service: order-service
     environment: local
     top_k: 5
     required_document_id: arch-order-service
+    diagnostic_relevant_document_ids:
+      - rb-downstream-timeout-latency
   - id: payment-latency-noisy-wording
     query: Checkout is sluggish and customers report no order release
     service: order-service
     environment: local
     top_k: 5
     required_document_id: arch-order-service
+    diagnostic_relevant_document_ids:
+      - rb-downstream-timeout-latency
   - id: order-architecture
     query: Which downstream dependency does order-service call for payment processing?
     service: order-service
