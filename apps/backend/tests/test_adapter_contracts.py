@@ -33,6 +33,7 @@ from devsupport_backend.tools.metrics import FaultLabMetricsAdapter, MetricsAdap
 from devsupport_backend.tools.query_logs import query_logs
 from devsupport_backend.tools.query_metrics import query_metrics
 from devsupport_backend.tools.query_traces import query_traces
+from devsupport_backend.tools.registry import ToolName
 from devsupport_backend.tools.schemas import (
     GetDeploymentHistoryInput,
     QueryLogsInput,
@@ -316,13 +317,13 @@ def test_tool_consumers_depend_only_on_adapter_protocols() -> None:
     assert get_type_hints(query_metrics)["metrics_adapter"] is MetricsAdapter
     assert get_type_hints(query_traces)["traces_adapter"] is TracesAdapter
     assert get_type_hints(get_deployment_history)["deployment_adapter"] is DeploymentAdapter
-    assert get_type_hints(ToolExecutionDependencies) == {
-        "rag_service": tool_execution.RAGService,
-        "logs_adapter": LogsAdapter,
-        "metrics_adapter": MetricsAdapter,
-        "traces_adapter": TracesAdapter,
-        "deployment_adapter": DeploymentAdapter,
-    }
+    dependency_hints = get_type_hints(ToolExecutionDependencies)
+    assert dependency_hints["rag_service"] is tool_execution.RAGService
+    assert dependency_hints["logs_adapter"] is LogsAdapter
+    assert dependency_hints["metrics_adapter"] is MetricsAdapter
+    assert dependency_hints["traces_adapter"] == TracesAdapter | None
+    assert dependency_hints["deployment_adapter"] == DeploymentAdapter | None
+    assert dependency_hints["available_tools"] == frozenset[ToolName]
 
     source = inspect.getsource(tool_execution)
     assert all(
