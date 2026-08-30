@@ -186,6 +186,115 @@ def test_metadata_filters_include_common_environment_and_complete_citation(
     assert [result.chunk_id for result in runbook_results] == [local_chunk.id]
 
 
+def test_metadata_filters_include_shared_platform_scope_on_both_retrieval_paths(
+    database_session: Session,
+) -> None:
+    order_local = _add_document(
+        database_session,
+        service="order-service",
+        environment="local",
+        document_type="runbook",
+        content="shared retrieval scope evidence",
+        embedding=[1.0, 0.0],
+        source="order-local",
+        section="Order local",
+    )
+    order_common = _add_document(
+        database_session,
+        service="order-service",
+        environment="common",
+        document_type="architecture",
+        content="shared retrieval scope evidence",
+        embedding=[0.9, 0.1],
+        source="order-common",
+        section="Order common",
+    )
+    platform_common = _add_document(
+        database_session,
+        service="platform",
+        environment="common",
+        document_type="runbook",
+        content="shared retrieval scope evidence",
+        embedding=[0.8, 0.2],
+        source="platform-common",
+        section="Platform common",
+    )
+    payment_common = _add_document(
+        database_session,
+        service="payment-service",
+        environment="common",
+        document_type="runbook",
+        content="shared retrieval scope evidence",
+        embedding=[1.0, 0.0],
+        source="payment-common",
+        section="Payment common",
+    )
+    _add_document(
+        database_session,
+        service="platform",
+        environment="production",
+        document_type="runbook",
+        content="shared retrieval scope evidence",
+        embedding=[1.0, 0.0],
+        source="platform-production",
+        section="Platform production",
+    )
+    _add_document(
+        database_session,
+        service="order-service",
+        environment="staging",
+        document_type="runbook",
+        content="shared retrieval scope evidence",
+        embedding=[1.0, 0.0],
+        source="order-staging",
+        section="Order staging",
+    )
+    service = RAGService(database_session, QueryEmbeddingClient([1.0, 0.0]))
+
+    order_results = service.search(
+        "shared retrieval scope",
+        filters=RetrievalFilters(service="order-service", environment="local"),
+        top_k=10,
+    )
+    assert {result.chunk_id for result in order_results} == {
+        order_local.id,
+        order_common.id,
+        platform_common.id,
+    }
+    assert all(result.vector_score is not None for result in order_results)
+    assert all(result.keyword_score is not None for result in order_results)
+
+    platform_results = service.search(
+        "shared retrieval scope",
+        filters=RetrievalFilters(service="platform", environment="local"),
+        top_k=10,
+    )
+    assert [result.chunk_id for result in platform_results] == [platform_common.id]
+
+    unrestricted_results = service.search(
+        "shared retrieval scope",
+        filters=RetrievalFilters(environment="local"),
+        top_k=10,
+    )
+    assert {result.chunk_id for result in unrestricted_results} == {
+        order_local.id,
+        order_common.id,
+        platform_common.id,
+        payment_common.id,
+    }
+
+    architecture_results = service.search(
+        "shared retrieval scope",
+        filters=RetrievalFilters(
+            service="order-service",
+            environment="local",
+            document_type="architecture",
+        ),
+        top_k=10,
+    )
+    assert [result.chunk_id for result in architecture_results] == [order_common.id]
+
+
 def test_search_rejects_query_embedding_dimension_mismatch(database_session: Session) -> None:
     _add_document(
         database_session,

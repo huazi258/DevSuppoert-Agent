@@ -14,6 +14,7 @@ from devsupport_backend.rag.embeddings import EmbeddingClient, EmbeddingError
 
 RRF_K = 60
 DEFAULT_CANDIDATE_MULTIPLIER = 3
+SHARED_PLATFORM_SERVICE = "platform"
 
 
 class RetrievalError(RuntimeError):
@@ -194,12 +195,9 @@ class RAGService:
     @staticmethod
     def _filter_clauses(filters: RetrievalFilters) -> list[object]:
         clauses: list[object] = []
-        if filters.service:
-            clauses.append(KnowledgeDocument.service == filters.service)
-        if filters.environment:
-            environments = [filters.environment]
-            if filters.environment != "common":
-                environments.append("common")
+        if services := allowed_services(filters.service):
+            clauses.append(KnowledgeDocument.service.in_(services))
+        if environments := allowed_environments(filters.environment):
             clauses.append(KnowledgeDocument.environment.in_(environments))
         if filters.document_type:
             clauses.append(KnowledgeDocument.document_type == filters.document_type)
@@ -266,3 +264,21 @@ class RAGService:
             fusion_score=candidate.fusion_score,
             citation=citation,
         )
+
+
+def allowed_services(service: str | None) -> frozenset[str] | None:
+    """Return a service's own scope plus shared platform knowledge."""
+    if not service:
+        return None
+    if service == SHARED_PLATFORM_SERVICE:
+        return frozenset({SHARED_PLATFORM_SERVICE})
+    return frozenset({service, SHARED_PLATFORM_SERVICE})
+
+
+def allowed_environments(environment: str | None) -> frozenset[str] | None:
+    """Return an environment's own scope plus common knowledge."""
+    if not environment:
+        return None
+    if environment == "common":
+        return frozenset({"common"})
+    return frozenset({environment, "common"})

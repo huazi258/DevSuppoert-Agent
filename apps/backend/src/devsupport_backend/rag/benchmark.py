@@ -13,7 +13,13 @@ from sqlalchemy.orm import Session
 
 from devsupport_backend.models import KnowledgeDocument
 from devsupport_backend.rag.ingest import DEFAULT_KNOWLEDGE_DIR, collect_documents
-from devsupport_backend.rag.retrieval import RAGService, RetrievalFilters, RetrievalResult
+from devsupport_backend.rag.retrieval import (
+    RAGService,
+    RetrievalFilters,
+    RetrievalResult,
+    allowed_environments,
+    allowed_services,
+)
 
 
 class RetrievalBenchmarkError(RuntimeError):
@@ -160,6 +166,7 @@ def run(session: Session, service: RAGService, cases: Sequence[BenchmarkCase]) -
             (item["rank"] for item in docs if item["document_id"] == case.required_document_id),
             None,
         )
+        ranks_by_document_id = {item["document_id"]: item["rank"] for item in docs}
         outputs.append(
             {
                 "id": case.id,
@@ -168,7 +175,12 @@ def run(session: Session, service: RAGService, cases: Sequence[BenchmarkCase]) -
                 "top_k": case.top_k,
                 "required_document_id": case.required_document_id,
                 "diagnostic_documents": [
-                    _eligibility_diagnostic(case, document_id, documents_by_stable_id)
+                    _eligibility_diagnostic(
+                        case,
+                        document_id,
+                        documents_by_stable_id,
+                        ranks_by_document_id,
+                    )
                     for document_id in case.diagnostic_relevant_document_ids
                 ],
                 "documents": docs,
@@ -219,6 +231,7 @@ def _eligibility_diagnostic(
     case: BenchmarkCase,
     document_id: str,
     documents_by_stable_id: dict[str, KnowledgeDocument],
+    ranks_by_document_id: dict[str, object],
 ) -> dict[str, object]:
     try:
         document = documents_by_stable_id[document_id]
@@ -228,17 +241,17 @@ def _eligibility_diagnostic(
         ) from error
 
     reasons: list[str] = []
-    if document.service != case.service:
+    services = allowed_services(case.service)
+    if services is not None and document.service not in services:
         reasons.append("service_mismatch")
-    eligible_environments = {case.environment}
-    if case.environment != "common":
-        eligible_environments.add("common")
-    if document.environment not in eligible_environments:
+    environments = allowed_environments(case.environment)
+    if environments is not None and document.environment not in environments:
         reasons.append("environment_mismatch")
     return {
         "document_id": document_id,
         "eligible": not reasons,
         "reasons": reasons,
+        "retrieved_rank": ranks_by_document_id.get(document_id),
         "requested_service": case.service,
         "document_service": document.service,
         "requested_environment": case.environment,

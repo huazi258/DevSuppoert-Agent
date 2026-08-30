@@ -174,7 +174,7 @@ def test_run_reports_reciprocal_rank_for_required_hit_and_miss(
 
     result = run(
         session,
-        StubRAGService([_result(hit_document.id)]),  # type: ignore[arg-type]
+        StubRAGService([_result(hit_document.id), _result(diagnostic_document.id)]),  # type: ignore[arg-type]
         [
             BenchmarkCase(
                 "hit",
@@ -194,8 +194,9 @@ def test_run_reports_reciprocal_rank_for_required_hit_and_miss(
     assert result["cases"][0]["diagnostic_documents"] == [
         {
             "document_id": "platform-runbook",
-            "eligible": False,
-            "reasons": ["service_mismatch"],
+            "eligible": True,
+            "reasons": [],
+            "retrieved_rank": 2,
             "requested_service": "order-service",
             "document_service": "platform",
             "requested_environment": "local",
