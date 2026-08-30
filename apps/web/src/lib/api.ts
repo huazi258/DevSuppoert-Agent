@@ -4,6 +4,7 @@ import type {
   FinalReport,
   Incident,
   WorkflowResponse,
+  WorkflowStartResponse,
 } from "./types";
 
 const API_BASE_URL =
@@ -73,8 +74,8 @@ export function getIncident(id: string): Promise<Incident> {
   return request<Incident>(`/incidents/${id}`);
 }
 
-export function startWorkflow(id: string): Promise<WorkflowResponse> {
-  return request<WorkflowResponse>(`/incidents/${id}/workflow`, { method: "POST" });
+export function startWorkflow(id: string): Promise<WorkflowStartResponse> {
+  return request<WorkflowStartResponse>(`/incidents/${id}/workflow`, { method: "POST" });
 }
 
 export function retryWorkflow(id: string): Promise<WorkflowResponse> {

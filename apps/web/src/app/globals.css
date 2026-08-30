@@ -84,6 +84,7 @@ dd { margin: 0.25rem 0 0; overflow-wrap: anywhere; }
 
 .start-panel { align-items: center; display: flex; gap: 1rem; justify-content: space-between; }
 .start-panel p:last-child { color: var(--muted); margin-bottom: 0; }
+.pending-workflow-panel p { color: var(--muted); margin-bottom: 0; }
 .stack-list { display: grid; gap: 0.75rem; }
 .detail-grid { display: grid; gap: 0.75rem 1rem; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0.8rem 0 0; }
 .full-detail { grid-column: 1 / -1; }

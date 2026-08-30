@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi import BackgroundTasks
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -25,7 +26,14 @@ from devsupport_backend.agent.state import (
 from devsupport_backend.database import engine, get_session
 from devsupport_backend.main import app
 from devsupport_backend.models import Action, Approval, Incident, Report
-from devsupport_backend.routers.incidents import get_workflow_runtime
+from devsupport_backend.routers import incidents as incidents_router
+from devsupport_backend.routers.incidents import (
+    execute_accepted_start as production_execute_accepted_start,
+)
+from devsupport_backend.routers.incidents import (
+    get_workflow_runtime,
+    start_workflow,
+)
 from devsupport_backend.tools.schemas import ToolStatus
 
 
@@ -124,6 +132,12 @@ def api_client(database_session: Session) -> Iterator[TestClient]:
     app.dependency_overrides.clear()
 
 
+@pytest.fixture(autouse=True)
+def prevent_real_background_execution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep HTTP tests deterministic while separately testing the production task factory."""
+    monkeypatch.setattr(incidents_router, "execute_accepted_start", lambda incident_id: None)
+
+
 @pytest.fixture
 def incident_payload() -> dict[str, str]:
     return {
@@ -209,17 +223,32 @@ def test_get_missing_incident_returns_not_found(api_client: TestClient) -> None:
 
 
 def test_workflow_api_start_and_read_use_the_persisted_thread(
-    api_client: TestClient, database_session: Session, incident_payload: dict[str, str]
+    api_client: TestClient,
+    database_session: Session,
+    incident_payload: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = FakeWorkflowRuntime()
     client = workflow_client(api_client, runtime)
     created = create_incident(client, incident_payload)
 
+    def run_fake_background(incident_id: UUID) -> None:
+        incident = database_session.get(Incident, incident_id)
+        assert incident is not None
+        runtime.start(incident)
+
+    monkeypatch.setattr(incidents_router, "execute_accepted_start", run_fake_background)
+
     started = client.post(f"/incidents/{created['id']}/workflow")
     read = client.get(f"/incidents/{created['id']}/workflow")
 
     incident = database_session.get(Incident, UUID(created["id"]))
-    assert started.status_code == 200
+    assert started.status_code == 202
+    assert started.json() == {
+        "incident_id": created["id"],
+        "incident_status": "INVESTIGATING",
+        "accepted": True,
+    }
     assert read.status_code == 200
     assert incident is not None and incident.status == "INVESTIGATING"
     assert runtime.started_threads == [created["thread_id"]]
@@ -253,10 +282,9 @@ def test_workflow_api_duplicate_and_non_open_start_are_conflicts(
     created = create_incident(client, incident_payload)
     incident = database_session.get(Incident, UUID(created["id"]))
     assert incident is not None
-    runtime.states[incident.thread_id] = create_initial_agent_state(incident)
 
+    accepted = client.post(f"/incidents/{incident.id}/workflow")
     duplicate = client.post(f"/incidents/{incident.id}/workflow")
-    incident.status = "INVESTIGATING"
     runtime.failure = WorkflowFailure(
         failed_node="investigation_planning",
         safe_error="Persisted workflow task failed",
@@ -272,6 +300,7 @@ def test_workflow_api_duplicate_and_non_open_start_are_conflicts(
     database_session.commit()
     resolved = client.post(f"/incidents/{incident.id}/workflow")
 
+    assert accepted.status_code == 202
     assert {
         duplicate.status_code,
         investigating.status_code,
@@ -512,18 +541,19 @@ def test_workflow_get_is_read_only(
     assert runtime.start_calls == 0
 
 
-def test_workflow_start_failure_restores_open(
+def test_workflow_start_acceptance_does_not_wait_for_background_execution(
     api_client: TestClient, database_session: Session, incident_payload: dict[str, str]
 ) -> None:
-    runtime = FakeWorkflowRuntime(start_error=RuntimeError("provider unavailable"))
+    runtime = FakeWorkflowRuntime()
     client = workflow_client(api_client, runtime)
     created = create_incident(client, incident_payload)
 
     response = client.post(f"/incidents/{created['id']}/workflow")
 
     incident = database_session.get(Incident, UUID(created["id"]))
-    assert response.status_code == 503
-    assert incident is not None and incident.status == "OPEN"
+    assert response.status_code == 202
+    assert incident is not None and incident.status == "INVESTIGATING"
+    assert runtime.start_calls == 0
 
 
 def test_workflow_get_invalid_persisted_action_parameters_returns_conflict(
@@ -562,22 +592,72 @@ def test_workflow_get_invalid_persisted_action_parameters_returns_conflict(
     assert response.json() == {"detail": "Persisted Action parameters are invalid"}
 
 
-def test_workflow_start_reconciliation_read_failure_preserves_investigating(
-    api_client: TestClient, database_session: Session, incident_payload: dict[str, str]
+def test_start_route_registers_background_execution_without_running_it(
+    database_session: Session,
+    incident_payload: dict[str, str],
 ) -> None:
-    runtime = FakeWorkflowRuntime(
-        start_error=RuntimeError("provider unavailable"),
-        get_state_results=[None, RuntimeError("checkpoint unavailable")],
+    incident = Incident(
+        service=incident_payload["service"],
+        environment=incident_payload["environment"],
+        status="OPEN",
+        description=incident_payload["description"],
+        time_range_start=datetime.fromisoformat(incident_payload["time_range_start"]),
+        time_range_end=datetime.fromisoformat(incident_payload["time_range_end"]),
+        thread_id=str(uuid4()),
     )
-    client = workflow_client(api_client, runtime)
-    created = create_incident(client, incident_payload)
+    database_session.add(incident)
+    database_session.commit()
+    background_tasks = BackgroundTasks()
 
-    response = client.post(f"/incidents/{created['id']}/workflow")
+    response = start_workflow(incident.id, background_tasks, database_session)
 
-    incident = database_session.get(Incident, UUID(created["id"]))
-    assert response.status_code == 503
-    assert response.json() == {"detail": "Workflow start failed"}
-    assert incident is not None and incident.status == "INVESTIGATING"
+    database_session.refresh(incident)
+    assert response.accepted is True
+    assert incident.status == "INVESTIGATING"
+    assert len(background_tasks.tasks) == 1
+    assert background_tasks.tasks[0].args == (incident.id,)
+
+
+def test_background_runner_owns_a_new_session_and_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    incident_id = uuid4()
+    calls: dict[str, object] = {}
+    session = object()
+
+    class FakeSessionLocal:
+        def __call__(self):
+            calls["session_local_called"] = True
+            return self
+
+        def __enter__(self):
+            return session
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            calls["session_closed"] = True
+            return False
+
+    class FakeRuntimeForBackground:
+        def __init__(self, received_session: object) -> None:
+            calls["runtime_session"] = received_session
+
+    class FakeConsoleForBackground:
+        def __init__(self, received_session: object, runtime: object) -> None:
+            calls["console_session"] = received_session
+            calls["console_runtime"] = runtime
+
+        def execute_accepted_start(self, received_incident_id: UUID) -> None:
+            calls["incident_id"] = received_incident_id
+
+    monkeypatch.setattr(incidents_router, "SessionLocal", FakeSessionLocal())
+    monkeypatch.setattr(incidents_router, "PostgresWorkflowRuntime", FakeRuntimeForBackground)
+    monkeypatch.setattr(incidents_router, "WorkflowConsoleService", FakeConsoleForBackground)
+
+    production_execute_accepted_start(incident_id)
+
+    assert calls["session_local_called"] is True
+    assert calls["session_closed"] is True
+    assert calls["runtime_session"] is session
+    assert calls["console_session"] is session
+    assert calls["incident_id"] == incident_id
 
 
 @pytest.mark.parametrize("origin", ["http://localhost:3000", "http://127.0.0.1:3000"])

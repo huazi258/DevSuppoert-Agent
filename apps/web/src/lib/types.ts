@@ -159,6 +159,12 @@ export interface WorkflowResponse {
   retry_available: boolean;
 }
 
+export interface WorkflowStartResponse {
+  incident_id: string;
+  incident_status: string;
+  accepted: true;
+}
+
 export type ApprovalDecision = "APPROVE" | "REJECT";
 
 export interface FinalReportIncidentSummary {

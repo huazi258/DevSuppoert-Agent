@@ -54,6 +54,8 @@ The current start path synchronously waits for the complete `graph.invoke`, whic
 
 V1 makes Start Investigation return promptly while subsequent workflow execution remains persisted. The Web Console can then read running investigation progress. The implementation is intentionally not prescribed: asynchronous execution plus polling, SSE, or another simple reliable method is acceptable based on actual implementation cost.
 
+M4.1 uses an in-process FastAPI background task to decouple HTTP acceptance from execution; it is not a durable distributed job queue, so automatic recovery of a task that has not begun when the application process exits is outside V1 scope.
+
 ## Delta 5 — Investigation Event Projection
 
 Internal `node`, `tool`, and `state` events are not the same as a user product Timeline. V1 adds a user-facing Investigation Event projection, for example:

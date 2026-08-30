@@ -319,6 +319,60 @@ def test_start_reuses_thread_and_conflicts_on_existing_checkpoint(
     assert runtime.start_calls == 1
 
 
+def test_accept_start_marks_open_incident_without_executing_runtime(
+    database_session: Session,
+) -> None:
+    incident = _incident(database_session)
+    runtime = FakeRuntime(state=None)
+    service = WorkflowConsoleService(database_session, runtime)
+
+    response = service.accept_start(incident.id)
+
+    database_session.refresh(incident)
+    assert response.incident_id == incident.id
+    assert response.incident_status == "INVESTIGATING"
+    assert response.accepted is True
+    assert incident.status == "INVESTIGATING"
+    assert runtime.start_calls == 0
+
+    with pytest.raises(WorkflowConflictError):
+        service.accept_start(incident.id)
+
+
+def test_accept_start_rejects_existing_persisted_checkpoint(database_session: Session) -> None:
+    incident = _incident(database_session)
+    runtime = FakeRuntime(state=_state(incident))
+
+    with pytest.raises(WorkflowConflictError):
+        WorkflowConsoleService(database_session, runtime).accept_start(incident.id)
+
+    database_session.refresh(incident)
+    assert incident.status == "OPEN"
+    assert runtime.start_calls == 0
+
+
+def test_execute_accepted_start_uses_the_accepted_thread(database_session: Session) -> None:
+    incident = _incident(database_session)
+    runtime = FakeRuntime(state=_state(incident), states=[None])
+    service = WorkflowConsoleService(database_session, runtime)
+
+    service.accept_start(incident.id)
+    service.execute_accepted_start(incident.id)
+
+    assert runtime.start_calls == 1
+    assert runtime.thread_ids[-1] == incident.thread_id
+
+
+def test_execute_accepted_start_requires_an_accepted_incident(database_session: Session) -> None:
+    incident = _incident(database_session)
+    runtime = FakeRuntime(state=_state(incident))
+
+    with pytest.raises(WorkflowConflictError):
+        WorkflowConsoleService(database_session, runtime).execute_accepted_start(incident.id)
+
+    assert runtime.start_calls == 0
+
+
 def test_start_failure_restores_open_only_without_a_checkpoint(database_session: Session) -> None:
     incident = _incident(database_session)
     runtime = FakeRuntime(start_error=RuntimeError("provider unavailable"))
@@ -329,6 +383,39 @@ def test_start_failure_restores_open_only_without_a_checkpoint(database_session:
     database_session.refresh(incident)
     assert incident.status == "OPEN"
     assert runtime.start_calls == 1
+
+
+def test_execute_accepted_start_failure_restores_open_without_checkpoint(
+    database_session: Session,
+) -> None:
+    incident = _incident(database_session)
+    runtime = FakeRuntime(start_error=RuntimeError("provider unavailable"))
+    service = WorkflowConsoleService(database_session, runtime)
+
+    service.accept_start(incident.id)
+    with pytest.raises(WorkflowStartError):
+        service.execute_accepted_start(incident.id)
+
+    database_session.refresh(incident)
+    assert incident.status == "OPEN"
+
+
+def test_execute_accepted_start_failure_preserves_persisted_checkpoint(
+    database_session: Session,
+) -> None:
+    incident = _incident(database_session)
+    runtime = FakeRuntime(
+        states=[None, _state(incident)],
+        start_error=RuntimeError("interrupted"),
+    )
+    service = WorkflowConsoleService(database_session, runtime)
+
+    service.accept_start(incident.id)
+    with pytest.raises(WorkflowStartError):
+        service.execute_accepted_start(incident.id)
+
+    database_session.refresh(incident)
+    assert incident.status == "INVESTIGATING"
 
 
 def test_start_failure_preserves_existing_checkpoint_status(database_session: Session) -> None:

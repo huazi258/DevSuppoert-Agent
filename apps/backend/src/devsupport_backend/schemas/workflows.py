@@ -14,6 +14,14 @@ class WorkflowResponseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class WorkflowStartResponse(WorkflowResponseModel):
+    """Narrow acknowledgement that a new investigation has been accepted."""
+
+    incident_id: UUID
+    incident_status: str
+    accepted: bool = True
+
+
 class WorkflowHypothesisResponse(WorkflowResponseModel):
     id: UUID
     summary: str

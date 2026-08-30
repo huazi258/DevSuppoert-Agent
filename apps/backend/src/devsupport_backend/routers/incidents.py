@@ -1,9 +1,10 @@
 """HTTP endpoints for the Incident Service."""
 
+import logging
 from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -17,11 +18,11 @@ from devsupport_backend.approvals import (
     PostgresWorkflowStateReader,
     WorkflowStateReader,
 )
-from devsupport_backend.database import get_session
+from devsupport_backend.database import SessionLocal, get_session
 from devsupport_backend.models import Approval, Incident, Report
 from devsupport_backend.schemas.approvals import ApprovalCreate, ApprovalResponse
 from devsupport_backend.schemas.incidents import IncidentCreate, IncidentResponse, ReportResponse
-from devsupport_backend.schemas.workflows import WorkflowResponse
+from devsupport_backend.schemas.workflows import WorkflowResponse, WorkflowStartResponse
 from devsupport_backend.workflow_console import (
     PostgresWorkflowRuntime,
     WorkflowConflictError,
@@ -29,7 +30,6 @@ from devsupport_backend.workflow_console import (
     WorkflowNotStartedError,
     WorkflowRetryError,
     WorkflowRuntime,
-    WorkflowStartError,
     WorkflowStateConflict,
 )
 
@@ -59,6 +59,21 @@ ApprovalWorkflowCoordinatorDependency = Annotated[
 WorkflowRuntimeDependency = Annotated[WorkflowRuntime, Depends(get_workflow_runtime)]
 
 
+def execute_accepted_start(incident_id: UUID) -> None:
+    """Run one accepted workflow in an in-process task with an independent DB Session."""
+    try:
+        with SessionLocal() as session:
+            runtime = PostgresWorkflowRuntime(session)
+            WorkflowConsoleService(session, runtime).execute_accepted_start(incident_id)
+    except Exception:
+        # Background failures have no HTTP response; retain safe server-side diagnostics only.
+        logging.getLogger(__name__).exception(
+            "Accepted workflow background execution failed",
+            extra={"incident_id": str(incident_id)},
+        )
+        raise
+
+
 @router.post("", response_model=IncidentResponse, status_code=status.HTTP_201_CREATED)
 def create_incident(payload: IncidentCreate, session: SessionDependency) -> Incident:
     """Persist a new OPEN incident without starting an investigation workflow."""
@@ -77,24 +92,27 @@ def create_incident(payload: IncidentCreate, session: SessionDependency) -> Inci
     return incident
 
 
-@router.post("/{incident_id}/workflow", response_model=WorkflowResponse)
+@router.post(
+    "/{incident_id}/workflow",
+    response_model=WorkflowStartResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 def start_workflow(
     incident_id: UUID,
+    background_tasks: BackgroundTasks,
     session: SessionDependency,
-    workflow_runtime: WorkflowRuntimeDependency,
-) -> WorkflowResponse:
-    """Start one official persisted workflow for an otherwise OPEN Incident."""
+) -> WorkflowStartResponse:
+    """Accept one official workflow, then run it after the HTTP response is sent."""
     try:
-        return WorkflowConsoleService(session, workflow_runtime).start(incident_id)
+        acknowledgement = WorkflowConsoleService(
+            session, PostgresWorkflowRuntime(session)
+        ).accept_start(incident_id)
+        background_tasks.add_task(execute_accepted_start, incident_id)
+        return acknowledgement
     except LookupError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
     except (WorkflowConflictError, WorkflowStateConflict) as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
-    except WorkflowStartError as error:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(error),
-        ) from error
 
 
 @router.post("/{incident_id}/workflow/retry", response_model=WorkflowResponse)

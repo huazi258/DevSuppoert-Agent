@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Protocol, cast
 from uuid import UUID
 
@@ -43,6 +44,7 @@ from devsupport_backend.schemas.workflows import (
     WorkflowProposedActionResponse,
     WorkflowReportOutcomeResponse,
     WorkflowResponse,
+    WorkflowStartResponse,
     WorkflowToolErrorResponse,
     WorkflowToolHistoryResponse,
     WorkflowVerificationResponse,
@@ -264,7 +266,8 @@ class WorkflowConsoleService:
             retry_available=self._retry_available(incident, state),
         )
 
-    def start(self, incident_id: UUID) -> WorkflowResponse:
+    def accept_start(self, incident_id: UUID) -> WorkflowStartResponse:
+        """Atomically accept one new OPEN Incident without executing its graph."""
         incident = self._session.scalar(
             select(Incident).where(Incident.id == incident_id).with_for_update()
         )
@@ -279,20 +282,59 @@ class WorkflowConsoleService:
             raise WorkflowConflictError("Workflow cannot be started for this Incident")
         incident.status = "INVESTIGATING"
         self._session.commit()
+        self._session.refresh(incident)
+        return WorkflowStartResponse(
+            incident_id=incident.id,
+            incident_status=incident.status,
+        )
+
+    def execute_accepted_start(self, incident_id: UUID) -> AgentState:
+        """Execute a previously accepted start using this caller-owned Session and runtime."""
+        incident = self._session.get(Incident, incident_id)
+        if (
+            incident is None
+            or incident.status != "INVESTIGATING"
+            or not incident.thread_id
+            or not incident.thread_id.strip()
+        ):
+            raise WorkflowConflictError("Workflow start was not accepted for this Incident")
         try:
             state = self._runtime.start(incident)
         except Exception as error:
             try:
                 checkpoint = self._runtime.get_state(incident.thread_id)
             except Exception:
+                logging.getLogger(__name__).exception(
+                    "Unable to read checkpoint while reconciling accepted workflow start",
+                    extra={"incident_id": str(incident_id)},
+                )
                 raise WorkflowStartError("Workflow start failed") from error
             if checkpoint is None:
-                self._session.refresh(incident)
-                incident.status = "OPEN"
-                self._session.commit()
+                self._restore_open_after_unstarted_failure(incident_id, incident.thread_id)
             raise WorkflowStartError("Workflow start failed") from error
+        return state
+
+    def start(self, incident_id: UUID) -> WorkflowResponse:
+        """Synchronously start for internal callers that still require the legacy boundary."""
+        self.accept_start(incident_id)
+        state = self.execute_accepted_start(incident_id)
+        incident = self._get_incident(incident_id)
         self._session.refresh(incident)
         return project_workflow_response(incident, state, self._action_for_state(incident, state))
+
+    def _restore_open_after_unstarted_failure(self, incident_id: UUID, thread_id: str) -> None:
+        """Restore only the accepted record that still lacks a persisted checkpoint."""
+        self._session.rollback()
+        incident = self._session.scalar(
+            select(Incident).where(Incident.id == incident_id).with_for_update()
+        )
+        if (
+            incident is not None
+            and incident.status == "INVESTIGATING"
+            and incident.thread_id == thread_id
+        ):
+            incident.status = "OPEN"
+            self._session.commit()
 
     def retry(self, incident_id: UUID) -> WorkflowResponse:
         """Revalidate and continue exactly one eligible persisted pre-approval failure."""

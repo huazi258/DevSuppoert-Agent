@@ -93,7 +93,12 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
   }, [incidentId, refresh]);
 
   useEffect(() => {
-    if (!workflow || !incident || terminalStatuses.has(incident.status) || mutationPending) {
+    if (
+      !incident ||
+      incident.status !== "INVESTIGATING" ||
+      terminalStatuses.has(incident.status) ||
+      mutationPending
+    ) {
       return;
     }
     const interval = window.setInterval(() => {
@@ -135,15 +140,12 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
     setMutationPending(true);
     setMutationError(null);
     try {
-      const started = await startWorkflow(incidentId);
-      setWorkflow(started);
+      await startWorkflow(incidentId);
       setWorkflowError(null);
       await refresh();
     } catch (startError: unknown) {
       setMutationError(messageFor(startError, "Unable to start the workflow."));
-      if (startError instanceof ApiError && startError.status === 503) {
-        await refresh();
-      }
+      await refresh();
     } finally {
       setMutationPending(false);
     }
@@ -248,6 +250,12 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
           <button className="button primary-button" disabled={mutationPending} onClick={() => void startInvestigation()} type="button">
             {mutationPending ? "Starting…" : "Start Investigation"}
           </button>
+        </section>
+      ) : null}
+
+      {incident.status === "INVESTIGATING" && workflow === null ? (
+        <section className="panel pending-workflow-panel">
+          <p>Investigation accepted. Waiting for the first persisted workflow checkpoint…</p>
         </section>
       ) : null}
 
