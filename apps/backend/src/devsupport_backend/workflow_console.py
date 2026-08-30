@@ -50,6 +50,9 @@ from devsupport_backend.schemas.workflows import (
 from devsupport_backend.tools.deployments import FaultLabDeploymentAdapter
 from devsupport_backend.tools.logs import FaultLabLogsAdapter
 from devsupport_backend.tools.metrics import FaultLabMetricsAdapter
+from devsupport_backend.tools.opensearch_logs import OpenSearchLogsAdapter
+from devsupport_backend.tools.prometheus_metrics import PrometheusMetricsAdapter
+from devsupport_backend.tools.registry import ToolName
 from devsupport_backend.tools.schemas import CitationOutput
 from devsupport_backend.tools.traces import FaultLabTracesAdapter
 
@@ -194,16 +197,11 @@ class PostgresWorkflowRuntime:
         llm_client = OpenAICompatibleLLMClient.from_settings(settings)
         embedding_client = OpenAICompatibleEmbeddingClient.from_settings(settings)
         rag_service = RAGService(self._session, embedding_client)
+        tool_execution = self._tool_execution_dependencies(rag_service)
         dependencies = InvestigationWorkflowDependencies(
             rag_service=rag_service,
             llm_client=llm_client,
-            tool_execution=ToolExecutionDependencies(
-                rag_service=rag_service,
-                logs_adapter=FaultLabLogsAdapter.from_settings(),
-                metrics_adapter=FaultLabMetricsAdapter.from_settings(),
-                traces_adapter=FaultLabTracesAdapter.from_settings(),
-                deployment_adapter=FaultLabDeploymentAdapter.from_settings(),
-            ),
+            tool_execution=tool_execution,
             evaluator=LLMEvidenceEvaluator(llm_client),
             policy_gate=PolicyGateService(self._session, FaultLabDeploymentAdapter.from_settings()),
             approval_wait=ApprovalWaitService(self._session),
@@ -213,6 +211,32 @@ class PostgresWorkflowRuntime:
             dependencies,
             session=self._session,
             checkpointer=checkpointer,
+        )
+
+    @staticmethod
+    def _tool_execution_dependencies(rag_service: RAGService) -> ToolExecutionDependencies:
+        """Select the complete read-only evidence bundle before a graph starts."""
+        if settings.runtime_evidence_provider == "otel_demo":
+            return ToolExecutionDependencies(
+                rag_service=rag_service,
+                logs_adapter=OpenSearchLogsAdapter.from_settings(),
+                metrics_adapter=PrometheusMetricsAdapter.from_settings(),
+                traces_adapter=None,
+                deployment_adapter=None,
+                available_tools=frozenset(
+                    {
+                        ToolName.SEARCH_KNOWLEDGE,
+                        ToolName.QUERY_LOGS,
+                        ToolName.QUERY_METRICS,
+                    }
+                ),
+            )
+        return ToolExecutionDependencies(
+            rag_service=rag_service,
+            logs_adapter=FaultLabLogsAdapter.from_settings(),
+            metrics_adapter=FaultLabMetricsAdapter.from_settings(),
+            traces_adapter=FaultLabTracesAdapter.from_settings(),
+            deployment_adapter=FaultLabDeploymentAdapter.from_settings(),
         )
 
 

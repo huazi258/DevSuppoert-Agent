@@ -1,0 +1,201 @@
+{
+  "schema_version": "v1-m3.7",
+  "purpose": "Production workflow acceptance against the OpenTelemetry Demo read-only evidence provider",
+  "upstream": {
+    "release": "3.0.0",
+    "commit": "1755859a9de82c2e5e225be68abc401a5ebf2b4f",
+    "resource_override": "external untracked checkout/product-catalog 128 MiB override"
+  },
+  "scenario": {
+    "id": "otel-payment-failure",
+    "incident": {
+      "id": "471736e7-f588-4ece-a447-a25ba044e0f1",
+      "service": "checkout",
+      "environment": "local",
+      "time_range_start": "2026-08-30T11:27:20+00:00",
+      "time_range_end": "2026-08-30T11:27:35+00:00"
+    },
+    "fault_window": {
+      "start": "2026-08-30T11:27:26.7673498Z",
+      "end": "2026-08-30T11:27:27.2657829Z",
+      "traffic": {
+        "checkout_attempts": 10,
+        "cart_http_status_counts": {
+          "200": 10
+        },
+        "checkout_http_status_counts": {
+          "500": 10
+        },
+        "healthy_checkout_before": 200,
+        "healthy_checkout_after": 200
+      }
+    }
+  },
+  "runtime_provider": {
+    "selected": "otel_demo",
+    "opensearch_endpoint": "http://127.0.0.1:1406",
+    "prometheus_endpoint": "http://127.0.0.1:9090",
+    "available_tools": [
+      "search_knowledge",
+      "query_logs",
+      "query_metrics"
+    ],
+    "unavailable_tools": [
+      "query_traces",
+      "get_deployment_history"
+    ],
+    "counter_observations": {
+      "pre_fault_snapshot": {
+        "checkout": {
+          "request_count": 0,
+          "error_count": 0
+        },
+        "payment": {
+          "request_count": 0,
+          "error_count": 0
+        }
+      },
+      "after_collector_ingestion": {
+        "checkout": {
+          "request_count": 60,
+          "error_count": 10,
+          "average_request_duration_ms": 192.3583362833333
+        },
+        "payment": {
+          "request_count": 60,
+          "error_count": 10,
+          "average_request_duration_ms": 30.573336716666667
+        },
+        "checkout_fault_window_log_match_count": 18,
+        "semantics": "Cumulative server-span snapshots include normal demo traffic; the post-scenario error counts include the generated failure traffic."
+      }
+    }
+  },
+  "workflow": {
+    "final_response": {
+      "incident_status": "NEEDS_MANUAL_ACTION",
+      "current_stage": "needs_manual_action",
+      "terminal_reason": "active_execution_budget_exhausted",
+      "report_persisted": true
+    },
+    "usage": {
+      "investigation_round": 0,
+      "tool_call_count": 3,
+      "llm_call_count": 1,
+      "workflow_retry_count": 1,
+      "active_execution_seconds": 93.56880649999584
+    },
+    "tool_history": [
+      {
+        "tool_name": "search_knowledge",
+        "status": "success",
+        "service": "checkout",
+        "duration_ms": 2295.6
+      },
+      {
+        "tool_name": "query_logs",
+        "status": "success",
+        "service": "checkout",
+        "duration_ms": 705.13
+      },
+      {
+        "tool_name": "query_metrics",
+        "status": "success",
+        "service": "checkout",
+        "duration_ms": 25.23
+      }
+    ],
+    "runtime_evidence": [
+      {
+        "evidence_type": "log_query_result",
+        "source": "query_logs"
+      },
+      {
+        "evidence_type": "metric_snapshot",
+        "source": "query_metrics"
+      }
+    ],
+    "knowledge_document_references": [
+      "arch-otel-demo-checkout",
+      "rb-downstream-timeout-latency",
+      "arch-system-overview",
+      "rb-request-correlation"
+    ],
+    "hypotheses_before_provider_failure": [
+      {
+        "summary": "Checkout requests fail because the downstream Payment service is failing or timing out during the incident window.",
+        "status": "ACTIVE",
+        "confidence": 0.65,
+        "supporting_evidence_sources": [
+          "search_knowledge"
+        ]
+      },
+      {
+        "summary": "Checkout itself is failing locally due to code, configuration, or resource issues, producing errors before or during payment orchestration.",
+        "status": "ACTIVE",
+        "confidence": 0.25,
+        "supporting_evidence_sources": [
+          "search_knowledge"
+        ]
+      },
+      {
+        "summary": "The failures are caused by request or response validation issues between Checkout and downstream services, such as malformed payloads or schema mismatches.",
+        "status": "ACTIVE",
+        "confidence": 0.35,
+        "supporting_evidence_sources": [
+          "search_knowledge"
+        ]
+      },
+      {
+        "summary": "Evidence is insufficient to attribute the failure to a specific component; request correlation across Checkout and Payment is needed to establish the failure boundary.",
+        "status": "ACTIVE",
+        "confidence": 0.4,
+        "supporting_evidence_sources": [
+          "search_knowledge"
+        ]
+      }
+    ],
+    "initial_failure": {
+      "category": "LLM_PROVIDER_TIMEOUT",
+      "node": "hypothesis_update",
+      "retryable": true,
+      "safe_error": "LLM provider request timed out"
+    },
+    "retry_result": {
+      "workflow_retry_count": 1,
+      "terminal_reason": "active_execution_budget_exhausted",
+      "failure_category": null,
+      "final_report_persisted": true
+    },
+    "final_conclusion": null,
+    "policy_outcome": null,
+    "action_count": 0,
+    "approval_count": 0,
+    "verification_count": 0,
+    "executed_action_count": 0
+  },
+  "acceptance_checks": {
+    "production_otel_provider_selected": true,
+    "knowledge_citation_provenance_present": true,
+    "successful_query_logs": true,
+    "successful_query_metrics": true,
+    "provider_named_evidence_source_absent": true,
+    "query_traces_not_selected": true,
+    "get_deployment_history_not_selected": true,
+    "workflow_safe_terminal_and_report": true,
+    "no_approval_or_remediation_execution": true,
+    "payment_related_hypothesis_supported_or_confirmed": false,
+    "quality_acceptance_provider_limited": true
+  },
+  "external_limitations": [
+    "The initial hypothesis_update LLM call reached the configured provider timeout. Its one authorized workflow retry consumed the remaining active-execution budget and terminalized safely before a hypothesis update could be persisted.",
+    "OpenTelemetry Demo 3.0.0 is intentionally integrated here as knowledge plus logs plus metrics only; Jaeger traces and deployment/remediation capabilities are not exposed to the workflow."
+  ],
+  "payload_safety": {
+    "raw_logs_persisted": false,
+    "raw_prometheus_payloads_persisted": false,
+    "llm_prompts_or_responses_persisted": false,
+    "feature_flag_configuration_persisted": false,
+    "secrets_persisted": false
+  }
+}

@@ -9,7 +9,13 @@ from uuid import UUID
 from pydantic import BaseModel, ValidationError
 
 from devsupport_backend.agent.nodes.retrieval import _append_unique_evidence
-from devsupport_backend.agent.state import AgentStage, AgentState, EvidenceContext, ToolHistoryEntry
+from devsupport_backend.agent.state import (
+    AgentStage,
+    AgentState,
+    EvidenceContext,
+    PendingToolCall,
+    ToolHistoryEntry,
+)
 from devsupport_backend.rag.retrieval import RAGService
 from devsupport_backend.tools.adapter_contracts import (
     DeploymentAdapter,
@@ -33,6 +39,7 @@ from devsupport_backend.tools.schemas import (
     QueryTracesOutput,
     SearchKnowledgeInput,
     SearchKnowledgeOutput,
+    ToolError,
     ToolOutput,
     ToolStatus,
     TraceSpan,
@@ -70,8 +77,9 @@ class ToolExecutionDependencies:
     rag_service: RAGService
     logs_adapter: LogsAdapter
     metrics_adapter: MetricsAdapter
-    traces_adapter: TracesAdapter
-    deployment_adapter: DeploymentAdapter
+    traces_adapter: TracesAdapter | None
+    deployment_adapter: DeploymentAdapter | None
+    available_tools: frozenset[ToolName] = READ_ONLY_INVESTIGATION_TOOLS
 
 
 def tool_execution_node(state: AgentState, dependencies: ToolExecutionDependencies) -> AgentState:
@@ -84,6 +92,8 @@ def tool_execution_node(state: AgentState, dependencies: ToolExecutionDependenci
         raise ToolExecutionError(
             f"execution rejected disallowed tool: {pending_tool_call.tool_name}"
         )
+    if pending_tool_call.tool_name not in dependencies.available_tools:
+        return _capability_unavailable_state(state, pending_tool_call)
 
     validated_input = _validate_pending_arguments(
         pending_tool_call.tool_name,
@@ -119,6 +129,28 @@ def tool_execution_node(state: AgentState, dependencies: ToolExecutionDependenci
     }
 
 
+def _capability_unavailable_state(
+    state: AgentState, pending_tool_call: PendingToolCall
+) -> AgentState:
+    """Fail closed for a persisted call that is no longer enabled by this composition."""
+    entry = ToolHistoryEntry(
+        tool_name=pending_tool_call.tool_name,
+        tool_arguments=pending_tool_call.tool_arguments,
+        status=ToolStatus.UNAVAILABLE,
+        error=ToolError(
+            code="capability_unavailable",
+            message="The requested investigation capability is not enabled.",
+        ),
+    )
+    return {
+        **state,
+        "tool_history": [*state["tool_history"], entry],
+        "tool_call_count": state["tool_call_count"] + 1,
+        "pending_tool_call": None,
+        "current_stage": AgentStage.INVESTIGATION_PLANNING,
+    }
+
+
 def _validate_pending_arguments(tool_name: ToolName, arguments: dict[str, object]) -> BaseModel:
     """Revalidate persisted planner arguments against the registered input contract."""
     definition = tool_registry.get(tool_name)
@@ -139,8 +171,12 @@ def _dispatch(
     if tool_name is ToolName.QUERY_METRICS:
         return query_metrics(cast(QueryMetricsInput, tool_input), dependencies.metrics_adapter)
     if tool_name is ToolName.QUERY_TRACES:
+        if dependencies.traces_adapter is None:
+            raise ToolExecutionError("traces adapter is unavailable for this composition")
         return query_traces(cast(QueryTracesInput, tool_input), dependencies.traces_adapter)
     if tool_name is ToolName.GET_DEPLOYMENT_HISTORY:
+        if dependencies.deployment_adapter is None:
+            raise ToolExecutionError("deployment adapter is unavailable for this composition")
         return get_deployment_history(
             cast(GetDeploymentHistoryInput, tool_input), dependencies.deployment_adapter
         )

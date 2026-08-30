@@ -57,6 +57,12 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("PROMETHEUS_URL", "DEVSUPPORT_PROMETHEUS_URL"),
     )
+    runtime_evidence_provider: Literal["fault_lab", "otel_demo"] = Field(
+        default="fault_lab",
+        validation_alias=AliasChoices(
+            "RUNTIME_EVIDENCE_PROVIDER", "DEVSUPPORT_RUNTIME_EVIDENCE_PROVIDER"
+        ),
+    )
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="DEVSUPPORT_")
 

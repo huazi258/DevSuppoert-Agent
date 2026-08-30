@@ -33,6 +33,7 @@ from devsupport_backend.agent.nodes.planner import (
 )
 from devsupport_backend.agent.nodes.retrieval import retrieval_node
 from devsupport_backend.agent.nodes.tool_execution import (
+    READ_ONLY_INVESTIGATION_TOOLS,
     ToolExecutionDependencies,
     tool_execution_node,
 )
@@ -64,6 +65,7 @@ from devsupport_backend.approvals import (
     approval_wait_node,
 )
 from devsupport_backend.rag.retrieval import RAGService
+from devsupport_backend.tools.registry import ToolName
 
 DEFAULT_MAX_INVESTIGATION_ROUNDS = DEFAULT_INVESTIGATION_BUDGET.max_rounds
 DEFAULT_MAX_TOOL_CALLS = DEFAULT_INVESTIGATION_BUDGET.max_tool_calls
@@ -193,7 +195,10 @@ def build_investigation_graph(
             "investigation_planning",
             _account_llm_usage_node(
                 lambda state: _investigation_planning_node(
-                    state, dependencies.llm_client, effective_budget
+                    state,
+                    dependencies.llm_client,
+                    effective_budget,
+                    dependencies.tool_execution.available_tools,
                 )
             ),
             effective_budget,
@@ -497,13 +502,14 @@ def _investigation_planning_node(
     state: AgentState,
     llm_client: LLMClient,
     budget: InvestigationBudget,
+    available_tools: frozenset[ToolName] = READ_ONLY_INVESTIGATION_TOOLS,
 ) -> AgentState:
     """Use bounded first-pass evidence collection before falling back to the LLM planner."""
-    initial_plan = deterministic_initial_evidence_plan(state)
+    initial_plan = deterministic_initial_evidence_plan(state, available_tools)
     if initial_plan is None:
         if _llm_budget_exhausted(state, budget):
             return _llm_budget_exhausted_state(state)
-        return investigation_planner_node(state, llm_client)
+        return investigation_planner_node(state, llm_client, available_tools)
     return {
         **state,
         "current_goal": initial_plan.investigation_goal,
