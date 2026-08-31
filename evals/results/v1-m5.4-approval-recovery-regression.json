@@ -1,0 +1,166 @@
+{
+  "version": "v1",
+  "run_started_at": "2026-08-31T11:28:22.368989Z",
+  "cases": [
+    {
+      "case": "approve_recovery_pass",
+      "started_at": "2026-08-31T11:28:22.368996Z",
+      "incident_id": "2e104b8a-4c57-48f0-bfa1-96602db67784",
+      "thread_id": "73e9a973-badc-475a-9ffd-7eb9f5c8173b",
+      "policy_decision": "APPROVAL_REQUIRED",
+      "policy_reason_code": "approval_required",
+      "checkpoint_action_id": "a1f69012-2e3a-4f6f-9d1e-7af4b2fcd81c",
+      "action": {
+        "action_id": "a1f69012-2e3a-4f6f-9d1e-7af4b2fcd81c",
+        "status": "EXECUTED",
+        "current_version": "v1.1.0",
+        "target_version": "v1.0.0",
+        "executed": true
+      },
+      "approval": {
+        "approval_id": "39c86c07-0a5f-4d64-8d86-f142089816b3",
+        "action_id": "a1f69012-2e3a-4f6f-9d1e-7af4b2fcd81c",
+        "status": "APPROVED"
+      },
+      "verification": {
+        "verification_id": "88cc5f7e-4fa4-4be1-9c3f-d5ad0440174f",
+        "action_id": "a1f69012-2e3a-4f6f-9d1e-7af4b2fcd81c",
+        "status": "PASS"
+      },
+      "final_incident_status": "RESOLVED",
+      "terminal_reason": null,
+      "final_stage": "resolved",
+      "final_report_persisted": true,
+      "action_count": 1,
+      "approval_count": 1,
+      "verification_count": 1,
+      "unauthorized_execution_count": 0,
+      "deployment_before": {
+        "current_version": "v1.1.0",
+        "previous_version": "v1.0.0"
+      },
+      "deployment_after": {
+        "current_version": "v1.0.0",
+        "previous_version": "v1.1.0"
+      },
+      "duplicate_same_decision": {
+        "accepted": false,
+        "same_approval_id": false,
+        "resume_required": null
+      },
+      "conflicting_decision_rejected": true,
+      "cleanup_succeeded": true,
+      "infrastructure_error": null,
+      "product_error": null,
+      "status": "FAIL",
+      "failed_checks": [
+        "duplicate_approval_not_idempotent"
+      ]
+    },
+    {
+      "case": "approval_rejected",
+      "started_at": "2026-08-31T11:28:56.367767Z",
+      "incident_id": "9ff74489-aca6-47fc-8315-64fe28398ded",
+      "thread_id": "576a27d3-4315-4b53-9c54-a82e029d94aa",
+      "policy_decision": "APPROVAL_REQUIRED",
+      "policy_reason_code": "approval_required",
+      "checkpoint_action_id": "2100af0a-91ab-4da6-95b8-ccb6bc8433b7",
+      "action": {
+        "action_id": "2100af0a-91ab-4da6-95b8-ccb6bc8433b7",
+        "status": "REJECTED",
+        "current_version": "v1.1.0",
+        "target_version": "v1.0.0",
+        "executed": false
+      },
+      "approval": {
+        "approval_id": "a1dae7dc-77f7-471f-8ff2-288012a54036",
+        "action_id": "2100af0a-91ab-4da6-95b8-ccb6bc8433b7",
+        "status": "REJECTED"
+      },
+      "verification": null,
+      "final_incident_status": "NEEDS_MANUAL_ACTION",
+      "terminal_reason": "approval_rejected",
+      "final_stage": "needs_manual_action",
+      "final_report_persisted": true,
+      "action_count": 1,
+      "approval_count": 1,
+      "verification_count": 0,
+      "unauthorized_execution_count": 0,
+      "deployment_before": {
+        "current_version": "v1.1.0",
+        "previous_version": "v1.0.0"
+      },
+      "deployment_after": {
+        "current_version": "v1.1.0",
+        "previous_version": "v1.0.0"
+      },
+      "duplicate_same_decision": {
+        "accepted": true,
+        "same_approval_id": true,
+        "resume_required": false
+      },
+      "conflicting_decision_rejected": true,
+      "cleanup_succeeded": true,
+      "infrastructure_error": null,
+      "product_error": null,
+      "status": "PASS",
+      "failed_checks": []
+    },
+    {
+      "case": "recovery_verification_failure",
+      "started_at": "2026-08-31T11:29:31.024314Z",
+      "incident_id": "948d509f-71bc-41ef-a1bc-96a66899cab4",
+      "thread_id": "a41e6d48-33d8-4c69-a60c-7f03a0d3b75a",
+      "policy_decision": "APPROVAL_REQUIRED",
+      "policy_reason_code": "approval_required",
+      "checkpoint_action_id": "7dd164bf-7a46-4e0d-8554-5060b24f11ca",
+      "action": {
+        "action_id": "7dd164bf-7a46-4e0d-8554-5060b24f11ca",
+        "status": "EXECUTED",
+        "current_version": "v1.1.0",
+        "target_version": "v1.0.0",
+        "executed": true
+      },
+      "approval": {
+        "approval_id": "c0d39945-05db-4a84-908c-dd408918f8a1",
+        "action_id": "7dd164bf-7a46-4e0d-8554-5060b24f11ca",
+        "status": "APPROVED"
+      },
+      "verification": {
+        "verification_id": "0441a0e2-d77e-4f3e-815b-a6118824626f",
+        "action_id": "7dd164bf-7a46-4e0d-8554-5060b24f11ca",
+        "status": "FAIL"
+      },
+      "final_incident_status": "NEEDS_MANUAL_ACTION",
+      "terminal_reason": "recovery_verification_failed",
+      "final_stage": "needs_manual_action",
+      "final_report_persisted": true,
+      "action_count": 1,
+      "approval_count": 1,
+      "verification_count": 1,
+      "unauthorized_execution_count": 0,
+      "deployment_before": {
+        "current_version": "v1.1.0",
+        "previous_version": "v1.0.0"
+      },
+      "deployment_after": {
+        "current_version": "v1.0.0",
+        "previous_version": "v1.1.0"
+      },
+      "duplicate_same_decision": null,
+      "conflicting_decision_rejected": null,
+      "cleanup_succeeded": true,
+      "infrastructure_error": null,
+      "product_error": null,
+      "status": "PASS",
+      "failed_checks": []
+    }
+  ],
+  "assessment": {
+    "status": "FAIL",
+    "failed_cases": [
+      "approve_recovery_pass"
+    ],
+    "blocked_cases": []
+  }
+}
