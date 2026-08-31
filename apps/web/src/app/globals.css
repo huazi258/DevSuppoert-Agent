@@ -111,6 +111,18 @@ dd { margin: 0.25rem 0 0; overflow-wrap: anywhere; }
 .timeline li::before { background: var(--navy); border-radius: 50%; content: ""; height: 0.55rem; left: -1.52rem; position: absolute; top: 0.3rem; width: 0.55rem; }
 .investigation-timeline .timeline-latest::before { background: var(--success); }
 pre { background: #f0f4f8; border: 1px solid #d6e0ea; border-radius: 0.3rem; font-size: 0.78rem; margin: 0.75rem 0 0; overflow-x: auto; padding: 0.65rem; }
+.technical-details { background: #eef3f8; border: 1px solid #c8d6e7; border-radius: 0.5rem; color: #334155; margin-bottom: 1.25rem; padding: 0.8rem 1rem; }
+.technical-details summary { color: var(--navy); cursor: pointer; font-weight: 700; }
+.technical-description { color: var(--muted); font-size: 0.875rem; margin: 0.7rem 0 0; }
+.technical-section { border-top: 1px solid #c8d6e7; margin-top: 1rem; padding-top: 1rem; }
+.technical-section h3 { font-size: 0.9rem; margin-bottom: 0.7rem; }
+.technical-facts { display: grid; gap: 0.65rem 1rem; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; }
+.technical-facts > div { min-width: 0; }
+.technical-tool-list { display: grid; gap: 0.75rem; list-style: none; margin: 0; padding: 0; }
+.technical-tool-call { background: #f8fafc; border: 1px solid var(--line); border-radius: 0.4rem; padding: 0.8rem; }
+.technical-tool-call pre { max-width: 100%; white-space: pre-wrap; word-break: break-word; }
+.technical-label { color: var(--muted); font-size: 0.75rem; font-weight: 700; letter-spacing: 0.04em; margin: 0.8rem 0 0; text-transform: uppercase; }
+.technical-error { border-top: 1px solid var(--line); margin-top: 0.8rem; padding-top: 0.8rem; }
 .decision-grid { display: grid; gap: 0.75rem; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 1rem; }
 .approval-controls { background: #f0f6ff; border: 1px solid #c5d8f0; border-radius: 0.4rem; margin-top: 1rem; padding: 1rem; }
 .approval-controls .button { margin-right: 0.6rem; }
@@ -128,7 +140,7 @@ pre { background: #f0f4f8; border: 1px solid #d6e0ea; border-radius: 0.3rem; fon
 }
 
 @media (max-width: 560px) {
-  .incident-form, .detail-grid { grid-template-columns: 1fr; }
+  .incident-form, .detail-grid, .technical-facts { grid-template-columns: 1fr; }
   .full-detail { grid-column: auto; }
   .panel { padding: 1rem; }
 }

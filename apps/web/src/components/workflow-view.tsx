@@ -168,10 +168,6 @@ function EvidenceGroup({
   );
 }
 
-function IdList({ ids }: { ids: string[] }) {
-  return ids.length > 0 ? <span className="mono">{ids.join(", ")}</span> : <span>—</span>;
-}
-
 export function WorkflowView({ workflow }: WorkflowViewProps) {
   const evidenceById = new Map(workflow.evidence.map((evidence) => [evidence.id, evidence]));
   const relationships = buildEvidenceRelationships(workflow.hypotheses);
@@ -180,13 +176,6 @@ export function WorkflowView({ workflow }: WorkflowViewProps) {
 
   return (
     <section className="workflow-view" aria-label="Investigation details">
-      {workflow.current_goal ? (
-        <section className="panel">
-          <p className="eyebrow">Current goal</p>
-          <p>{workflow.current_goal}</p>
-        </section>
-      ) : null}
-
       <section className="panel">
         <div className="panel-heading"><h2>Hypotheses</h2><span>{workflow.hypotheses.length}</span></div>
         {workflow.hypotheses.length === 0 ? <p className="empty-state">No hypotheses recorded yet.</p> : (
@@ -203,23 +192,6 @@ export function WorkflowView({ workflow }: WorkflowViewProps) {
             <EvidenceGroup evidence={knowledgeEvidence} relationships={relationships} title="Knowledge" />
             <EvidenceGroup evidence={runtimeEvidence} relationships={relationships} title="Runtime Evidence" />
           </div>
-        )}
-      </section>
-
-      <section className="panel">
-        <div className="panel-heading"><h2>Tool Timeline</h2><span>{workflow.tool_history.length}</span></div>
-        {workflow.tool_history.length === 0 ? <p className="empty-state">No Tool calls recorded yet.</p> : (
-          <ol className="timeline">
-            {workflow.tool_history.map((tool, index) => (
-              <li key={`${tool.tool_name}-${index}`}>
-                <div className="record-header"><strong>{tool.tool_name}</strong><StatusBadge value={tool.status} /></div>
-                <p>Duration: {tool.duration_ms === null ? "—" : `${tool.duration_ms.toFixed(0)} ms`}</p>
-                <p>Evidence: <IdList ids={tool.evidence_ids} /></p>
-                <pre>{JSON.stringify(tool.tool_arguments, null, 2)}</pre>
-                {tool.error ? <p className="error-banner">{tool.error.code}: {tool.error.message} {tool.error.retryable ? "(retryable)" : ""}</p> : null}
-              </li>
-            ))}
-          </ol>
         )}
       </section>
 

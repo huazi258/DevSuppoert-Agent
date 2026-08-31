@@ -24,6 +24,7 @@ import {
   type WorkflowTimelineResponse,
 } from "../lib/types";
 import { FinalReportView } from "./final-report";
+import { InvestigationTechnicalDetails } from "./investigation-technical-details";
 import { InvestigationTimeline } from "./investigation-timeline";
 import { StatusBadge } from "./status-badge";
 import { WorkflowView } from "./workflow-view";
@@ -273,7 +274,6 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
         <dl className="header-facts">
           <div><dt>Environment</dt><dd>{incident.environment}</dd></div>
           <div><dt>Incident Status</dt><dd><StatusBadge value={incident.status} /></dd></div>
-          <div><dt>Agent Current Stage</dt><dd>{workflow?.current_stage ?? "Not started"}</dd></div>
         </dl>
       </header>
 
@@ -299,7 +299,6 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
           <h2 id="progress-heading">Investigation Progress</h2>
           <dl className="detail-grid">
             <div><dt>Phase</dt><dd><StatusBadge value={progress.phase} /></dd></div>
-            <div><dt>Latest persisted stage</dt><dd>{progress.current_stage ?? "No persisted checkpoint"}</dd></div>
             <div className="full-detail"><dt>Current goal</dt><dd>{progress.current_goal ?? "—"}</dd></div>
             <div><dt>Hypotheses</dt><dd>{progress.hypothesis_count}</dd></div>
             <div><dt>Evidence</dt><dd>{progress.evidence_count}</dd></div>
@@ -308,11 +307,8 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
           {progress.phase === "accepted" ? (
             <p>Investigation accepted. Waiting for the first persisted workflow checkpoint…</p>
           ) : null}
-          {progress.pending_tool_name ? <p>Current Tool: {progress.pending_tool_name}</p> : null}
           {progress.failure ? (
-            <p>
-              Failure: {progress.failure.category} at {progress.failure.failed_node} — {progress.failure.message}
-            </p>
+            <p>Investigation interrupted: {progress.failure.message}</p>
           ) : null}
         </section>
       ) : null}
@@ -335,13 +331,13 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
             ) : null}
             <div className="decision-grid">
               {workflow.proposed_action ? (
-                <article className="record-card"><h3>Proposed Action</h3><p><strong>{workflow.proposed_action.action_type}</strong> — {workflow.proposed_action.summary}</p><p>{workflow.proposed_action.reason}</p><p>Risk: {workflow.proposed_action.risk}</p><p className="mono compact-id">Evidence: {workflow.proposed_action.supporting_evidence_ids.join(", ") || "—"}</p></article>
+                <article className="record-card"><h3>Proposed Action</h3><p><strong>{workflow.proposed_action.action_type}</strong> — {workflow.proposed_action.summary}</p><p>{workflow.proposed_action.reason}</p><p>Risk: {workflow.proposed_action.risk}</p><p className="subtle-status">Based on {workflow.proposed_action.supporting_evidence_ids.length} supporting evidence record{workflow.proposed_action.supporting_evidence_ids.length === 1 ? "" : "s"}.</p></article>
               ) : null}
               {workflow.policy_outcome ? (
-                <article className="record-card"><h3>Policy</h3><p><StatusBadge value={workflow.policy_outcome.decision} /></p><p>{workflow.policy_outcome.reason_code}</p><p>{workflow.policy_outcome.reason}</p></article>
+                <article className="record-card"><h3>Policy</h3><p><StatusBadge value={workflow.policy_outcome.decision} /></p><p>{workflow.policy_outcome.reason}</p></article>
               ) : null}
               {workflow.action ? (
-                <article className="record-card"><h3>Authoritative Action</h3><p className="mono compact-id">{workflow.action.action_id}</p><p><StatusBadge value={workflow.action.status} /></p><dl className="detail-grid"><div><dt>Service</dt><dd>{workflow.action.parameters.service}</dd></div><div><dt>Environment</dt><dd>{workflow.action.parameters.environment}</dd></div><div><dt>Current version</dt><dd>{workflow.action.parameters.current_version}</dd></div><div><dt>Target version</dt><dd>{workflow.action.parameters.target_version}</dd></div><div className="full-detail"><dt>Reason</dt><dd>{workflow.action.parameters.reason}</dd></div></dl></article>
+                <article className="record-card"><h3>Authoritative Action</h3><p><StatusBadge value={workflow.action.status} /></p><dl className="detail-grid"><div><dt>Service</dt><dd>{workflow.action.parameters.service}</dd></div><div><dt>Environment</dt><dd>{workflow.action.parameters.environment}</dd></div><div><dt>Current version</dt><dd>{workflow.action.parameters.current_version}</dd></div><div><dt>Target version</dt><dd>{workflow.action.parameters.target_version}</dd></div><div className="full-detail"><dt>Reason</dt><dd>{workflow.action.parameters.reason}</dd></div></dl></article>
               ) : null}
             </div>
             {canApprove ? (
@@ -356,13 +352,14 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
               </div>
             ) : null}
             <div className="decision-grid">
-              {workflow.approval_outcome ? <article className="record-card"><h3>Approval</h3><p><StatusBadge value={workflow.approval_outcome.status} /></p><p className="mono compact-id">{workflow.approval_outcome.approval_id}</p></article> : null}
+              {workflow.approval_outcome ? <article className="record-card"><h3>Approval</h3><p><StatusBadge value={workflow.approval_outcome.status} /></p></article> : null}
               {workflow.execution_outcome ? <article className="record-card"><h3>Execution</h3><p><StatusBadge value={workflow.execution_outcome.status} /></p><p>{workflow.execution_outcome.service ?? "—"} / {workflow.execution_outcome.environment ?? "—"} → {workflow.execution_outcome.target_version ?? "—"}</p><p>Executed: {String(workflow.execution_outcome.executed)}</p></article> : null}
-              {workflow.verification_outcome ? <article className="record-card"><h3>Recovery Verification</h3><p><StatusBadge value={workflow.verification_outcome.status} /></p><p>{workflow.verification_outcome.summary}</p><p className="mono compact-id">{workflow.verification_outcome.verification_id ?? "—"}</p></article> : null}
+              {workflow.verification_outcome ? <article className="record-card"><h3>Recovery Verification</h3><p><StatusBadge value={workflow.verification_outcome.status} /></p><p>{workflow.verification_outcome.summary}</p></article> : null}
             </div>
           </section>
         </>
       ) : null}
+      {progress || workflow ? <InvestigationTechnicalDetails progress={progress} workflow={workflow} /> : null}
       {report ? <FinalReportView report={report} /> : null}
       <footer className="console-footer">Created {formatDate(incident.created_at)} · Updated {formatDate(incident.updated_at)}</footer>
     </main>
