@@ -1,0 +1,14 @@
+version: v1
+scenario: otel_payment_failure
+runtime_provider: otel_demo
+required_tools: [search_knowledge, query_logs, query_metrics]
+forbidden_tools: [query_traces, get_deployment_history]
+required_runtime_evidence_sources: [query_logs, query_metrics]
+minimum_knowledge_citations: 1
+acceptable_hypothesis_statuses: [SUPPORTED, CONFIRMED]
+accepted_diagnostic_term_groups:
+  - [payment, fail]
+  - [payment, error]
+  - [payment, timeout]
+  - [downstream, payment]
+remediation_must_be_absent: true

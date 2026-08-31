@@ -105,6 +105,7 @@ Release requires the Definition of Done in `docs/V1_SCOPE.md` and evidence that:
 * the real integration completes logs, metrics, and one E2E investigation;
 * running investigation progress and user-facing Timeline are usable in the existing Console;
 * approval, rollback, recovery verification, and Unauthorized Execution safeguards remain correct.
+* the separate real-integration acceptance artifact satisfies its evaluator-only policy; it never weakens Fault Lab P0 ground truth or substitutes for the Fault Lab release gate.
 
 ## 4. Sequencing Constraints
 

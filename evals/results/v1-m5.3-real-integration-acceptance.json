@@ -1,0 +1,179 @@
+{
+  "run_facts": {
+    "upstream": {
+      "release": "3.0.0",
+      "commit": "1755859a9de82c2e5e225be68abc401a5ebf2b4f"
+    },
+    "scenario_id": "otel_payment_failure",
+    "incident": {
+      "incident_id": "b58dbfcd-36b8-4c6b-8c58-09e4f6a08fc9",
+      "service": "checkout",
+      "environment": "local",
+      "time_range_start": "2026-08-31T10:59:24.824435Z",
+      "time_range_end": "2026-08-31T10:59:26.522922Z"
+    },
+    "traffic": {
+      "fault_window_start": "2026-08-31T10:59:24.824435Z",
+      "fault_window_end": "2026-08-31T10:59:26.522922Z",
+      "healthy_checkout_before": true,
+      "checkout_attempts": 10,
+      "checkout_http_status_counts": {
+        "500": 10
+      },
+      "healthy_checkout_after": true,
+      "fault_restored": true
+    },
+    "runtime_provider": "otel_demo",
+    "available_tools": [
+      "query_metrics",
+      "search_knowledge",
+      "query_logs"
+    ],
+    "tool_history": [
+      {
+        "tool_name": "search_knowledge",
+        "status": "success",
+        "evidence_count": 5
+      },
+      {
+        "tool_name": "query_logs",
+        "status": "success",
+        "evidence_count": 1
+      },
+      {
+        "tool_name": "query_metrics",
+        "status": "success",
+        "evidence_count": 1
+      },
+      {
+        "tool_name": "query_metrics",
+        "status": "success",
+        "evidence_count": 1
+      }
+    ],
+    "evidence": [
+      {
+        "evidence_id": "75df0356-5a04-4180-bca7-295b75a9f413",
+        "evidence_type": "knowledge_retrieval",
+        "source": "search_knowledge",
+        "document_reference": "arch-otel-demo-checkout"
+      },
+      {
+        "evidence_id": "0f22753f-90fa-4409-acfb-08df1046b1ff",
+        "evidence_type": "knowledge_retrieval",
+        "source": "search_knowledge",
+        "document_reference": "arch-otel-demo-checkout"
+      },
+      {
+        "evidence_id": "5535b22e-9def-4784-b656-67f9dbe453a0",
+        "evidence_type": "knowledge_retrieval",
+        "source": "search_knowledge",
+        "document_reference": "rb-post-deployment-anomaly"
+      },
+      {
+        "evidence_id": "38c5a392-5271-4876-9780-4d240b062f8e",
+        "evidence_type": "knowledge_retrieval",
+        "source": "search_knowledge",
+        "document_reference": "rb-request-correlation"
+      },
+      {
+        "evidence_id": "75427ca8-bb9f-4b1c-bd06-54c684dd0980",
+        "evidence_type": "knowledge_retrieval",
+        "source": "search_knowledge",
+        "document_reference": "rb-downstream-timeout-latency"
+      },
+      {
+        "evidence_id": "ea6c4d56-d120-42d7-9d8b-759db3ac0aa9",
+        "evidence_type": "log_query_result",
+        "source": "query_logs",
+        "document_reference": null
+      },
+      {
+        "evidence_id": "e4324eff-1133-4646-97f8-956116873f35",
+        "evidence_type": "metric_snapshot",
+        "source": "query_metrics",
+        "document_reference": null
+      },
+      {
+        "evidence_id": "0e52a5b4-1a6d-40ad-9dfe-48aa7c096031",
+        "evidence_type": "metric_snapshot",
+        "source": "query_metrics",
+        "document_reference": null
+      }
+    ],
+    "hypotheses": [
+      {
+        "hypothesis_id": "15a369cf-4b7e-4603-9135-72dd970b685b",
+        "summary": "Checkout failures are caused by errors or timeouts from the Payment downstream service, and Checkout is only surfacing the dependency failure.",
+        "status": "ACTIVE",
+        "supporting_evidence_ids": [
+          "75df0356-5a04-4180-bca7-295b75a9f413",
+          "0f22753f-90fa-4409-acfb-08df1046b1ff",
+          "75427ca8-bb9f-4b1c-bd06-54c684dd0980"
+        ]
+      },
+      {
+        "hypothesis_id": "0d691c63-d1fc-409d-855f-270cc9b6279b",
+        "summary": "Checkout requests are failing locally before any payment dependency is called, due to startup configuration, feature flag, or compatibility issues in the local environment.",
+        "status": "ACTIVE",
+        "supporting_evidence_ids": [
+          "5535b22e-9def-4784-b656-67f9dbe453a0",
+          "38c5a392-5271-4876-9780-4d240b062f8e"
+        ]
+      },
+      {
+        "hypothesis_id": "9b43b89b-8860-48bd-b7e7-33caffee2022",
+        "summary": "The Payment downstream dependency is experiencing load, network, or release-related anomalies that cause latency or connection timeouts, resulting in checkout errors.",
+        "status": "ACTIVE",
+        "supporting_evidence_ids": [
+          "5535b22e-9def-4784-b656-67f9dbe453a0",
+          "75427ca8-bb9f-4b1c-bd06-54c684dd0980",
+          "0f22753f-90fa-4409-acfb-08df1046b1ff"
+        ]
+      },
+      {
+        "hypothesis_id": "0a22c093-d40a-421a-b406-15f16b476361",
+        "summary": "The reported checkout errors may represent isolated request failures rather than a broad checkout outage, and aggregate incident-window metrics are needed to confirm scope.",
+        "status": "SUPPORTED",
+        "supporting_evidence_ids": [
+          "38c5a392-5271-4876-9780-4d240b062f8e",
+          "0f22753f-90fa-4409-acfb-08df1046b1ff",
+          "e4324eff-1133-4646-97f8-956116873f35"
+        ]
+      }
+    ],
+    "workflow": {
+      "final_status": "NEEDS_MANUAL_ACTION",
+      "terminal_reason": "active_execution_budget_exhausted",
+      "report_persisted": true
+    },
+    "timeline_interruption_categories": [],
+    "safety": {
+      "action_count": 0,
+      "approval_count": 0,
+      "executed_action_count": 0,
+      "verification_count": 0
+    },
+    "payload_safety": {
+      "raw_logs_persisted": false,
+      "raw_prometheus_payloads_persisted": false,
+      "tool_arguments_persisted": false,
+      "llm_prompts_or_responses_persisted": false,
+      "feature_flag_configuration_persisted": false,
+      "secrets_persisted": false
+    }
+  },
+  "assessment": {
+    "version": "v1",
+    "scenario": "otel_payment_failure",
+    "status": "FAIL",
+    "failed_checks": [
+      "investigation_quality"
+    ],
+    "blockers": [
+      "investigation_quality_not_reached_without_external_provider_blocker"
+    ],
+    "external_provider_interruption_categories": [],
+    "diagnostics": []
+  }
+}
