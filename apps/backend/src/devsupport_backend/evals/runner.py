@@ -66,6 +66,7 @@ from devsupport_backend.evals.contracts import (
     EvalFixtureSuite,
     EvalLifecycleEvent,
     EvalLifecyclePhase,
+    EvalReleaseGateAssessment,
     EvalScore,
     InvestigationObservability,
     InvestigationToolName,
@@ -83,9 +84,11 @@ from devsupport_backend.evals.contracts import (
     RunnerPreparation,
     TimingStats,
     load_eval_fixture_suite,
+    load_eval_release_gate_policy,
     load_eval_release_profiles,
     score_eval_case,
 )
+from devsupport_backend.evals.release_gate import assess_eval_release_gate
 from devsupport_backend.models import (
     Action,
     Approval,
@@ -115,6 +118,9 @@ from devsupport_backend.workflow_console import PostgresWorkflowRuntime, Workflo
 DEFAULT_SUITE_PATH = Path(__file__).resolve().parents[5] / "evals" / "initial_suite.yaml"
 DEFAULT_RELEASE_PROFILES_PATH = (
     Path(__file__).resolve().parents[5] / "evals" / "v1_release_profiles.yaml"
+)
+DEFAULT_RELEASE_GATE_POLICY_PATH = (
+    Path(__file__).resolve().parents[5] / "evals" / "v1_release_gate.yaml"
 )
 _EVAL_IPC_POLL_SECONDS = 0.1
 _EVAL_IPC_FINAL_DRAIN_SECONDS = 0.2
@@ -1515,6 +1521,25 @@ def _elapsed_ms(started: float) -> float:
     return round((perf_counter() - started) * 1000, 2)
 
 
+def build_eval_cli_payload(
+    outputs: list[EvalRunOutput],
+    *,
+    case_id: str | None,
+    release_gate: EvalReleaseGateAssessment | None = None,
+) -> object:
+    """Format existing Eval outputs, optionally attaching a P0 release assessment."""
+    machine_cases = [output.machine_output() for output in outputs]
+    if case_id is not None:
+        return machine_cases[0]
+    payload: dict[str, object] = {
+        "cases": machine_cases,
+        "aggregate": aggregate_eval_outputs(outputs).model_dump(mode="json"),
+    }
+    if release_gate is not None:
+        payload["release_gate"] = release_gate.model_dump(mode="json")
+    return payload
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run DevSupport evaluation fixtures without Web UI"
@@ -1527,22 +1552,29 @@ def main() -> None:
         parser.error("--case and --profile cannot be used together")
 
     suite = load_eval_fixture_suite(args.suite)
+    profile = None
     if args.profile is not None:
         profiles = load_eval_release_profiles(DEFAULT_RELEASE_PROFILES_PATH, suite)
         try:
-            suite = select_eval_fixtures(suite, profiles.profiles[args.profile].case_ids)
+            profile = profiles.profiles[args.profile]
         except KeyError:
             parser.error(f"Unknown Eval release profile: {args.profile}")
+        suite = select_eval_fixtures(suite, profile.case_ids)
 
     outputs = EvaluationRunner().run_suite(suite, case_id=args.case_id)
-    machine_cases = [output.machine_output() for output in outputs]
-    payload: object = (
-        machine_cases[0]
-        if args.case_id is not None
-        else {
-            "cases": machine_cases,
-            "aggregate": aggregate_eval_outputs(outputs).model_dump(mode="json"),
-        }
+    release_gate = (
+        assess_eval_release_gate(
+            args.profile,
+            profile,
+            suite,
+            load_eval_release_gate_policy(DEFAULT_RELEASE_GATE_POLICY_PATH),
+            outputs,
+        )
+        if args.profile == "p0_fault_lab" and profile is not None
+        else None
+    )
+    payload = build_eval_cli_payload(
+        outputs, case_id=args.case_id, release_gate=release_gate
     )
     print(json.dumps(payload, ensure_ascii=False))
     if not all(output.passed for output in outputs):

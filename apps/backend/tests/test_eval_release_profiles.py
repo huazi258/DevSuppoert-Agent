@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -117,7 +118,7 @@ def test_p0_selection_runs_only_the_selected_cases() -> None:
 
 
 def test_cli_profile_selects_p0_without_changing_default_full_suite_behavior(
-    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seen: list[list[str]] = []
 
@@ -135,6 +136,10 @@ def test_cli_profile_selects_p0_without_changing_default_full_suite_behavior(
         "devsupport_backend.evals.runner.aggregate_eval_outputs",
         lambda _: SimpleNamespace(model_dump=lambda **__: {}),
     )
+    monkeypatch.setattr(
+        "devsupport_backend.evals.runner.assess_eval_release_gate",
+        lambda *_: SimpleNamespace(model_dump=lambda **__: {"status": "PASS"}),
+    )
     monkeypatch.setattr(sys, "argv", ["eval-runner"])
 
     from devsupport_backend.evals.runner import main
@@ -145,6 +150,11 @@ def test_cli_profile_selects_p0_without_changing_default_full_suite_behavior(
 
     full_suite_case_ids = [fixture.id for fixture in load_eval_fixture_suite(SUITE_PATH).fixtures]
     assert seen == [full_suite_case_ids, P0_CASE_IDS]
+    full_payload, p0_payload = [
+        json.loads(line) for line in capsys.readouterr().out.splitlines()
+    ]
+    assert "release_gate" not in full_payload
+    assert p0_payload["release_gate"] == {"status": "PASS"}
 
 
 def test_cli_rejects_conflicting_case_and_profile_filters(
