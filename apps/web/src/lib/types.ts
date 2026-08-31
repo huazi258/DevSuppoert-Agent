@@ -206,6 +206,39 @@ export interface WorkflowProgressResponse {
   retry_available: boolean;
 }
 
+export type InvestigationTimelineEventType =
+  | "investigation_started"
+  | "knowledge_searched"
+  | "hypothesis_created"
+  | "evidence_collected"
+  | "hypothesis_updated"
+  | "conclusion_reached"
+  | "action_proposed"
+  | "policy_decision"
+  | "approval_wait"
+  | "approval_decision"
+  | "action_execution"
+  | "recovery_verification"
+  | "investigation_interrupted"
+  | "investigation_completed";
+
+export interface InvestigationTimelineEvent {
+  event_id: string;
+  sequence: number;
+  event_type: InvestigationTimelineEventType;
+  occurred_at: string | null;
+  title: string;
+  summary: string;
+  status: string | null;
+}
+
+export interface WorkflowTimelineResponse {
+  incident_id: string;
+  checkpoint_available: boolean;
+  truncated: boolean;
+  events: InvestigationTimelineEvent[];
+}
+
 export type ApprovalDecision = "APPROVE" | "REJECT";
 
 export interface FinalReportIncidentSummary {

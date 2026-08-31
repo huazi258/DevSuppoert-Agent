@@ -11,6 +11,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
+from devsupport_backend.agent import runtime as runtime_module
 from devsupport_backend.agent.persistence import open_postgres_checkpointer, psycopg_dsn
 from devsupport_backend.agent.runtime import WorkflowService
 from devsupport_backend.agent.state import (
@@ -26,8 +27,10 @@ from devsupport_backend.agent.state import (
     create_initial_agent_state,
 )
 from devsupport_backend.config import settings
+from devsupport_backend.database import SessionLocal
 from devsupport_backend.models import Incident
 from devsupport_backend.tools.schemas import ToolStatus
+from devsupport_backend.workflow_console import PostgresWorkflowRuntime
 
 
 class InterruptState(TypedDict):
@@ -240,3 +243,29 @@ def test_different_threads_are_isolated_in_postgres_checkpoints() -> None:
     finally:
         _delete_thread(first_incident.thread_id)
         _delete_thread(second_incident.thread_id)
+
+
+def test_postgres_runtime_normalizes_bounded_checkpoint_history(
+    monkeypatch,
+) -> None:
+    incident = _build_incident()
+    state = _complete_agent_state(incident)
+    monkeypatch.setattr(runtime_module, "WORKFLOW_CHECKPOINT_HISTORY_LIMIT", 2)
+    try:
+        with open_postgres_checkpointer() as checkpointer:
+            graph = PostgresWorkflowRuntime._checkpoint_reader_graph(checkpointer)
+            graph.invoke(state, WorkflowService.config_for(incident.thread_id))
+
+        with SessionLocal() as session:
+            history = PostgresWorkflowRuntime(session).get_checkpoint_history(incident.thread_id)
+
+        assert history.truncated is True
+        assert len(history.records) <= 2
+        assert [record.created_at for record in history.records] == sorted(
+            record.created_at for record in history.records
+        )
+        assert all(record.created_at.tzinfo is not None for record in history.records)
+        assert all(record.state["incident"].id == incident.id for record in history.records)
+        assert all(not hasattr(record, "config") for record in history.records)
+    finally:
+        _delete_thread(incident.thread_id)

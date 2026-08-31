@@ -17,6 +17,23 @@ WorkflowProgressPhase = Literal[
     "completed",
 ]
 
+InvestigationTimelineEventType = Literal[
+    "investigation_started",
+    "knowledge_searched",
+    "hypothesis_created",
+    "evidence_collected",
+    "hypothesis_updated",
+    "conclusion_reached",
+    "action_proposed",
+    "policy_decision",
+    "approval_wait",
+    "approval_decision",
+    "action_execution",
+    "recovery_verification",
+    "investigation_interrupted",
+    "investigation_completed",
+]
+
 
 class WorkflowResponseModel(BaseModel):
     """Forbid accidental leakage of internal checkpoint fields."""
@@ -69,6 +86,27 @@ class WorkflowProgressResponse(WorkflowResponseModel):
     failure: WorkflowProgressFailureResponse | None
     terminal_reason: TerminalReason | None
     retry_available: bool = False
+
+
+class InvestigationTimelineEventResponse(WorkflowResponseModel):
+    """One stable user-facing fact derived from persisted investigation history."""
+
+    event_id: str
+    sequence: int
+    event_type: InvestigationTimelineEventType
+    occurred_at: datetime | None
+    title: str
+    summary: str
+    status: str | None = None
+
+
+class WorkflowTimelineResponse(WorkflowResponseModel):
+    """Bounded read-only investigation narrative derived from checkpoint history."""
+
+    incident_id: UUID
+    checkpoint_available: bool
+    truncated: bool = False
+    events: list[InvestigationTimelineEventResponse]
 
 
 class WorkflowHypothesisResponse(WorkflowResponseModel):

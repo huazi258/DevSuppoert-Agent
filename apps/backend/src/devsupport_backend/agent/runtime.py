@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from time import monotonic
 from typing import Callable, Protocol, cast
 
@@ -30,6 +31,9 @@ from devsupport_backend.agent.state import (
 DEFAULT_WORKFLOW_RECURSION_LIMIT = 40
 """Enough bounded graph steps for five successful rounds and one terminal path."""
 
+WORKFLOW_CHECKPOINT_HISTORY_LIMIT = 200
+"""Maximum persisted checkpoints exposed to the V1 Timeline projection."""
+
 
 @dataclass(frozen=True)
 class WorkflowFailure:
@@ -39,6 +43,22 @@ class WorkflowFailure:
     safe_error: str
     category: FailureCategory = FailureCategory.WORKFLOW_RUNTIME_FAILURE
     retryable: bool = False
+
+
+@dataclass(frozen=True)
+class WorkflowCheckpointRecord:
+    """LangGraph-neutral persisted state fact used by read-only projections."""
+
+    state: AgentState
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class WorkflowCheckpointHistory:
+    """Bounded oldest-to-newest checkpoint history without LangGraph internals."""
+
+    records: tuple[WorkflowCheckpointRecord, ...]
+    truncated: bool = False
 
 
 class WorkflowIncidentSource(IncidentStateSource, Protocol):
@@ -97,6 +117,22 @@ class WorkflowService:
             ),
             safe_error=safe_message_for_failure_category(category),
         )
+
+    def get_checkpoint_history(self, thread_id: str) -> WorkflowCheckpointHistory:
+        """Normalize newest-first LangGraph snapshots into bounded chronological records."""
+        snapshots = list(
+            self._graph.get_state_history(
+                self.config_for(thread_id),
+                limit=WORKFLOW_CHECKPOINT_HISTORY_LIMIT + 1,
+            )
+        )
+        truncated = len(snapshots) > WORKFLOW_CHECKPOINT_HISTORY_LIMIT
+        records = [
+            record
+            for snapshot in snapshots[:WORKFLOW_CHECKPOINT_HISTORY_LIMIT]
+            if (record := _checkpoint_record(snapshot)) is not None
+        ]
+        return WorkflowCheckpointHistory(records=tuple(reversed(records)), truncated=truncated)
 
     def retry_failed_task(self, thread_id: str) -> AgentState:
         """Continue one persisted thread from its failed LangGraph task."""
@@ -208,3 +244,16 @@ def _persisted_failure_category(values: dict[str, object]) -> FailureCategory:
         return FailureCategory(values.get("workflow_failure_category"))
     except (TypeError, ValueError):
         return FailureCategory.WORKFLOW_RUNTIME_FAILURE
+
+
+def _checkpoint_record(snapshot: object) -> WorkflowCheckpointRecord | None:
+    """Discard LangGraph's empty bootstrap snapshot and normalize actual persisted state facts."""
+    values = getattr(snapshot, "values", None)
+    created_at = getattr(snapshot, "created_at", None)
+    if not isinstance(values, dict) or not values or not isinstance(created_at, str):
+        return None
+    try:
+        occurred_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return WorkflowCheckpointRecord(state=cast(AgentState, values), created_at=occurred_at)

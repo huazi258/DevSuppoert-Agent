@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from devsupport_backend.agent.runtime import WorkflowFailure
+from devsupport_backend.agent.runtime import WorkflowCheckpointHistory, WorkflowFailure
 from devsupport_backend.agent.state import (
     ActionExecutionOutcome,
     AgentStage,
@@ -46,6 +46,7 @@ class FakeWorkflowRuntime:
         failure: WorkflowFailure | None = None,
         failure_error: Exception | None = None,
         retry_error: Exception | None = None,
+        history: WorkflowCheckpointHistory | None = None,
     ) -> None:
         self.states: dict[str, object] = {}
         self.start_error = start_error
@@ -53,11 +54,13 @@ class FakeWorkflowRuntime:
         self.failure = failure
         self.failure_error = failure_error
         self.retry_error = retry_error
+        self.history = history or WorkflowCheckpointHistory(records=())
         self.start_calls = 0
         self.started_threads: list[str] = []
         self.retry_calls = 0
         self.retry_usage_calls = 0
         self.retried_threads: list[str] = []
+        self.history_thread_ids: list[str] = []
 
     def get_state(self, thread_id: str):
         if self.get_state_results:
@@ -93,6 +96,10 @@ class FakeWorkflowRuntime:
         if self.failure_error is not None:
             raise self.failure_error
         return self.failure
+
+    def get_checkpoint_history(self, thread_id: str) -> WorkflowCheckpointHistory:
+        self.history_thread_ids.append(thread_id)
+        return self.history
 
     def retry_failed_task(self, thread_id: str):
         self.retry_calls += 1
@@ -287,6 +294,7 @@ def test_workflow_progress_api_covers_accepted_start_before_first_checkpoint(
     accepted = client.post(f"/incidents/{created['id']}/workflow")
     full_workflow = client.get(f"/incidents/{created['id']}/workflow")
     progress = client.get(f"/incidents/{created['id']}/workflow/progress")
+    timeline = client.get(f"/incidents/{created['id']}/workflow/timeline")
 
     assert before_start.status_code == 200
     assert before_start.json()["phase"] == "not_started"
@@ -311,6 +319,23 @@ def test_workflow_progress_api_covers_accepted_start_before_first_checkpoint(
         "failure": None,
         "terminal_reason": None,
         "retry_available": False,
+    }
+    assert timeline.status_code == 200
+    assert timeline.json() == {
+        "incident_id": created["id"],
+        "checkpoint_available": False,
+        "truncated": False,
+        "events": [
+            {
+                "event_id": f"investigation-accepted:{created['id']}",
+                "sequence": 1,
+                "event_type": "investigation_started",
+                "occurred_at": None,
+                "title": "Investigation accepted",
+                "summary": "Waiting for the first persisted workflow checkpoint.",
+                "status": None,
+            }
+        ],
     }
     assert runtime.start_calls == runtime.retry_calls == 0
 
@@ -370,12 +395,18 @@ def test_workflow_retry_api_retries_eligible_failure_on_original_thread(
     assert runtime.retry_calls == 1
     assert runtime.retried_threads == [incident.thread_id]
     assert runtime.start_calls == 0
-    assert database_session.scalar(
-        select(func.count()).select_from(Action).where(Action.incident_id == incident.id)
-    ) == 0
-    assert database_session.scalar(
-        select(func.count()).select_from(Approval).where(Approval.incident_id == incident.id)
-    ) == 0
+    assert (
+        database_session.scalar(
+            select(func.count()).select_from(Action).where(Action.incident_id == incident.id)
+        )
+        == 0
+    )
+    assert (
+        database_session.scalar(
+            select(func.count()).select_from(Approval).where(Approval.incident_id == incident.id)
+        )
+        == 0
+    )
 
 
 def test_workflow_retry_api_returns_503_and_preserves_retryable_failure(
@@ -399,12 +430,18 @@ def test_workflow_retry_api_returns_503_and_preserves_retryable_failure(
     assert incident.status == "INVESTIGATING"
     assert runtime.retried_threads == [incident.thread_id]
     assert runtime.start_calls == 0
-    assert database_session.scalar(
-        select(func.count()).select_from(Action).where(Action.incident_id == incident.id)
-    ) == 0
-    assert database_session.scalar(
-        select(func.count()).select_from(Approval).where(Approval.incident_id == incident.id)
-    ) == 0
+    assert (
+        database_session.scalar(
+            select(func.count()).select_from(Action).where(Action.incident_id == incident.id)
+        )
+        == 0
+    )
+    assert (
+        database_session.scalar(
+            select(func.count()).select_from(Approval).where(Approval.incident_id == incident.id)
+        )
+        == 0
+    )
 
 
 def test_workflow_retry_api_returns_503_when_failure_metadata_cannot_be_read(
@@ -475,11 +512,16 @@ def test_workflow_retry_api_rejects_ineligible_lifecycle_and_persistence_states(
             "resolved": "RESOLVED",
             "needs_manual_action": "NEEDS_MANUAL_ACTION",
         }.get(case, "INVESTIGATING")
-        failed_node = case if case in {
-            "policy_gate",
-            "approval_wait",
-            "controlled_action_execution",
-        } else "investigation_planning"
+        failed_node = (
+            case
+            if case
+            in {
+                "policy_gate",
+                "approval_wait",
+                "controlled_action_execution",
+            }
+            else "investigation_planning"
+        )
         incident = _prepare_retryable_incident(
             client,
             database_session,

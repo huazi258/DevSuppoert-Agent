@@ -9,6 +9,7 @@ import {
   getIncident,
   getWorkflow,
   getWorkflowProgress,
+  getWorkflowTimeline,
   retryWorkflow,
   startWorkflow,
   submitApproval,
@@ -20,8 +21,10 @@ import {
   type Incident,
   type WorkflowProgressResponse,
   type WorkflowResponse,
+  type WorkflowTimelineResponse,
 } from "../lib/types";
 import { FinalReportView } from "./final-report";
+import { InvestigationTimeline } from "./investigation-timeline";
 import { StatusBadge } from "./status-badge";
 import { WorkflowView } from "./workflow-view";
 
@@ -43,6 +46,7 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
   const [incident, setIncident] = useState<Incident | null>(null);
   const [workflow, setWorkflow] = useState<WorkflowResponse | null>(null);
   const [progress, setProgress] = useState<WorkflowProgressResponse | null>(null);
+  const [timeline, setTimeline] = useState<WorkflowTimelineResponse | null>(null);
   const [report, setReport] = useState<FinalReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [workflowLoading, setWorkflowLoading] = useState(false);
@@ -52,6 +56,7 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
   const [approvalRetryDecision, setApprovalRetryDecision] = useState<ApprovalDecision | null>(null);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
   const [progressError, setProgressError] = useState<string | null>(null);
+  const [timelineError, setTimelineError] = useState<string | null>(null);
   const [reportError, setReportError] = useState<string | null>(null);
   const refreshInFlight = useRef(false);
   const reportRequested = useRef(false);
@@ -71,6 +76,13 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
         setProgressError(messageFor(progressLoadError, "Unable to load investigation progress."));
       }
       try {
+        const nextTimeline = await getWorkflowTimeline(incidentId);
+        setTimeline(nextTimeline);
+        setTimelineError(null);
+      } catch (timelineLoadError: unknown) {
+        setTimelineError(messageFor(timelineLoadError, "Unable to load investigation timeline."));
+      }
+      try {
         const nextWorkflow = await getWorkflow(incidentId);
         setWorkflow(nextWorkflow);
         setWorkflowError(null);
@@ -86,10 +98,12 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
       setIncident(null);
       setWorkflow(null);
       setProgress(null);
+      setTimeline(null);
       setReport(null);
       setApprovalRetryDecision(null);
       setWorkflowError(null);
       setProgressError(null);
+      setTimelineError(null);
       setReportError(null);
       setError(messageFor(incidentLoadError, "Unable to load the Incident."));
     } finally {
@@ -103,12 +117,14 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
     setIncident(null);
     setWorkflow(null);
     setProgress(null);
+    setTimeline(null);
     setReport(null);
     setError(null);
     setMutationError(null);
     setApprovalRetryDecision(null);
     setWorkflowError(null);
     setProgressError(null);
+    setTimelineError(null);
     setReportError(null);
     setLoading(true);
     void refresh();
@@ -265,6 +281,7 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
       {mutationError ? <p className="error-banner" role="alert">{mutationError}</p> : null}
       {workflowError ? <p className="error-banner" role="alert">{workflowError}</p> : null}
       {progressError ? <p className="error-banner" role="alert">{progressError}</p> : null}
+      {timelineError ? <p className="error-banner" role="alert">{timelineError}</p> : null}
       {reportError ? <p className="empty-state">{reportError}</p> : null}
 
       {canStart ? (
@@ -301,6 +318,7 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
       ) : null}
 
       {workflowLoading && workflow ? <p className="subtle-status">Refreshing workflow…</p> : null}
+      {timeline ? <InvestigationTimeline timeline={timeline} /> : null}
       {workflow ? (
         <>
           <WorkflowView workflow={workflow} />

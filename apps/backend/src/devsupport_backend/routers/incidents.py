@@ -26,6 +26,7 @@ from devsupport_backend.schemas.workflows import (
     WorkflowProgressResponse,
     WorkflowResponse,
     WorkflowStartResponse,
+    WorkflowTimelineResponse,
 )
 from devsupport_backend.workflow_console import (
     PostgresWorkflowRuntime,
@@ -165,6 +166,21 @@ def get_workflow_progress(
     """Return the latest safe persisted progress, including accepted starts without checkpoints."""
     try:
         return WorkflowConsoleService(session, workflow_runtime).read_progress(incident_id)
+    except LookupError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except (WorkflowConflictError, WorkflowStateConflict) as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+
+@router.get("/{incident_id}/workflow/timeline", response_model=WorkflowTimelineResponse)
+def get_workflow_timeline(
+    incident_id: UUID,
+    session: SessionDependency,
+    workflow_runtime: WorkflowRuntimeDependency,
+) -> WorkflowTimelineResponse:
+    """Return the stable user-facing narrative derived from persisted checkpoint history."""
+    try:
+        return WorkflowConsoleService(session, workflow_runtime).read_timeline(incident_id)
     except LookupError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
     except (WorkflowConflictError, WorkflowStateConflict) as error:

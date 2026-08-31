@@ -20,7 +20,11 @@ from devsupport_backend.agent.llm import OpenAICompatibleLLMClient
 from devsupport_backend.agent.nodes.tool_execution import ToolExecutionDependencies
 from devsupport_backend.agent.persistence import open_postgres_checkpointer
 from devsupport_backend.agent.policy import PolicyGateService
-from devsupport_backend.agent.runtime import WorkflowFailure, WorkflowService
+from devsupport_backend.agent.runtime import (
+    WorkflowCheckpointHistory,
+    WorkflowFailure,
+    WorkflowService,
+)
 from devsupport_backend.agent.state import AgentStage, AgentState
 from devsupport_backend.agent.workflow import (
     InvestigationWorkflowDependencies,
@@ -28,10 +32,12 @@ from devsupport_backend.agent.workflow import (
 )
 from devsupport_backend.approvals import ApprovalDecisionService, ApprovalWaitService
 from devsupport_backend.config import settings
+from devsupport_backend.investigation_timeline import project_investigation_timeline
 from devsupport_backend.models import Action, Approval, Incident
 from devsupport_backend.rag.embeddings import OpenAICompatibleEmbeddingClient
 from devsupport_backend.rag.retrieval import RAGService
 from devsupport_backend.schemas.workflows import (
+    InvestigationTimelineEventResponse,
     WorkflowActionParametersResponse,
     WorkflowActionResponse,
     WorkflowApprovalResponse,
@@ -49,6 +55,7 @@ from devsupport_backend.schemas.workflows import (
     WorkflowReportOutcomeResponse,
     WorkflowResponse,
     WorkflowStartResponse,
+    WorkflowTimelineResponse,
     WorkflowToolErrorResponse,
     WorkflowToolHistoryResponse,
     WorkflowVerificationResponse,
@@ -112,9 +119,7 @@ _POST_APPROVAL_OR_TERMINAL_STAGES = frozenset(
 )
 
 _TERMINAL_INCIDENT_STATUSES = frozenset({"RESOLVED", "NEEDS_MANUAL_ACTION"})
-_TERMINAL_WORKFLOW_STAGES = frozenset(
-    {AgentStage.RESOLVED, AgentStage.NEEDS_MANUAL_ACTION}
-)
+_TERMINAL_WORKFLOW_STAGES = frozenset({AgentStage.RESOLVED, AgentStage.NEEDS_MANUAL_ACTION})
 
 _PERSISTED_WORKFLOW_NODE_NAMES = (
     "intake",
@@ -144,6 +149,9 @@ class WorkflowRuntime(Protocol):
     def get_failure(self, thread_id: str) -> WorkflowFailure | None:
         """Return one safe persisted failed-task projection without mutating it."""
 
+    def get_checkpoint_history(self, thread_id: str) -> WorkflowCheckpointHistory:
+        """Return bounded oldest-to-newest checkpoint facts without LangGraph internals."""
+
     def start(self, incident: Incident) -> AgentState:
         """Start the official production graph for an already persisted Incident."""
 
@@ -172,6 +180,12 @@ class PostgresWorkflowRuntime:
         with open_postgres_checkpointer() as checkpointer:
             service = WorkflowService(self._checkpoint_reader_graph(checkpointer))
             return service.get_failure(thread_id)
+
+    def get_checkpoint_history(self, thread_id: str) -> WorkflowCheckpointHistory:
+        """Read bounded checkpoint history through the same production persistence boundary."""
+        with open_postgres_checkpointer() as checkpointer:
+            service = WorkflowService(self._checkpoint_reader_graph(checkpointer))
+            return service.get_checkpoint_history(thread_id)
 
     def start(self, incident: Incident) -> AgentState:
         with open_postgres_checkpointer() as checkpointer:
@@ -323,6 +337,27 @@ class WorkflowConsoleService:
             retry_available=self._retry_available(incident, state),
         )
 
+    def read_timeline(self, incident_id: UUID) -> WorkflowTimelineResponse:
+        """Project the bounded persisted investigation narrative without loading report records."""
+        incident = self._get_incident(incident_id)
+        history = self._runtime.get_checkpoint_history(incident.thread_id)
+        for record in history.records:
+            _validate_incident_binding(incident, record.state)
+        if not history.records:
+            return self._timeline_without_checkpoint(incident, history)
+        events = project_investigation_timeline(
+            incident,
+            history.records,
+            self._runtime.get_failure(incident.thread_id),
+            truncated=history.truncated,
+        )
+        return WorkflowTimelineResponse(
+            incident_id=incident.id,
+            checkpoint_available=True,
+            truncated=history.truncated,
+            events=events,
+        )
+
     def accept_start(self, incident_id: UUID) -> WorkflowStartResponse:
         """Atomically accept one new OPEN Incident without executing its graph."""
         incident = self._session.scalar(
@@ -466,6 +501,33 @@ class WorkflowConsoleService:
             latest_tool=None,
             failure=None,
             terminal_reason=None,
+        )
+
+    def _timeline_without_checkpoint(
+        self,
+        incident: Incident,
+        history: WorkflowCheckpointHistory,
+    ) -> WorkflowTimelineResponse:
+        if incident.status == "OPEN":
+            events: list[InvestigationTimelineEventResponse] = []
+        elif incident.status == "INVESTIGATING":
+            events = [
+                InvestigationTimelineEventResponse(
+                    event_id=f"investigation-accepted:{incident.id}",
+                    sequence=1,
+                    event_type="investigation_started",
+                    occurred_at=None,
+                    title="Investigation accepted",
+                    summary="Waiting for the first persisted workflow checkpoint.",
+                )
+            ]
+        else:
+            raise WorkflowStateConflict("Incident status requires a persisted workflow checkpoint")
+        return WorkflowTimelineResponse(
+            incident_id=incident.id,
+            checkpoint_available=False,
+            truncated=history.truncated,
+            events=events,
         )
 
     @staticmethod

@@ -6,6 +6,7 @@ import type {
   WorkflowResponse,
   WorkflowProgressResponse,
   WorkflowStartResponse,
+  WorkflowTimelineResponse,
 } from "./types";
 
 const API_BASE_URL =
@@ -89,6 +90,10 @@ export function getWorkflow(id: string): Promise<WorkflowResponse> {
 
 export function getWorkflowProgress(id: string): Promise<WorkflowProgressResponse> {
   return request<WorkflowProgressResponse>(`/incidents/${id}/workflow/progress`);
+}
+
+export function getWorkflowTimeline(id: string): Promise<WorkflowTimelineResponse> {
+  return request<WorkflowTimelineResponse>(`/incidents/${id}/workflow/timeline`);
 }
 
 export async function submitApproval(id: string, decision: ApprovalDecision): Promise<void> {

@@ -91,6 +91,7 @@ dd { margin: 0.25rem 0 0; overflow-wrap: anywhere; }
 .timeline { border-left: 2px solid #c8d6e7; list-style: none; margin: 0.5rem 0 0 0.35rem; padding-left: 1.2rem; }
 .timeline li { margin-bottom: 1rem; position: relative; }
 .timeline li::before { background: var(--navy); border-radius: 50%; content: ""; height: 0.55rem; left: -1.52rem; position: absolute; top: 0.3rem; width: 0.55rem; }
+.investigation-timeline .timeline-latest::before { background: var(--success); }
 pre { background: #f0f4f8; border: 1px solid #d6e0ea; border-radius: 0.3rem; font-size: 0.78rem; margin: 0.75rem 0 0; overflow-x: auto; padding: 0.65rem; }
 .decision-grid { display: grid; gap: 0.75rem; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 1rem; }
 .approval-controls { background: #f0f6ff; border: 1px solid #c5d8f0; border-radius: 0.4rem; margin-top: 1rem; padding: 1rem; }

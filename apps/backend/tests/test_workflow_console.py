@@ -11,12 +11,19 @@ from sqlalchemy.orm import Session
 
 from devsupport_backend.agent.budget import InvestigationBudget
 from devsupport_backend.agent.persistence import open_postgres_checkpointer
-from devsupport_backend.agent.runtime import WorkflowFailure, WorkflowService
+from devsupport_backend.agent.runtime import (
+    WorkflowCheckpointHistory,
+    WorkflowCheckpointRecord,
+    WorkflowFailure,
+    WorkflowService,
+)
 from devsupport_backend.agent.state import (
     ActionExecutionOutcome,
     ActionType,
     AgentStage,
     AgentState,
+    ApprovalOutcome,
+    ApprovalStatus,
     EvidenceContext,
     FailureCategory,
     FinalConclusion,
@@ -35,7 +42,7 @@ from devsupport_backend.agent.state import (
 )
 from devsupport_backend.models import Action, Approval, Incident
 from devsupport_backend.tools.registry import ToolName
-from devsupport_backend.tools.schemas import ToolStatus
+from devsupport_backend.tools.schemas import ToolError, ToolStatus
 from devsupport_backend.workflow_console import (
     PostgresWorkflowRuntime,
     WorkflowConflictError,
@@ -56,17 +63,20 @@ class FakeRuntime:
         start_error: Exception | None = None,
         retry_error: Exception | None = None,
         failure: WorkflowFailure | None = None,
+        history: WorkflowCheckpointHistory | None = None,
     ) -> None:
         self.state = state
         self.states = states or []
         self.start_error = start_error
         self.retry_error = retry_error
         self.failure = failure
+        self.history = history or WorkflowCheckpointHistory(records=())
         self.start_calls = 0
         self.retry_calls = 0
         self.retry_usage_calls = 0
         self.thread_ids: list[str] = []
         self.failure_thread_ids: list[str] = []
+        self.history_thread_ids: list[str] = []
 
     def get_state(self, thread_id: str):
         self.thread_ids.append(thread_id)
@@ -89,6 +99,10 @@ class FakeRuntime:
     def get_failure(self, thread_id: str) -> WorkflowFailure | None:
         self.failure_thread_ids.append(thread_id)
         return self.failure
+
+    def get_checkpoint_history(self, thread_id: str) -> WorkflowCheckpointHistory:
+        self.history_thread_ids.append(thread_id)
+        return self.history
 
     def retry_failed_task(self, thread_id: str):
         self.retry_calls += 1
@@ -195,6 +209,13 @@ def _retryable_failure(failed_node: str) -> WorkflowFailure:
         safe_error="LLM provider request timed out",
         category=FailureCategory.LLM_PROVIDER_TIMEOUT,
         retryable=True,
+    )
+
+
+def _checkpoint_record(state: AgentState, seconds: int) -> WorkflowCheckpointRecord:
+    return WorkflowCheckpointRecord(
+        state=state,
+        created_at=datetime(2026, 8, 31, 10, 0, seconds, tzinfo=UTC),
     )
 
 
@@ -426,6 +447,324 @@ def test_progress_fails_closed_for_checkpoint_or_lifecycle_conflicts(
             WorkflowConsoleService(database_session, FakeRuntime(state=None)).read_progress(
                 later_incident.id
             )
+
+
+def test_timeline_projects_ordered_user_facts_without_internal_tool_details(
+    database_session: Session,
+) -> None:
+    incident = _incident(database_session, status="INVESTIGATING")
+    initial = create_initial_agent_state(incident)
+    evidence = EvidenceContext(
+        evidence_type="log_query_result",
+        source="query_logs",
+        summary="Two errors were collected.",
+    )
+    hypothesis = HypothesisContext(summary="A downstream dependency is unhealthy.")
+    searched = {
+        **initial,
+        "tool_history": [
+            ToolHistoryEntry(
+                tool_name=ToolName.SEARCH_KNOWLEDGE,
+                tool_arguments={"private": "must-not-leak"},
+                status=ToolStatus.SUCCESS,
+                evidence_ids=[evidence.id],
+            )
+        ],
+        "hypotheses": [hypothesis],
+    }
+    collected = {
+        **searched,
+        "tool_history": [
+            *searched["tool_history"],
+            ToolHistoryEntry(
+                tool_name=ToolName.QUERY_LOGS,
+                tool_arguments={"provider": "must-not-leak"},
+                status=ToolStatus.SUCCESS,
+                evidence_ids=[evidence.id],
+            ),
+        ],
+        "evidence": [evidence],
+        "hypotheses": [hypothesis.model_copy(update={"status": HypothesisStatus.SUPPORTED})],
+    }
+    history = WorkflowCheckpointHistory(
+        records=(
+            _checkpoint_record(initial, 0),
+            _checkpoint_record(searched, 1),
+            _checkpoint_record(collected, 2),
+            _checkpoint_record(collected, 3),
+        )
+    )
+
+    timeline = WorkflowConsoleService(database_session, FakeRuntime(history=history)).read_timeline(
+        incident.id
+    )
+
+    assert [event.event_type for event in timeline.events] == [
+        "investigation_started",
+        "knowledge_searched",
+        "hypothesis_created",
+        "evidence_collected",
+        "hypothesis_updated",
+    ]
+    assert [event.sequence for event in timeline.events] == [1, 2, 3, 4, 5]
+    assert timeline.events[1].title == "Knowledge searched"
+    assert timeline.events[3].title == "Logs collected"
+    assert timeline.events[4].title == "Hypothesis supported"
+    rendered = " ".join(f"{event.title} {event.summary}" for event in timeline.events)
+    assert "query_logs" not in rendered
+    assert "must-not-leak" not in rendered
+
+
+@pytest.mark.parametrize("status", ["OPEN", "INVESTIGATING"])
+def test_timeline_without_checkpoint_is_a_read_only_lifecycle_projection(
+    database_session: Session,
+    status: str,
+) -> None:
+    incident = _incident(database_session, status=status)
+    runtime = FakeRuntime()
+
+    timeline = WorkflowConsoleService(database_session, runtime).read_timeline(incident.id)
+
+    assert timeline.checkpoint_available is False
+    assert runtime.start_calls == 0
+    assert runtime.retry_calls == 0
+    assert runtime.history_thread_ids == [incident.thread_id]
+    if status == "OPEN":
+        assert timeline.events == []
+    else:
+        assert [(event.event_type, event.occurred_at) for event in timeline.events] == [
+            ("investigation_started", None)
+        ]
+
+
+def test_timeline_projects_hypothesis_status_transitions(database_session: Session) -> None:
+    incident = _incident(database_session, status="INVESTIGATING")
+    initial = create_initial_agent_state(incident)
+    hypothesis = HypothesisContext(summary="A dependency may be unhealthy.")
+    active = {**initial, "hypotheses": [hypothesis]}
+    supported = {
+        **active,
+        "hypotheses": [hypothesis.model_copy(update={"status": HypothesisStatus.SUPPORTED})],
+    }
+    confirmed = {
+        **supported,
+        "hypotheses": [hypothesis.model_copy(update={"status": HypothesisStatus.CONFIRMED})],
+    }
+    rejected = {
+        **confirmed,
+        "hypotheses": [hypothesis.model_copy(update={"status": HypothesisStatus.REJECTED})],
+    }
+    history = WorkflowCheckpointHistory(
+        records=(
+            _checkpoint_record(initial, 0),
+            _checkpoint_record(active, 1),
+            _checkpoint_record(supported, 2),
+            _checkpoint_record(confirmed, 3),
+            _checkpoint_record(rejected, 4),
+        )
+    )
+
+    events = (
+        WorkflowConsoleService(database_session, FakeRuntime(history=history))
+        .read_timeline(incident.id)
+        .events
+    )
+
+    assert [event.title for event in events] == [
+        "Investigation started",
+        "Hypothesis created",
+        "Hypothesis supported",
+        "Hypothesis confirmed",
+        "Hypothesis rejected",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "title"),
+    [
+        (ToolName.QUERY_METRICS, "Metrics collected"),
+        (ToolName.QUERY_TRACES, "Traces collected"),
+        (ToolName.GET_DEPLOYMENT_HISTORY, "Deployment history checked"),
+    ],
+)
+def test_timeline_uses_provider_neutral_tool_narratives(
+    database_session: Session,
+    tool_name: ToolName,
+    title: str,
+) -> None:
+    incident = _incident(database_session, status="INVESTIGATING")
+    initial = create_initial_agent_state(incident)
+    later = {
+        **initial,
+        "tool_history": [
+            ToolHistoryEntry(tool_name=tool_name, status=ToolStatus.SUCCESS, evidence_ids=[])
+        ],
+    }
+    history = WorkflowCheckpointHistory(
+        records=(_checkpoint_record(initial, 0), _checkpoint_record(later, 1))
+    )
+
+    events = (
+        WorkflowConsoleService(database_session, FakeRuntime(history=history))
+        .read_timeline(incident.id)
+        .events
+    )
+
+    assert events[-1].title == title
+    assert events[-1].event_type == "evidence_collected"
+
+
+def test_timeline_uses_safe_tool_and_workflow_failures(database_session: Session) -> None:
+    incident = _incident(database_session, status="INVESTIGATING")
+    initial = create_initial_agent_state(incident)
+    failed_tool = {
+        **initial,
+        "tool_history": [
+            ToolHistoryEntry(
+                tool_name=ToolName.QUERY_LOGS,
+                status=ToolStatus.FAILURE,
+                error=ToolError(code="safe", message="Logs are unavailable.", retryable=True),
+            )
+        ],
+    }
+    failed_workflow = {
+        **failed_tool,
+        "workflow_failure_category": FailureCategory.LLM_PROVIDER_TIMEOUT,
+        "workflow_failure_safe_message": "LLM provider request timed out",
+        "workflow_failure_retryable": True,
+    }
+    history = WorkflowCheckpointHistory(
+        records=(
+            _checkpoint_record(initial, 0),
+            _checkpoint_record(failed_tool, 1),
+            _checkpoint_record(failed_workflow, 2),
+        )
+    )
+
+    events = (
+        WorkflowConsoleService(database_session, FakeRuntime(history=history))
+        .read_timeline(incident.id)
+        .events
+    )
+
+    assert events[-2].title == "Logs collected failed"
+    assert events[-2].summary == "Logs are unavailable."
+    assert events[-1].event_type == "investigation_interrupted"
+    assert events[-1].summary == "LLM provider request timed out"
+
+
+def test_timeline_projects_first_appearance_outcomes_and_terminal_once(
+    database_session: Session,
+) -> None:
+    incident = _incident(database_session, status="NEEDS_MANUAL_ACTION")
+    initial = create_initial_agent_state(incident)
+    action_id = uuid4()
+    approval_id = uuid4()
+    outcome_id = uuid4()
+    evidence = EvidenceContext(
+        evidence_type="metric_snapshot",
+        source="query_metrics",
+        summary="Error rate",
+    )
+    proposed = ProposedAction(
+        action_type=ActionType.ROLLBACK_DEPLOYMENT,
+        summary="Rollback the affected version.",
+        reason="Evidence supports rollback.",
+        risk="Requires approval.",
+        supporting_evidence_ids=[evidence.id],
+    )
+    decision = PolicyOutcome(
+        decision=PolicyDecision.APPROVAL_REQUIRED,
+        reason_code=PolicyReasonCode.APPROVAL_REQUIRED,
+        reason="Approval is required.",
+        action_id=action_id,
+    )
+    waiting = {
+        **initial,
+        "current_stage": AgentStage.WAITING_APPROVAL,
+        "final_conclusion": FinalConclusion(summary="The deployment is the likely cause."),
+        "proposed_action": proposed,
+        "policy_outcome": decision,
+    }
+    acted = {
+        **waiting,
+        "current_stage": AgentStage.ACTION_EXECUTION,
+        "approval_outcome": ApprovalOutcome(
+            approval_id=approval_id,
+            action_id=action_id,
+            status=ApprovalStatus.APPROVED,
+        ),
+        "execution_outcome": ActionExecutionOutcome(status=ToolStatus.FAILURE, executed=False),
+    }
+    terminal = {
+        **acted,
+        "current_stage": AgentStage.NEEDS_MANUAL_ACTION,
+        "verification_outcome": VerificationOutcome(
+            verification_id=outcome_id,
+            action_id=action_id,
+            status=VerificationStatus.INCONCLUSIVE,
+            summary="Recovery could not be confirmed.",
+        ),
+        "terminal_reason": TerminalReason.RECOVERY_VERIFICATION_INCONCLUSIVE,
+    }
+    history = WorkflowCheckpointHistory(
+        records=(
+            _checkpoint_record(initial, 0),
+            _checkpoint_record(waiting, 1),
+            _checkpoint_record(acted, 2),
+            _checkpoint_record(terminal, 3),
+            _checkpoint_record(terminal, 4),
+        )
+    )
+
+    events = (
+        WorkflowConsoleService(database_session, FakeRuntime(history=history))
+        .read_timeline(incident.id)
+        .events
+    )
+
+    assert [event.event_type for event in events] == [
+        "investigation_started",
+        "conclusion_reached",
+        "action_proposed",
+        "policy_decision",
+        "approval_wait",
+        "approval_decision",
+        "action_execution",
+        "recovery_verification",
+        "investigation_completed",
+    ]
+    assert events[-1].status == "NEEDS_MANUAL_ACTION"
+
+
+def test_timeline_fails_closed_for_history_binding_conflicts_and_marks_truncation(
+    database_session: Session,
+) -> None:
+    incident = _incident(database_session, status="INVESTIGATING")
+    mismatched = create_initial_agent_state(incident)
+    mismatched["incident"] = mismatched["incident"].model_copy(
+        update={"service": "payment-service"}
+    )
+    with pytest.raises(WorkflowStateConflict, match="binding"):
+        WorkflowConsoleService(
+            database_session,
+            FakeRuntime(
+                history=WorkflowCheckpointHistory(records=(_checkpoint_record(mismatched, 0),))
+            ),
+        ).read_timeline(incident.id)
+
+    state = create_initial_agent_state(incident)
+    timeline = WorkflowConsoleService(
+        database_session,
+        FakeRuntime(
+            history=WorkflowCheckpointHistory(
+                records=(_checkpoint_record(state, 0),),
+                truncated=True,
+            )
+        ),
+    ).read_timeline(incident.id)
+    assert timeline.truncated is True
+    assert timeline.events == []
 
 
 def test_projector_rejects_action_and_incident_binding_mismatches(
