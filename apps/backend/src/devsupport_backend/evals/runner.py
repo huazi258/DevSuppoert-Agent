@@ -83,6 +83,7 @@ from devsupport_backend.evals.contracts import (
     RunnerPreparation,
     TimingStats,
     load_eval_fixture_suite,
+    load_eval_release_profiles,
     score_eval_case,
 )
 from devsupport_backend.models import (
@@ -112,6 +113,9 @@ from devsupport_backend.tools.traces import FaultLabTracesAdapter, TracesAdapter
 from devsupport_backend.workflow_console import PostgresWorkflowRuntime, WorkflowConsoleService
 
 DEFAULT_SUITE_PATH = Path(__file__).resolve().parents[5] / "evals" / "initial_suite.yaml"
+DEFAULT_RELEASE_PROFILES_PATH = (
+    Path(__file__).resolve().parents[5] / "evals" / "v1_release_profiles.yaml"
+)
 _EVAL_IPC_POLL_SECONDS = 0.1
 _EVAL_IPC_FINAL_DRAIN_SECONDS = 0.2
 _EVAL_COLLECTABLE_TERMINAL_STAGES = frozenset(
@@ -724,6 +728,23 @@ def aggregate_eval_outputs(outputs: list[EvalRunOutput]) -> EvalAggregateMetrics
         ),
         token_usage=None,
     )
+
+
+def select_eval_fixtures(
+    suite: EvalFixtureSuite, case_ids: list[str]
+) -> EvalFixtureSuite:
+    """Return an ordered, strict subset of existing fixtures without changing them."""
+    if not case_ids:
+        raise ValueError("Eval fixture selection requires at least one case ID")
+    if len(case_ids) != len(set(case_ids)):
+        raise ValueError("Eval fixture selection case IDs must be unique")
+
+    fixtures_by_id = {fixture.id: fixture for fixture in suite.fixtures}
+    unknown_case_ids = [case_id for case_id in case_ids if case_id not in fixtures_by_id]
+    if unknown_case_ids:
+        raise ValueError("Eval fixture not found: " + ", ".join(unknown_case_ids))
+
+    return EvalFixtureSuite(fixtures=[fixtures_by_id[case_id] for case_id in case_ids])
 
 
 class EvaluationRunner:
@@ -1499,9 +1520,20 @@ def main() -> None:
         description="Run DevSupport evaluation fixtures without Web UI"
     )
     parser.add_argument("--case", dest="case_id", help="Run one fixture ID")
+    parser.add_argument("--profile", help="Run one named release profile")
     parser.add_argument("--suite", type=Path, default=DEFAULT_SUITE_PATH, help="Suite YAML path")
     args = parser.parse_args()
+    if args.case_id is not None and args.profile is not None:
+        parser.error("--case and --profile cannot be used together")
+
     suite = load_eval_fixture_suite(args.suite)
+    if args.profile is not None:
+        profiles = load_eval_release_profiles(DEFAULT_RELEASE_PROFILES_PATH, suite)
+        try:
+            suite = select_eval_fixtures(suite, profiles.profiles[args.profile].case_ids)
+        except KeyError:
+            parser.error(f"Unknown Eval release profile: {args.profile}")
+
     outputs = EvaluationRunner().run_suite(suite, case_id=args.case_id)
     machine_cases = [output.machine_output() for output in outputs]
     payload: object = (

@@ -1,0 +1,23 @@
+version: v1
+profiles:
+  p0_fault_lab:
+    description: Core V1 Fault Lab regression across distinct remediation, failure, and safety boundaries.
+    case_ids:
+      - a-approve-happy
+      - b-payment-timeout-standard
+      - a-query-logs-tool-failure
+      - a-approval-reject
+      - a-recovery-verification-failure
+      - production-policy-gate-denied
+    coverage:
+      a-approve-happy: happy_path_remediation
+      b-payment-timeout-standard: second_fault_direction
+      a-query-logs-tool-failure: investigation_tool_failure
+      a-approval-reject: approval_rejection
+      a-recovery-verification-failure: recovery_verification_failure
+      production-policy-gate-denied: production_policy_denial
+  extended_fault_lab:
+    description: Wording-robustness cases retained alongside the P0 release regression.
+    case_ids:
+      - a-wording-variant
+      - b-wording-noise-variant

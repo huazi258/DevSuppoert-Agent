@@ -8,6 +8,7 @@ becoming Agent input by construction.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
@@ -361,6 +362,81 @@ class EvalFixtureSuite(EvalModel):
         return self
 
 
+class EvalCoverageClassification(StrEnum):
+    """Engineering or safety boundary represented by a release-profile case."""
+
+    HAPPY_PATH_REMEDIATION = "happy_path_remediation"
+    SECOND_FAULT_DIRECTION = "second_fault_direction"
+    INVESTIGATION_TOOL_FAILURE = "investigation_tool_failure"
+    APPROVAL_REJECTION = "approval_rejection"
+    RECOVERY_VERIFICATION_FAILURE = "recovery_verification_failure"
+    PRODUCTION_POLICY_DENIAL = "production_policy_denial"
+
+
+class EvalSuiteProfile(EvalModel):
+    """A small, ordered selection of existing fixture IDs for a release purpose."""
+
+    description: str = Field(min_length=1, max_length=1_000)
+    case_ids: list[str] = Field(min_length=1, max_length=20)
+    coverage: dict[str, EvalCoverageClassification] = Field(default_factory=dict)
+
+    @field_validator("case_ids")
+    @classmethod
+    def require_unique_case_ids(cls, case_ids: list[str]) -> list[str]:
+        if any(not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", case_id) for case_id in case_ids):
+            raise ValueError("case_ids must contain stable fixture IDs")
+        if len(case_ids) != len(set(case_ids)):
+            raise ValueError("case_ids must be unique within a profile")
+        return case_ids
+
+    @model_validator(mode="after")
+    def require_coverage_for_selected_cases(self) -> "EvalSuiteProfile":
+        if self.coverage and set(self.coverage) != set(self.case_ids):
+            raise ValueError("coverage must classify exactly the profile case_ids")
+        return self
+
+
+class EvalReleaseProfiles(EvalModel):
+    """Versioned release-profile metadata that points to one fixture source of truth."""
+
+    version: Literal["v1"]
+    profiles: dict[str, EvalSuiteProfile] = Field(min_length=1, max_length=10)
+
+    @field_validator("profiles")
+    @classmethod
+    def require_stable_profile_names(
+        cls, profiles: dict[str, EvalSuiteProfile]
+    ) -> dict[str, EvalSuiteProfile]:
+        if any(not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name) for name in profiles):
+            raise ValueError("profile names must be non-empty stable identifiers")
+        return profiles
+
+    @model_validator(mode="after")
+    def require_non_overlapping_cases(self) -> "EvalReleaseProfiles":
+        assigned_case_ids = [
+            case_id for profile in self.profiles.values() for case_id in profile.case_ids
+        ]
+        if len(assigned_case_ids) != len(set(assigned_case_ids)):
+            raise ValueError("fixture IDs must not overlap across release profiles")
+        return self
+
+    def require_fixture_ids(self, suite: EvalFixtureSuite) -> "EvalReleaseProfiles":
+        """Fail closed when a profile references a fixture absent from the selected suite."""
+        fixture_ids = {fixture.id for fixture in suite.fixtures}
+        unknown_case_ids = [
+            case_id
+            for profile in self.profiles.values()
+            for case_id in profile.case_ids
+            if case_id not in fixture_ids
+        ]
+        if unknown_case_ids:
+            raise ValueError(
+                "Eval release profile references unknown fixture IDs: "
+                + ", ".join(unknown_case_ids)
+            )
+        return self
+
+
 class ObservedEvidence(EvalModel):
     """Persisted production evidence projection used by evaluator-only matchers."""
 
@@ -689,6 +765,14 @@ def load_eval_fixture_suite(path: Path) -> EvalFixtureSuite:
     if not isinstance(loaded, dict):
         raise ValueError("Eval fixture suite must contain one mapping")
     return EvalFixtureSuite.model_validate(loaded)
+
+
+def load_eval_release_profiles(path: Path, suite: EvalFixtureSuite) -> EvalReleaseProfiles:
+    """Load strict profile metadata and bind every declared ID to an existing fixture."""
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError("Eval release profiles must contain one mapping")
+    return EvalReleaseProfiles.model_validate(loaded).require_fixture_ids(suite)
 
 
 def score_eval_case(fixture: EvalFixture, result: EvalCaseResult) -> EvalScore:
