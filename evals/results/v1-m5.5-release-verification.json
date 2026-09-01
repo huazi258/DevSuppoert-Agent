@@ -1,7 +1,8 @@
 {
   "version": "v1",
   "verified_commit": "6aa51676f24e4772b0958e31dde1d112128da957",
-  "verified_at": "2026-09-01T07:51:08Z",
+  "verified_at": "2026-09-01T08:06:05Z",
+  "verification_continuation_head": "83a52b97299a10f09eba717ed8cfe13b63962760",
   "final_status": "BLOCKED",
   "non_llm_gates": {
     "backend_full_suite": {
@@ -30,7 +31,7 @@
     "expected_case_count": 8,
     "benchmark_summary": null,
     "citation_provenance_verified": false,
-    "blocker": "embedding_provider_connection_failure"
+    "blocker": "rag_benchmark_result_incomplete"
   },
   "real_integration": {
     "artifact_path": "evals/results/v1-m5.3-real-integration-acceptance.json",
@@ -70,7 +71,7 @@
     "m5_4_verified_total": 0
   },
   "blocker_summaries": [
-    "The required current 8-case real-corpus RAG regression could not obtain query embeddings because the external embedding provider connection failed.",
+    "The resumed required current 8-case real-corpus RAG regression did not produce a complete benchmark result, so retrieval and citation release evidence remains incomplete.",
     "No P0 release assessment was run after the required RAG evidence became incomplete."
   ],
   "known_external_environment_limitations": [

@@ -6,14 +6,15 @@ V1 is the scoped DevSupport AI Investigator release: a stateful, evidence-ground
 
 ## Verification
 
-- Verified commit: `6aa51676f24e4772b0958e31dde1d112128da957`
+- Verified production commit: `6aa51676f24e4772b0958e31dde1d112128da957`
+- Verification continuation head: `83a52b97299a10f09eba717ed8cfe13b63962760`
 - Release status: **BLOCKED**
 - Backend full suite: PASS (628 tests); Ruff: PASS.
 - Web lint, TypeScript check, and production build: PASS.
 - M5.3 real-integration acceptance: PASS after strict saved-artifact validation.
 - M5.4 approval/recovery regression: PASS after strict saved-artifact validation; all three cases passed and Unauthorized Execution total was zero.
 
-The required current eight-case real-corpus RAG regression could not obtain query embeddings because its external embedding-provider connection failed. Therefore citation/retrieval release evidence is incomplete, neither P0 Fault Lab run was started, and the consecutive-clean-P0 count is zero. This is a BLOCKED release, not a product correctness PASS or FAIL.
+The resumed required current eight-case real-corpus RAG regression did not produce a complete benchmark result. Citation/retrieval release evidence therefore remains incomplete, neither P0 Fault Lab run was started, and the consecutive-clean-P0 count is zero. This is a BLOCKED release, not a product correctness PASS or FAIL.
 
 See [the final verification manifest](../evals/results/v1-m5.5-release-verification.json) for the complete safe evidence summary.
 
