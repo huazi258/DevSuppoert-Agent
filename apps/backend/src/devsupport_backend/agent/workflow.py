@@ -21,6 +21,7 @@ from devsupport_backend.agent.budget import (
 )
 from devsupport_backend.agent.evidence_evaluator import (
     LLMEvidenceEvaluator,
+    has_active_hypothesis,
     is_conclusion_eligible,
 )
 from devsupport_backend.agent.llm import LLMClient
@@ -490,6 +491,8 @@ def _evidence_evaluation_with_llm_budget(
     if state["current_stage"] != AgentStage.EVIDENCE_EVALUATION:
         return state
     if is_conclusion_eligible(state):
+        return evidence_evaluation_node(state, evaluator, limits)
+    if has_active_hypothesis(state):
         return evidence_evaluation_node(state, evaluator, limits)
     if _llm_budget_exhausted(state, budget):
         return _llm_budget_exhausted_state(state)

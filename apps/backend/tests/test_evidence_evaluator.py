@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
 
+from devsupport_backend.agent.budget import InvestigationBudget
 from devsupport_backend.agent.evidence_evaluator import (
     EvidenceEvaluationError,
     LLMEvidenceEvaluator,
@@ -28,6 +30,7 @@ from devsupport_backend.agent.state import (
 )
 from devsupport_backend.agent.workflow import (
     InvestigationLoopLimits,
+    _evidence_evaluation_with_llm_budget,
     evidence_evaluation_node,
 )
 from devsupport_backend.models import Incident
@@ -48,6 +51,18 @@ class FakeLLMClient:
         if isinstance(self.response, Exception):
             raise self.response
         return self.response
+
+
+class FailIfCalledLLMClient:
+    """Proves a deterministic path did not invoke a provider."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+        del system_prompt, user_prompt
+        self.calls += 1
+        raise AssertionError("ACTIVE fast path must not call the provider")
 
 
 class RecordingEvaluator:
@@ -110,8 +125,16 @@ def evaluation_response(decision: str) -> str:
     )
 
 
-def test_insufficient_evidence_can_continue_and_prompt_contains_only_state_facts() -> None:
+def test_supported_only_evidence_can_continue_and_prompt_contains_only_state_facts() -> None:
     state, evidence, hypothesis = build_evaluation_state()
+    state["hypotheses"] = [
+        hypothesis.model_copy(
+            update={
+                "status": HypothesisStatus.SUPPORTED,
+                "supporting_evidence_ids": [evidence.id],
+            }
+        )
+    ]
     client = FakeLLMClient(evaluation_response("CONTINUE"))
 
     decision = LLMEvidenceEvaluator(client).evaluate(state)
@@ -225,13 +248,15 @@ def test_confirmed_hypothesis_with_unknown_evidence_does_not_allow_conclude() ->
 
 def test_conclusion_without_confirmed_hypothesis_is_rejected_without_state_changes() -> None:
     state, evidence, hypothesis = build_evaluation_state()
+    supported = hypothesis.model_copy(update={"status": HypothesisStatus.SUPPORTED})
+    state["hypotheses"] = [supported]
     evidence_before = [*state["evidence"]]
     history_before = [*state["tool_history"]]
 
     with pytest.raises(EvidenceEvaluationError, match="CONFIRMED hypothesis"):
         LLMEvidenceEvaluator(FakeLLMClient(evaluation_response("CONCLUDE"))).evaluate(state)
 
-    assert state["hypotheses"] == [hypothesis]
+    assert state["hypotheses"] == [supported]
     assert state["evidence"] == evidence_before
     assert state["tool_history"] == history_before
     assert state["tool_call_count"] == 0
@@ -255,6 +280,8 @@ def test_confirmed_hypothesis_with_unknown_evidence_is_rejected() -> None:
 
 def test_needs_manual_action_and_failures_do_not_invent_a_decision() -> None:
     state, evidence, hypothesis = build_evaluation_state()
+    supported = hypothesis.model_copy(update={"status": HypothesisStatus.SUPPORTED})
+    state["hypotheses"] = [supported]
     evaluator = LLMEvidenceEvaluator(FakeLLMClient(evaluation_response("NEEDS_MANUAL_ACTION")))
 
     assert evaluator.evaluate(state).value == "NEEDS_MANUAL_ACTION"
@@ -262,7 +289,7 @@ def test_needs_manual_action_and_failures_do_not_invent_a_decision() -> None:
         LLMEvidenceEvaluator(FakeLLMClient("not JSON")).evaluate(state)
     with pytest.raises(EvidenceEvaluationError, match="provider failed"):
         LLMEvidenceEvaluator(FakeLLMClient(LLMError("network unavailable"))).evaluate(state)
-    assert state["hypotheses"] == [hypothesis]
+    assert state["hypotheses"] == [supported]
     assert state["evidence"] == [evidence]
     assert state["tool_history"]
     assert state["evaluation_decision"] is None
@@ -284,6 +311,9 @@ def test_real_evaluator_works_with_existing_workflow_evaluation_contract() -> No
 
 def test_needs_manual_evaluation_sets_a_stable_inconclusive_terminal_reason() -> None:
     state, _, _ = build_evaluation_state()
+    state["hypotheses"] = [
+        state["hypotheses"][0].model_copy(update={"status": HypothesisStatus.SUPPORTED})
+    ]
 
     updated = evidence_evaluation_node(
         state,
@@ -370,3 +400,75 @@ def test_any_grounded_confirmed_hypothesis_enables_deterministic_conclusion() ->
 
     assert updated["evaluation_decision"] is EvaluationDecision.CONCLUDE
     assert evaluator.calls == 0
+
+
+def test_active_hypothesis_continues_without_calling_or_mutating_state() -> None:
+    state, _, _ = build_evaluation_state()
+    state_before = deepcopy(state)
+    client = FailIfCalledLLMClient()
+
+    decision = LLMEvidenceEvaluator(client).evaluate(state)
+
+    assert decision is EvaluationDecision.CONTINUE
+    assert client.calls == 0
+    assert state == state_before
+
+
+def test_any_active_hypothesis_skips_the_provider_in_a_mixed_hypothesis_set() -> None:
+    state, evidence, hypothesis = build_evaluation_state()
+    state["hypotheses"] = [
+        hypothesis,
+        hypothesis.model_copy(
+            update={
+                "id": uuid4(),
+                "status": HypothesisStatus.SUPPORTED,
+                "supporting_evidence_ids": [evidence.id],
+            }
+        ),
+    ]
+    client = FailIfCalledLLMClient()
+
+    decision = LLMEvidenceEvaluator(client).evaluate(state)
+
+    assert decision is EvaluationDecision.CONTINUE
+    assert client.calls == 0
+
+
+@pytest.mark.parametrize("status", [HypothesisStatus.SUPPORTED, HypothesisStatus.REJECTED])
+def test_non_active_hypotheses_continue_to_use_the_llm_evaluator(status: HypothesisStatus) -> None:
+    state, evidence, hypothesis = build_evaluation_state()
+    state["hypotheses"] = [
+        hypothesis.model_copy(update={"status": status, "supporting_evidence_ids": [evidence.id]})
+    ]
+    client = FakeLLMClient(evaluation_response("CONTINUE"))
+
+    assert LLMEvidenceEvaluator(client).evaluate(state) is EvaluationDecision.CONTINUE
+    assert client.user_prompt is not None
+
+
+def test_mixed_active_supported_state_preserves_llm_budget_for_existing_planning_route() -> None:
+    state, evidence, hypothesis = build_evaluation_state()
+    state["hypotheses"] = [
+        hypothesis,
+        hypothesis.model_copy(
+            update={
+                "id": uuid4(),
+                "status": HypothesisStatus.SUPPORTED,
+                "supporting_evidence_ids": [evidence.id],
+            }
+        ),
+    ]
+    state["llm_call_count"] = 4
+    client = FailIfCalledLLMClient()
+
+    updated = _evidence_evaluation_with_llm_budget(
+        state,
+        LLMEvidenceEvaluator(client),
+        InvestigationLoopLimits(),
+        InvestigationBudget(max_llm_calls=4),
+    )
+
+    assert updated["evaluation_decision"] is EvaluationDecision.CONTINUE
+    assert updated["current_stage"] is AgentStage.INVESTIGATION_PLANNING
+    assert updated["llm_call_count"] == 4
+    assert client.calls == 0

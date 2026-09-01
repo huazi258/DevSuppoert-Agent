@@ -38,7 +38,15 @@ class LLMEvidenceEvaluator:
         return type(self)(llm_client)
 
     def evaluate(self, state: AgentState) -> EvaluationDecision:
-        """Return one validated decision without changing workflow state or calling a Tool."""
+        """Return one validated decision without changing workflow state or calling a Tool.
+
+        An ACTIVE hypothesis already means current evidence cannot support or refute it, so this
+        sufficiency layer must continue without spending another LLM decision. Planner capability
+        checks, duplicate-call protection, and loop and budget guards still determine whether a
+        useful next investigation step can actually run.
+        """
+        if has_active_hypothesis(state):
+            return EvaluationDecision.CONTINUE
         try:
             raw_output = self._llm_client.complete(
                 system_prompt=_SYSTEM_PROMPT,
@@ -82,6 +90,11 @@ def is_conclusion_eligible(state: AgentState) -> bool:
         if supporting_ids and supporting_ids.issubset(known_evidence_ids):
             return True
     return False
+
+
+def has_active_hypothesis(state: AgentState) -> bool:
+    """Return whether current evidence is explicitly insufficient for at least one hypothesis."""
+    return any(item.status is HypothesisStatus.ACTIVE for item in state["hypotheses"])
 
 
 def _build_prompt_context(state: AgentState) -> dict[str, object]:

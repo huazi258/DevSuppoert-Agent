@@ -6,15 +6,15 @@
     },
     "scenario_id": "otel_payment_failure",
     "incident": {
-      "incident_id": "b58dbfcd-36b8-4c6b-8c58-09e4f6a08fc9",
+      "incident_id": "9f7559a8-d704-4d56-83cf-34d5526b39a3",
       "service": "checkout",
       "environment": "local",
-      "time_range_start": "2026-08-31T10:59:24.824435Z",
-      "time_range_end": "2026-08-31T10:59:26.522922Z"
+      "time_range_start": "2026-09-01T07:26:03.401669Z",
+      "time_range_end": "2026-09-01T07:26:03.926793Z"
     },
     "traffic": {
-      "fault_window_start": "2026-08-31T10:59:24.824435Z",
-      "fault_window_end": "2026-08-31T10:59:26.522922Z",
+      "fault_window_start": "2026-09-01T07:26:03.401669Z",
+      "fault_window_end": "2026-09-01T07:26:03.926793Z",
       "healthy_checkout_before": true,
       "checkout_attempts": 10,
       "checkout_http_status_counts": {
@@ -25,9 +25,9 @@
     },
     "runtime_provider": "otel_demo",
     "available_tools": [
-      "query_metrics",
       "search_knowledge",
-      "query_logs"
+      "query_logs",
+      "query_metrics"
     ],
     "tool_history": [
       {
@@ -46,99 +46,91 @@
         "evidence_count": 1
       },
       {
-        "tool_name": "query_metrics",
+        "tool_name": "query_logs",
         "status": "success",
         "evidence_count": 1
       }
     ],
     "evidence": [
       {
-        "evidence_id": "75df0356-5a04-4180-bca7-295b75a9f413",
+        "evidence_id": "b93bd97a-6c38-409d-ae38-4c5ce9a69d75",
         "evidence_type": "knowledge_retrieval",
         "source": "search_knowledge",
         "document_reference": "arch-otel-demo-checkout"
       },
       {
-        "evidence_id": "0f22753f-90fa-4409-acfb-08df1046b1ff",
+        "evidence_id": "26c46caf-4bc2-49c2-9474-fc926234adc3",
         "evidence_type": "knowledge_retrieval",
         "source": "search_knowledge",
         "document_reference": "arch-otel-demo-checkout"
       },
       {
-        "evidence_id": "5535b22e-9def-4784-b656-67f9dbe453a0",
+        "evidence_id": "543a51df-e8c3-41cf-8ff9-8d72431140ad",
         "evidence_type": "knowledge_retrieval",
         "source": "search_knowledge",
         "document_reference": "rb-post-deployment-anomaly"
       },
       {
-        "evidence_id": "38c5a392-5271-4876-9780-4d240b062f8e",
+        "evidence_id": "093f3800-c356-48ba-91f6-21ff75680fd7",
         "evidence_type": "knowledge_retrieval",
         "source": "search_knowledge",
         "document_reference": "rb-request-correlation"
       },
       {
-        "evidence_id": "75427ca8-bb9f-4b1c-bd06-54c684dd0980",
+        "evidence_id": "2aeae540-3cdb-4a1b-86f3-50d51cdce43e",
         "evidence_type": "knowledge_retrieval",
         "source": "search_knowledge",
         "document_reference": "rb-downstream-timeout-latency"
       },
       {
-        "evidence_id": "ea6c4d56-d120-42d7-9d8b-759db3ac0aa9",
+        "evidence_id": "1899a7da-6574-49e9-837a-95cf2f6b3abf",
         "evidence_type": "log_query_result",
         "source": "query_logs",
         "document_reference": null
       },
       {
-        "evidence_id": "e4324eff-1133-4646-97f8-956116873f35",
+        "evidence_id": "b2d68641-97f1-426a-b5a2-ef9eb69664a1",
         "evidence_type": "metric_snapshot",
         "source": "query_metrics",
         "document_reference": null
       },
       {
-        "evidence_id": "0e52a5b4-1a6d-40ad-9dfe-48aa7c096031",
-        "evidence_type": "metric_snapshot",
-        "source": "query_metrics",
+        "evidence_id": "002efc78-1b97-4958-a4e8-f71f63aa9fc8",
+        "evidence_type": "log_query_result",
+        "source": "query_logs",
         "document_reference": null
       }
     ],
     "hypotheses": [
       {
-        "hypothesis_id": "15a369cf-4b7e-4603-9135-72dd970b685b",
-        "summary": "Checkout failures are caused by errors or timeouts from the Payment downstream service, and Checkout is only surfacing the dependency failure.",
-        "status": "ACTIVE",
-        "supporting_evidence_ids": [
-          "75df0356-5a04-4180-bca7-295b75a9f413",
-          "0f22753f-90fa-4409-acfb-08df1046b1ff",
-          "75427ca8-bb9f-4b1c-bd06-54c684dd0980"
-        ]
-      },
-      {
-        "hypothesis_id": "0d691c63-d1fc-409d-855f-270cc9b6279b",
-        "summary": "Checkout requests are failing locally before any payment dependency is called, due to startup configuration, feature flag, or compatibility issues in the local environment.",
-        "status": "ACTIVE",
-        "supporting_evidence_ids": [
-          "5535b22e-9def-4784-b656-67f9dbe453a0",
-          "38c5a392-5271-4876-9780-4d240b062f8e"
-        ]
-      },
-      {
-        "hypothesis_id": "9b43b89b-8860-48bd-b7e7-33caffee2022",
-        "summary": "The Payment downstream dependency is experiencing load, network, or release-related anomalies that cause latency or connection timeouts, resulting in checkout errors.",
-        "status": "ACTIVE",
-        "supporting_evidence_ids": [
-          "5535b22e-9def-4784-b656-67f9dbe453a0",
-          "75427ca8-bb9f-4b1c-bd06-54c684dd0980",
-          "0f22753f-90fa-4409-acfb-08df1046b1ff"
-        ]
-      },
-      {
-        "hypothesis_id": "0a22c093-d40a-421a-b406-15f16b476361",
-        "summary": "The reported checkout errors may represent isolated request failures rather than a broad checkout outage, and aggregate incident-window metrics are needed to confirm scope.",
+        "hypothesis_id": "a041ca95-ae11-49fa-a9ff-e72e89354e12",
+        "summary": "Checkout failures in local are caused by the Payment downstream service returning errors or timing out while processing the payment path.",
         "status": "SUPPORTED",
         "supporting_evidence_ids": [
-          "38c5a392-5271-4876-9780-4d240b062f8e",
-          "0f22753f-90fa-4409-acfb-08df1046b1ff",
-          "e4324eff-1133-4646-97f8-956116873f35"
+          "b93bd97a-6c38-409d-ae38-4c5ce9a69d75",
+          "26c46caf-4bc2-49c2-9474-fc926234adc3",
+          "2aeae540-3cdb-4a1b-86f3-50d51cdce43e",
+          "b2d68641-97f1-426a-b5a2-ef9eb69664a1"
+        ]
+      },
+      {
+        "hypothesis_id": "56d672d4-b291-4cf6-88a5-6122b21091dc",
+        "summary": "Checkout errors originate in Checkout itself before any downstream payment call, likely due to local startup configuration, feature flags, or compatibility issues.",
+        "status": "ACTIVE",
+        "supporting_evidence_ids": [
+          "543a51df-e8c3-41cf-8ff9-8d72431140ad",
+          "093f3800-c356-48ba-91f6-21ff75680fd7"
+        ]
+      },
+      {
+        "hypothesis_id": "c9fe8f5d-41fb-41a4-b597-6434930870b2",
+        "summary": "The checkout errors are sporadic timeout or latency symptoms from a downstream dependency on the payment path, rather than a systematic Checkout or Payment code failure.",
+        "status": "SUPPORTED",
+        "supporting_evidence_ids": [
+          "26c46caf-4bc2-49c2-9474-fc926234adc3",
+          "2aeae540-3cdb-4a1b-86f3-50d51cdce43e",
+          "093f3800-c356-48ba-91f6-21ff75680fd7",
+          "b2d68641-97f1-426a-b5a2-ef9eb69664a1"
         ]
       }
     ],
@@ -166,13 +158,9 @@
   "assessment": {
     "version": "v1",
     "scenario": "otel_payment_failure",
-    "status": "FAIL",
-    "failed_checks": [
-      "investigation_quality"
-    ],
-    "blockers": [
-      "investigation_quality_not_reached_without_external_provider_blocker"
-    ],
+    "status": "PASS",
+    "failed_checks": [],
+    "blockers": [],
     "external_provider_interruption_categories": [],
     "diagnostics": []
   }
