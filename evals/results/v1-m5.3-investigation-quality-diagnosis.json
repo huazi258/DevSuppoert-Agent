@@ -1,0 +1,492 @@
+{
+  "source_m5_3_incident_id": "b58dbfcd-36b8-4c6b-8c58-09e4f6a08fc9",
+  "checkpoint_history_available": true,
+  "checkpoint_history_truncated": false,
+  "frames": [
+    {
+      "sequence": 1,
+      "created_at": "2026-08-31T11:01:58.597524Z",
+      "current_stage": "intake",
+      "investigation_round": 0,
+      "tool_call_count": 0,
+      "llm_call_count": 0,
+      "active_execution_seconds": 0.0,
+      "terminal_reason": null,
+      "new_tool_calls": [],
+      "new_evidence": [],
+      "hypothesis_changes": []
+    },
+    {
+      "sequence": 2,
+      "created_at": "2026-08-31T11:01:58.599304Z",
+      "current_stage": "retrieval",
+      "investigation_round": 0,
+      "tool_call_count": 0,
+      "llm_call_count": 0,
+      "active_execution_seconds": 0.05150639999919804,
+      "terminal_reason": null,
+      "new_tool_calls": [],
+      "new_evidence": [],
+      "hypothesis_changes": []
+    },
+    {
+      "sequence": 3,
+      "created_at": "2026-08-31T11:02:01.762608Z",
+      "current_stage": "hypothesis_generation",
+      "investigation_round": 0,
+      "tool_call_count": 1,
+      "llm_call_count": 0,
+      "active_execution_seconds": 3.215086899999733,
+      "terminal_reason": null,
+      "new_tool_calls": [
+        {
+          "tool_name": "search_knowledge",
+          "status": "success",
+          "target_service": "checkout",
+          "duration_ms": 3160.59,
+          "evidence_ids": [
+            "75df0356-5a04-4180-bca7-295b75a9f413",
+            "0f22753f-90fa-4409-acfb-08df1046b1ff",
+            "5535b22e-9def-4784-b656-67f9dbe453a0",
+            "38c5a392-5271-4876-9780-4d240b062f8e",
+            "75427ca8-bb9f-4b1c-bd06-54c684dd0980"
+          ]
+        }
+      ],
+      "new_evidence": [
+        {
+          "evidence_id": "75df0356-5a04-4180-bca7-295b75a9f413",
+          "source": "search_knowledge",
+          "evidence_type": "knowledge_retrieval",
+          "service": null,
+          "metrics": null,
+          "logs": null
+        },
+        {
+          "evidence_id": "0f22753f-90fa-4409-acfb-08df1046b1ff",
+          "source": "search_knowledge",
+          "evidence_type": "knowledge_retrieval",
+          "service": null,
+          "metrics": null,
+          "logs": null
+        },
+        {
+          "evidence_id": "5535b22e-9def-4784-b656-67f9dbe453a0",
+          "source": "search_knowledge",
+          "evidence_type": "knowledge_retrieval",
+          "service": null,
+          "metrics": null,
+          "logs": null
+        },
+        {
+          "evidence_id": "38c5a392-5271-4876-9780-4d240b062f8e",
+          "source": "search_knowledge",
+          "evidence_type": "knowledge_retrieval",
+          "service": null,
+          "metrics": null,
+          "logs": null
+        },
+        {
+          "evidence_id": "75427ca8-bb9f-4b1c-bd06-54c684dd0980",
+          "source": "search_knowledge",
+          "evidence_type": "knowledge_retrieval",
+          "service": null,
+          "metrics": null,
+          "logs": null
+        }
+      ],
+      "hypothesis_changes": []
+    },
+    {
+      "sequence": 4,
+      "created_at": "2026-08-31T11:02:20.665163Z",
+      "current_stage": "investigation_planning",
+      "investigation_round": 0,
+      "tool_call_count": 1,
+      "llm_call_count": 1,
+      "active_execution_seconds": 22.117673299999296,
+      "terminal_reason": null,
+      "new_tool_calls": [],
+      "new_evidence": [],
+      "hypothesis_changes": [
+        {
+          "hypothesis_id": "15a369cf-4b7e-4603-9135-72dd970b685b",
+          "summary": "Checkout failures are caused by errors or timeouts from the Payment downstream service, and Checkout is only surfacing the dependency failure.",
+          "before_status": null,
+          "after_status": "ACTIVE",
+          "before_confidence": null,
+          "after_confidence": 0.62,
+          "new_supporting_evidence_ids": [
+            "75df0356-5a04-4180-bca7-295b75a9f413",
+            "0f22753f-90fa-4409-acfb-08df1046b1ff",
+            "75427ca8-bb9f-4b1c-bd06-54c684dd0980"
+          ],
+          "new_contradicting_evidence_ids": []
+        },
+        {
+          "hypothesis_id": "0d691c63-d1fc-409d-855f-270cc9b6279b",
+          "summary": "Checkout requests are failing locally before any payment dependency is called, due to startup configuration, feature flag, or compatibility issues in the local environment.",
+          "before_status": null,
+          "after_status": "ACTIVE",
+          "before_confidence": null,
+          "after_confidence": 0.35,
+          "new_supporting_evidence_ids": [
+            "5535b22e-9def-4784-b656-67f9dbe453a0",
+            "38c5a392-5271-4876-9780-4d240b062f8e"
+          ],
+          "new_contradicting_evidence_ids": []
+        },
+        {
+          "hypothesis_id": "9b43b89b-8860-48bd-b7e7-33caffee2022",
+          "summary": "The Payment downstream dependency is experiencing load, network, or release-related anomalies that cause latency or connection timeouts, resulting in checkout errors.",
+          "before_status": null,
+          "after_status": "ACTIVE",
+          "before_confidence": null,
+          "after_confidence": 0.55,
+          "new_supporting_evidence_ids": [
+            "5535b22e-9def-4784-b656-67f9dbe453a0",
+            "75427ca8-bb9f-4b1c-bd06-54c684dd0980",
+            "0f22753f-90fa-4409-acfb-08df1046b1ff"
+          ],
+          "new_contradicting_evidence_ids": []
+        },
+        {
+          "hypothesis_id": "0a22c093-d40a-421a-b406-15f16b476361",
+          "summary": "The reported checkout errors may represent isolated request failures rather than a broad checkout outage, and aggregate incident-window metrics are needed to confirm scope.",
+          "before_status": null,
+          "after_status": "ACTIVE",
+          "before_confidence": null,
+          "after_confidence": 0.25,
+          "new_supporting_evidence_ids": [
+            "38c5a392-5271-4876-9780-4d240b062f8e",
+            "0f22753f-90fa-4409-acfb-08df1046b1ff"
+          ],
+          "new_contradicting_evidence_ids": []
+        }
+      ]
+    },
+    {
+      "sequence": 5,
+      "created_at": "2026-08-31T11:02:20.665752Z",
+      "current_stage": "investigation_planning",
+      "investigation_round": 0,
+      "tool_call_count": 1,
+      "llm_call_count": 1,
+      "active_execution_seconds": 22.118417699999554,
+      "terminal_reason": null,
+      "new_tool_calls": [],
+      "new_evidence": [],
+      "hypothesis_changes": []
+    },
+    {
+      "sequence": 6,
+      "created_at": "2026-08-31T11:02:20.667177Z",
+      "current_stage": "tool_execution",
+      "investigation_round": 0,
+      "tool_call_count": 1,
+      "llm_call_count": 1,
+      "active_execution_seconds": 22.11980770000082,
+      "terminal_reason": null,
+      "new_tool_calls": [],
+      "new_evidence": [],
+      "hypothesis_changes": []
+    },
+    {
+      "sequence": 7,
+      "created_at": "2026-08-31T11:02:21.080627Z",
+      "current_stage": "investigation_planning",
+      "investigation_round": 0,
+      "tool_call_count": 2,
+      "llm_call_count": 1,
+      "active_execution_seconds": 22.533024100001057,
+      "terminal_reason": null,
+      "new_tool_calls": [
+        {
+          "tool_name": "query_logs",
+          "status": "success",
+          "target_service": "checkout",
+          "duration_ms": 411.68,
+          "evidence_ids": [
+            "ea6c4d56-d120-42d7-9d8b-759db3ac0aa9"
+          ]
+        }
+      ],
+      "new_evidence": [
+        {
+          "evidence_id": "ea6c4d56-d120-42d7-9d8b-759db3ac0aa9",
+          "source": "query_logs",
+          "evidence_type": "log_query_result",
+          "service": null,
+          "metrics": null,
+          "logs": {
+            "match_count": 0,
+            "error_patterns": [],
+            "trace_id_count": 0
+          }
+        }
+      ],
+      "hypothesis_changes": []
+    },
+    {
+      "sequence": 8,
+      "created_at": "2026-08-31T11:02:21.081445Z",
+      "current_stage": "investigation_planning",
+      "investigation_round": 0,
+      "tool_call_count": 2,
+      "llm_call_count": 1,
+      "active_execution_seconds": 22.534020999999484,
+      "terminal_reason": null,
+      "new_tool_calls": [],
+      "new_evidence": [],
+      "hypothesis_changes": []
+    },
+    {
+      "sequence": 9,
+      "created_at": "2026-08-31T11:02:21.082053Z",
+      "current_stage": "tool_execution",
+      "investigation_round": 0,
+      "tool_call_count": 2,
+      "llm_call_count": 1,
+      "active_execution_seconds": 22.534744299999147,
+      "terminal_reason": null,
+      "new_tool_calls": [],
+      "new_evidence": [],
+      "hypothesis_changes": []
+    },
+    {
+      "sequence": 10,
+      "created_at": "2026-08-31T11:02:21.121989Z",
+      "current_stage": "hypothesis_update",
+      "investigation_round": 0,
+      "tool_call_count": 3,
+      "llm_call_count": 1,
+      "active_execution_seconds": 22.57455470000059,
+      "terminal_reason": null,
+      "new_tool_calls": [
+        {
+          "tool_name": "query_metrics",
+          "status": "success",
+          "target_service": "checkout",
+          "duration_ms": 39.17,
+          "evidence_ids": [
+            "e4324eff-1133-4646-97f8-956116873f35"
+          ]
+        }
+      ],
+      "new_evidence": [
+        {
+          "evidence_id": "e4324eff-1133-4646-97f8-956116873f35",
+          "source": "query_metrics",
+          "evidence_type": "metric_snapshot",
+          "service": "checkout",
+          "metrics": {
+            "request_count": 370,
+            "error_count": 11,
+            "error_rate": 0.02972972972972973,
+            "average_request_duration_ms": 273.65191602702697
+          },
+          "logs": null
+        }
+      ],
+      "hypothesis_changes": []
+    },
+    {
+      "sequence": 11,
+      "created_at": "2026-08-31T11:02:31.785043Z",
+      "current_stage": "evidence_evaluation",
+      "investigation_round": 1,
+      "tool_call_count": 3,
+      "llm_call_count": 2,
+      "active_execution_seconds": 33.23761790000208,
+      "terminal_reason": null,
+      "new_tool_calls": [],
+      "new_evidence": [],
+      "hypothesis_changes": [
+        {
+          "hypothesis_id": "0a22c093-d40a-421a-b406-15f16b476361",
+          "summary": "The reported checkout errors may represent isolated request failures rather than a broad checkout outage, and aggregate incident-window metrics are needed to confirm scope.",
+          "before_status": "ACTIVE",
+          "after_status": "SUPPORTED",
+          "before_confidence": 0.25,
+          "after_confidence": 0.28,
+          "new_supporting_evidence_ids": [
+            "e4324eff-1133-4646-97f8-956116873f35"
+          ],
+          "new_contradicting_evidence_ids": [
+            "ea6c4d56-d120-42d7-9d8b-759db3ac0aa9"
+          ]
+        }
+      ]
+    },
+    {
+      "sequence": 12,
+      "created_at": "2026-08-31T11:02:38.837749Z",
+      "current_stage": "investigation_planning",
+      "investigation_round": 1,
+      "tool_call_count": 3,
+      "llm_call_count": 3,
+      "active_execution_seconds": 40.290265999999974,
+      "terminal_reason": null,
+      "new_tool_calls": [],
+      "new_evidence": [],
+      "hypothesis_changes": []
+    },
+    {
+      "sequence": 13,
+      "created_at": "2026-08-31T11:02:38.838227Z",
+      "current_stage": "investigation_planning",
+      "investigation_round": 1,
+      "tool_call_count": 3,
+      "llm_call_count": 3,
+      "active_execution_seconds": 40.29095210000014,
+      "terminal_reason": null,
+      "new_tool_calls": [],
+      "new_evidence": [],
+      "hypothesis_changes": []
+    },
+    {
+      "sequence": 14,
+      "created_at": "2026-08-31T11:03:04.520512Z",
+      "current_stage": "tool_execution",
+      "investigation_round": 1,
+      "tool_call_count": 3,
+      "llm_call_count": 4,
+      "active_execution_seconds": 65.97300470000118,
+      "terminal_reason": null,
+      "new_tool_calls": [],
+      "new_evidence": [],
+      "hypothesis_changes": []
+    },
+    {
+      "sequence": 15,
+      "created_at": "2026-08-31T11:03:04.541688Z",
+      "current_stage": "hypothesis_update",
+      "investigation_round": 1,
+      "tool_call_count": 4,
+      "llm_call_count": 4,
+      "active_execution_seconds": 65.9942289999999,
+      "terminal_reason": null,
+      "new_tool_calls": [
+        {
+          "tool_name": "query_metrics",
+          "status": "success",
+          "target_service": "payment",
+          "duration_ms": 20.29,
+          "evidence_ids": [
+            "0e52a5b4-1a6d-40ad-9dfe-48aa7c096031"
+          ]
+        }
+      ],
+      "new_evidence": [
+        {
+          "evidence_id": "0e52a5b4-1a6d-40ad-9dfe-48aa7c096031",
+          "source": "query_metrics",
+          "evidence_type": "metric_snapshot",
+          "service": "payment",
+          "metrics": {
+            "request_count": 370,
+            "error_count": 11,
+            "error_rate": 0.02972972972972973,
+            "average_request_duration_ms": 54.17530602162164
+          },
+          "logs": null
+        }
+      ],
+      "hypothesis_changes": []
+    },
+    {
+      "sequence": 16,
+      "created_at": "2026-08-31T11:03:31.320035Z",
+      "current_stage": "hypothesis_update",
+      "investigation_round": 1,
+      "tool_call_count": 4,
+      "llm_call_count": 4,
+      "active_execution_seconds": 92.77241649999996,
+      "terminal_reason": "active_execution_budget_exhausted",
+      "new_tool_calls": [],
+      "new_evidence": [],
+      "hypothesis_changes": []
+    },
+    {
+      "sequence": 17,
+      "created_at": "2026-08-31T11:03:31.325711Z",
+      "current_stage": "needs_manual_action",
+      "investigation_round": 1,
+      "tool_call_count": 4,
+      "llm_call_count": 4,
+      "active_execution_seconds": 92.77241649999996,
+      "terminal_reason": "active_execution_budget_exhausted",
+      "new_tool_calls": [],
+      "new_evidence": [],
+      "hypothesis_changes": []
+    },
+    {
+      "sequence": 18,
+      "created_at": "2026-08-31T11:03:31.380620Z",
+      "current_stage": "needs_manual_action",
+      "investigation_round": 1,
+      "tool_call_count": 4,
+      "llm_call_count": 4,
+      "active_execution_seconds": 92.77241649999996,
+      "terminal_reason": "active_execution_budget_exhausted",
+      "new_tool_calls": [],
+      "new_evidence": [],
+      "hypothesis_changes": []
+    }
+  ],
+  "evidence_consumption": [
+    {
+      "evidence_id": "ea6c4d56-d120-42d7-9d8b-759db3ac0aa9",
+      "source": "query_logs",
+      "evidence_type": "log_query_result",
+      "service": null,
+      "produced_sequence": 7,
+      "completed_hypothesis_update_after_production": true,
+      "final_hypothesis_ids": [
+        "0a22c093-d40a-421a-b406-15f16b476361"
+      ]
+    },
+    {
+      "evidence_id": "e4324eff-1133-4646-97f8-956116873f35",
+      "source": "query_metrics",
+      "evidence_type": "metric_snapshot",
+      "service": "checkout",
+      "produced_sequence": 10,
+      "completed_hypothesis_update_after_production": true,
+      "final_hypothesis_ids": [
+        "0a22c093-d40a-421a-b406-15f16b476361"
+      ]
+    },
+    {
+      "evidence_id": "0e52a5b4-1a6d-40ad-9dfe-48aa7c096031",
+      "source": "query_metrics",
+      "evidence_type": "metric_snapshot",
+      "service": "payment",
+      "produced_sequence": 15,
+      "completed_hypothesis_update_after_production": false,
+      "final_hypothesis_ids": []
+    }
+  ],
+  "runtime_evidence_contract": {
+    "logs_evidence_includes_queried_service": false,
+    "normalized_log_event_includes_downstream_service": false,
+    "log_error_patterns_have_structured_downstream_identity": false,
+    "metrics_evidence_includes_service": true,
+    "hypothesis_update_receives_all_evidence": true,
+    "hypothesis_update_receives_only_latest_tool_history": true
+  },
+  "findings": [
+    "runtime_evidence_count=3",
+    "terminal_reason=active_execution_budget_exhausted",
+    "initial_logs_and_checkout_metrics_do_not_distinguish_checkout_failure_from_payment_downstream_failure",
+    "payment_metrics_produced_at_sequence=15;completed_hypothesis_update_after_production=false",
+    "primary_root_cause=evidence_not_consumed_before_budget_terminal"
+  ],
+  "primary_root_cause": "evidence_not_consumed_before_budget_terminal",
+  "contributing_factors": [
+    "active_execution_budget_terminalized_after_relevant_evidence_production",
+    "logs_runtime_evidence_does_not_retain_queried_or_downstream_service_identity",
+    "hypothesis_update_receives_all_evidence_but_only_latest_tool_history"
+  ],
+  "recommended_fix_boundary": "Investigate active-execution budget timing at the post-tool to hypothesis-update boundary before changing Agent prompts or hypothesis binding."
+}
