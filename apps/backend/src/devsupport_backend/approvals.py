@@ -22,6 +22,7 @@ from devsupport_backend.agent.post_approval import (
 )
 from devsupport_backend.agent.runtime import WorkflowService
 from devsupport_backend.agent.state import (
+    ActionExecutionOutcome,
     ActionType,
     AgentStage,
     AgentState,
@@ -30,6 +31,8 @@ from devsupport_backend.agent.state import (
     PolicyDecision,
     PolicyOutcome,
     TerminalReason,
+    VerificationOutcome,
+    VerificationStatus,
 )
 from devsupport_backend.database import SessionLocal
 from devsupport_backend.models import Action, Approval, Incident
@@ -38,6 +41,7 @@ from devsupport_backend.tools.deployments import FaultLabDeploymentAdapter, Faul
 from devsupport_backend.tools.logs import FaultLabLogsAdapter
 from devsupport_backend.tools.metrics import FaultLabMetricsAdapter
 from devsupport_backend.tools.recovery_probe import FaultLabRecoveryProbeAdapter
+from devsupport_backend.tools.schemas import ToolStatus
 
 PENDING_APPROVAL = "PENDING_APPROVAL"
 WAITING_APPROVAL = "WAITING_APPROVAL"
@@ -275,6 +279,9 @@ class ApprovalService:
             if _policy_action_id(state, required_stage=AgentStage.WAITING_APPROVAL) != action.id:
                 raise ApprovalValidationError("Waiting checkpoint is bound to a different Action")
             return True
+        if state["current_stage"] == AgentStage.RESOLVED:
+            self._validate_resolved_decision_chain(incident, action, approval, state)
+            return False
         if state["current_stage"] not in {
             AgentStage.ACTION_EXECUTION,
             AgentStage.RECOVERY_VERIFICATION,
@@ -294,6 +301,53 @@ class ApprovalService:
                 "Terminal workflow checkpoint does not match Approval record"
             )
         return False
+
+    def _validate_resolved_decision_chain(
+        self, incident: Incident, action: Action, approval: Approval, state: AgentState
+    ) -> None:
+        if incident.status != AgentStage.RESOLVED.value.upper():
+            raise ApprovalValidationError(
+                "Resolved workflow checkpoint has a non-resolved Incident"
+            )
+        if approval.status != ApprovalStatus.APPROVED.value:
+            raise ApprovalValidationError(
+                "Resolved workflow checkpoint requires an approved decision"
+            )
+        if _policy_action_id(state) != action.id:
+            raise ApprovalValidationError(
+                "Resolved workflow checkpoint is bound to a different Action"
+            )
+        approval_outcome = state["approval_outcome"]
+        if (
+            not isinstance(approval_outcome, ApprovalOutcome)
+            or approval_outcome.approval_id != approval.id
+            or approval_outcome.action_id != action.id
+            or approval_outcome.status is not ApprovalStatus.APPROVED
+        ):
+            raise ApprovalValidationError(
+                "Resolved workflow checkpoint does not match Approval record"
+            )
+        if action.status != "EXECUTED" or action.executed_at is None:
+            raise ApprovalValidationError("Resolved workflow checkpoint Action was not executed")
+        execution_outcome = state["execution_outcome"]
+        if (
+            not isinstance(execution_outcome, ActionExecutionOutcome)
+            or execution_outcome.action_id != action.id
+            or execution_outcome.approval_id != approval.id
+            or execution_outcome.status is not ToolStatus.SUCCESS
+        ):
+            raise ApprovalValidationError(
+                "Resolved workflow checkpoint has no matching successful execution"
+            )
+        verification_outcome = state["verification_outcome"]
+        if (
+            not isinstance(verification_outcome, VerificationOutcome)
+            or verification_outcome.action_id != action.id
+            or verification_outcome.status is not VerificationStatus.PASS
+        ):
+            raise ApprovalValidationError(
+                "Resolved workflow checkpoint has no matching passing verification"
+            )
 
 
 def _policy_action_id(state: AgentState, *, required_stage: AgentStage | None = None) -> UUID:

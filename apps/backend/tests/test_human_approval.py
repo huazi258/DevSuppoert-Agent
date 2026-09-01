@@ -18,6 +18,7 @@ from devsupport_backend.agent.budget import InvestigationBudget
 from devsupport_backend.agent.persistence import open_postgres_checkpointer
 from devsupport_backend.agent.runtime import WorkflowService
 from devsupport_backend.agent.state import (
+    ActionExecutionOutcome,
     ActionType,
     AgentStage,
     AgentState,
@@ -27,9 +28,12 @@ from devsupport_backend.agent.state import (
     PolicyOutcome,
     PolicyReasonCode,
     TerminalReason,
+    VerificationOutcome,
+    VerificationStatus,
     create_initial_agent_state,
 )
 from devsupport_backend.approvals import (
+    ApprovalDecisionConflict,
     ApprovalService,
     ApprovalValidationError,
     ApprovalWaitService,
@@ -46,6 +50,7 @@ from devsupport_backend.routers.incidents import (
     get_workflow_state_reader,
 )
 from devsupport_backend.schemas.approvals import ApprovalDecision
+from devsupport_backend.tools.schemas import ToolStatus
 
 PENDING_APPROVAL = "PENDING_APPROVAL"
 WAITING_APPROVAL = "WAITING_APPROVAL"
@@ -150,6 +155,52 @@ def _waiting_state(incident: Incident, action: Action) -> AgentState:
         action_id=action.id,
     )
     return state
+
+
+def _resolved_approval_chain(
+    session: Session, *, incident: Incident | None = None, action: Action | None = None
+) -> tuple[Incident, Action, Approval, AgentState]:
+    incident = incident or _incident(session, status="RESOLVED")
+    action = action or _pending_action(session, incident)
+    incident.status = "RESOLVED"
+    action.status = "EXECUTED"
+    action.executed_at = datetime.now(UTC)
+    approval = Approval(
+        incident_id=incident.id,
+        action_id=action.id,
+        status=ApprovalStatus.APPROVED.value,
+    )
+    session.add(approval)
+    session.commit()
+    session.refresh(approval)
+
+    state = _waiting_state(incident, action)
+    state.update(
+        {
+            "current_stage": AgentStage.RESOLVED,
+            "approval_outcome": ApprovalOutcome(
+                approval_id=approval.id,
+                action_id=action.id,
+                status=ApprovalStatus.APPROVED,
+            ),
+            "execution_outcome": ActionExecutionOutcome(
+                action_id=action.id,
+                approval_id=approval.id,
+                status=ToolStatus.SUCCESS,
+                service="order-service",
+                environment="local",
+                target_version="v1.0.0",
+                executed=True,
+            ),
+            "verification_outcome": VerificationOutcome(
+                verification_id=uuid4(),
+                action_id=action.id,
+                status=VerificationStatus.PASS,
+                summary="Rollback target is live and recovery signals pass.",
+            ),
+        }
+    )
+    return incident, action, approval, state
 
 
 @pytest.fixture
@@ -357,6 +408,186 @@ def test_duplicate_matching_decision_is_idempotent_and_conflicting_one_is_reject
         == 1
     )
     assert len(coordinator.calls) == 1
+
+
+def test_resolved_approved_duplicate_returns_existing_approval_without_resuming(
+    approval_api_client: tuple[TestClient, StaticWorkflowStateReader, StaticWorkflowCoordinator],
+    database_session: Session,
+) -> None:
+    client, reader, coordinator = approval_api_client
+    waiting_state = reader.get_state("test")
+    incident = database_session.get(Incident, waiting_state["incident"].id)
+    policy = waiting_state["policy_outcome"]
+    assert incident is not None and policy is not None and policy.action_id is not None
+    action = database_session.get(Action, policy.action_id)
+    assert action is not None
+    incident, action, approval, resolved_state = _resolved_approval_chain(
+        database_session, incident=incident, action=action
+    )
+    reader._state = resolved_state
+
+    response = client.post(f"/incidents/{incident.id}/approval", json={"decision": "APPROVE"})
+
+    assert response.status_code == 200
+    assert response.json()["id"] == str(approval.id)
+    assert coordinator.calls == []
+    assert database_session.query(Approval).filter(Approval.incident_id == incident.id).count() == 1
+    database_session.refresh(incident)
+    database_session.refresh(action)
+    assert incident.status == "RESOLVED"
+    assert action.status == "EXECUTED"
+    assert action.executed_at is not None
+
+
+def test_resolved_approved_duplicate_reject_remains_a_conflict(database_session: Session) -> None:
+    incident, action, approval, state = _resolved_approval_chain(database_session)
+    service = ApprovalService(database_session, StaticWorkflowStateReader(state))
+
+    with pytest.raises(ApprovalDecisionConflict):
+        service.record_decision(incident.id, ApprovalDecision.REJECT)
+
+    assert database_session.query(Approval).filter(Approval.action_id == action.id).count() == 1
+    assert database_session.get(Approval, approval.id) is not None
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "missing_approval_outcome",
+        "wrong_approval_outcome_approval",
+        "wrong_approval_outcome_action",
+        "action_not_executed",
+        "action_missing_executed_at",
+        "missing_execution_outcome",
+        "failed_execution_outcome",
+        "wrong_execution_action",
+        "wrong_execution_approval",
+        "missing_verification_outcome",
+        "failed_verification_outcome",
+        "wrong_verification_action",
+        "incident_not_resolved",
+    ],
+)
+def test_resolved_approved_duplicate_fails_closed_for_corrupted_remediation_chain(
+    database_session: Session, corruption: str
+) -> None:
+    incident, action, approval, state = _resolved_approval_chain(database_session)
+    if corruption == "missing_approval_outcome":
+        state["approval_outcome"] = None
+    elif corruption == "wrong_approval_outcome_approval":
+        state["approval_outcome"] = ApprovalOutcome(
+            approval_id=uuid4(), action_id=action.id, status=ApprovalStatus.APPROVED
+        )
+    elif corruption == "wrong_approval_outcome_action":
+        state["approval_outcome"] = ApprovalOutcome(
+            approval_id=approval.id, action_id=uuid4(), status=ApprovalStatus.APPROVED
+        )
+    elif corruption == "action_not_executed":
+        action.status = PENDING_APPROVAL
+        action.executed_at = None
+        database_session.commit()
+    elif corruption == "action_missing_executed_at":
+        action.executed_at = None
+        database_session.commit()
+    elif corruption == "missing_execution_outcome":
+        state["execution_outcome"] = None
+    elif corruption == "failed_execution_outcome":
+        state["execution_outcome"] = ActionExecutionOutcome(
+            action_id=action.id,
+            approval_id=approval.id,
+            status=ToolStatus.FAILURE,
+            executed=False,
+        )
+    elif corruption == "wrong_execution_action":
+        state["execution_outcome"] = ActionExecutionOutcome(
+            action_id=uuid4(),
+            approval_id=approval.id,
+            status=ToolStatus.SUCCESS,
+            service="order-service",
+            environment="local",
+            target_version="v1.0.0",
+            executed=True,
+        )
+    elif corruption == "wrong_execution_approval":
+        state["execution_outcome"] = ActionExecutionOutcome(
+            action_id=action.id,
+            approval_id=uuid4(),
+            status=ToolStatus.SUCCESS,
+            service="order-service",
+            environment="local",
+            target_version="v1.0.0",
+            executed=True,
+        )
+    elif corruption == "missing_verification_outcome":
+        state["verification_outcome"] = None
+    elif corruption == "failed_verification_outcome":
+        state["verification_outcome"] = VerificationOutcome(
+            action_id=action.id,
+            status=VerificationStatus.FAIL,
+            summary="Recovery evidence does not pass.",
+        )
+    elif corruption == "wrong_verification_action":
+        state["verification_outcome"] = VerificationOutcome(
+            action_id=uuid4(),
+            status=VerificationStatus.PASS,
+            summary="Recovery evidence passes for another Action.",
+        )
+    elif corruption == "incident_not_resolved":
+        incident.status = "VERIFYING"
+        database_session.commit()
+
+    with pytest.raises(ApprovalValidationError):
+        ApprovalService(database_session, StaticWorkflowStateReader(state)).record_decision(
+            incident.id, ApprovalDecision.APPROVE
+        )
+
+    assert database_session.query(Approval).filter(Approval.action_id == action.id).count() == 1
+
+
+def test_waiting_approved_duplicate_remains_resume_required(database_session: Session) -> None:
+    incident = _incident(database_session)
+    action = _pending_action(database_session, incident)
+    approval = Approval(
+        incident_id=incident.id,
+        action_id=action.id,
+        status=ApprovalStatus.APPROVED.value,
+    )
+    database_session.add(approval)
+    database_session.commit()
+
+    result = ApprovalService(
+        database_session, StaticWorkflowStateReader(_waiting_state(incident, action))
+    ).record_decision(incident.id, ApprovalDecision.APPROVE)
+
+    assert result.approval.id == approval.id
+    assert result.resume_required is True
+
+
+def test_needs_manual_rejected_duplicate_remains_idempotent(database_session: Session) -> None:
+    incident = _incident(database_session, status="NEEDS_MANUAL_ACTION")
+    action = _pending_action(database_session, incident)
+    action.status = ApprovalStatus.REJECTED.value
+    approval = Approval(
+        incident_id=incident.id,
+        action_id=action.id,
+        status=ApprovalStatus.REJECTED.value,
+    )
+    database_session.add(approval)
+    database_session.commit()
+    state = _waiting_state(incident, action)
+    state["current_stage"] = AgentStage.NEEDS_MANUAL_ACTION
+    state["approval_outcome"] = ApprovalOutcome(
+        approval_id=approval.id,
+        action_id=action.id,
+        status=ApprovalStatus.REJECTED,
+    )
+
+    result = ApprovalService(database_session, StaticWorkflowStateReader(state)).record_decision(
+        incident.id, ApprovalDecision.REJECT
+    )
+
+    assert result.approval.id == approval.id
+    assert result.resume_required is False
 
 
 def test_approval_database_constraints_reject_orphans_and_duplicate_actions(
