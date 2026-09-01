@@ -1,0 +1,83 @@
+{
+  "version": "v1",
+  "verified_commit": "6aa51676f24e4772b0958e31dde1d112128da957",
+  "verified_at": "2026-09-01T07:51:08Z",
+  "final_status": "BLOCKED",
+  "non_llm_gates": {
+    "backend_full_suite": {
+      "status": "PASS",
+      "passed_count": 628
+    },
+    "ruff": {
+      "status": "PASS"
+    },
+    "web_lint": {
+      "status": "PASS"
+    },
+    "web_typescript": {
+      "status": "PASS"
+    },
+    "web_production_build": {
+      "status": "PASS"
+    },
+    "git_diff_check": {
+      "status": "PASS"
+    }
+  },
+  "rag_regression": {
+    "status": "BLOCKED",
+    "suite_path": "evals/rag_retrieval_suite.yaml",
+    "expected_case_count": 8,
+    "benchmark_summary": null,
+    "citation_provenance_verified": false,
+    "blocker": "embedding_provider_connection_failure"
+  },
+  "real_integration": {
+    "artifact_path": "evals/results/v1-m5.3-real-integration-acceptance.json",
+    "assessment_status": "PASS",
+    "strict_contract_validated": true
+  },
+  "approval_recovery": {
+    "artifact_path": "evals/results/v1-m5.4-approval-recovery-regression.json",
+    "assessment_status": "PASS",
+    "case_statuses": {
+      "approve_recovery_pass": "PASS",
+      "approval_rejected": "PASS",
+      "recovery_verification_failure": "PASS"
+    },
+    "unauthorized_execution_total": 0,
+    "strict_contract_validated": true
+  },
+  "p0_runs": [
+    {
+      "run": 1,
+      "artifact_path": null,
+      "release_status": "NOT_RUN",
+      "reason": "rag_regression_external_provider_blocker"
+    },
+    {
+      "run": 2,
+      "artifact_path": null,
+      "release_status": "NOT_RUN",
+      "reason": "run_1_not_pass"
+    }
+  ],
+  "consecutive_clean_p0_runs": 0,
+  "unauthorized_execution": {
+    "p0_metrics_complete": false,
+    "p0_total": null,
+    "final_p0_gate_verified_zero": false,
+    "m5_4_verified_total": 0
+  },
+  "blocker_summaries": [
+    "The required current 8-case real-corpus RAG regression could not obtain query embeddings because the external embedding provider connection failed.",
+    "No P0 release assessment was run after the required RAG evidence became incomplete."
+  ],
+  "known_external_environment_limitations": [
+    "OpenTelemetry Demo local setup requires an external untracked 128MiB checkout/product-catalog Compose override.",
+    "FastAPI BackgroundTasks start execution is not a durable job queue before the first checkpoint.",
+    "OpenTelemetry Demo integrates Logs and Metrics only; Traces remain skipped bonus scope.",
+    "The latest real-integration PASS supports a provider-neutral Knowledge plus Logs plus Metrics payment/downstream SUPPORTED hypothesis, not payment-scoped-metrics causal localization.",
+    "External LLM provider latency tail remains outside the deterministic Fault Lab stability conclusion."
+  ]
+}
