@@ -20,6 +20,7 @@ from sqlalchemy import (
     UniqueConstraint,
     event,
     func,
+    inspect,
     select,
 )
 from sqlalchemy import (
@@ -563,3 +564,57 @@ def _preserve_v1_incident_compatibility(
             report.round = round_record
         if report.version is None:
             report.version = round_record.round_number
+
+
+def _terminal_round_id(session: Session, round_id: UUID | None) -> UUID | None:
+    """Return the id only when the persisted owning V2 round is terminal."""
+    if round_id is None:
+        return None
+    status, legacy_status = session.execute(
+        select(InvestigationRound.status, Incident.status)
+        .join(Incident, Incident.id == InvestigationRound.incident_id)
+        .where(InvestigationRound.id == round_id)
+    ).one_or_none() or (None, None)
+    if legacy_status in {"WAITING_APPROVAL", "REMEDIATING", "RESOLVED", "NEEDS_MANUAL_ACTION"}:
+        return None
+    return round_id if status in {
+        InvestigationStatus.CONCLUDED,
+        InvestigationStatus.INCONCLUSIVE,
+        InvestigationStatus.FAILED,
+    } else None
+
+
+def _record_touches_terminal_round(session: Session, record: object) -> bool:
+    """Detect writes to a terminal round, including attempts to move old data away."""
+    state = inspect(record)
+    round_ids = {getattr(record, "round_id", None)}
+    history = state.attrs.round_id.history
+    round_ids.update(history.deleted)
+    return any(_terminal_round_id(session, round_id) is not None for round_id in round_ids)
+
+
+@event.listens_for(Session, "before_flush")
+def _enforce_terminal_round_immutability(
+    session: Session, _flush_context: object, _instances: object
+) -> None:
+    """Preserve terminal round facts as immutable historical investigation snapshots."""
+    for round_record in (item for item in session.dirty if isinstance(item, InvestigationRound)):
+        if _terminal_round_id(session, round_record.id) is not None:
+            raise ValueError("terminal InvestigationRound is immutable")
+
+    for record in (
+        item
+        for item in session.new.union(session.dirty)
+        if isinstance(item, (Hypothesis, Evidence, ToolCall))
+    ):
+        if _record_touches_terminal_round(session, record):
+            raise ValueError("terminal InvestigationRound records are immutable")
+
+    for report in (item for item in session.dirty if isinstance(item, Report)):
+        content_history = inspect(report).attrs.content.history
+        report_contents = [report.content, *content_history.deleted]
+        if any(
+            isinstance(content, dict) and content.get("schema_version") == "v2"
+            for content in report_contents
+        ):
+            raise ValueError("Report snapshots are immutable")

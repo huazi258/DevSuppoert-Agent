@@ -81,7 +81,7 @@ class V2ReportService:
         incident = self._session.get(Incident, state["incident"].id)
         if incident is None:
             raise V2ReportError("Incident is missing")
-        round_record = self._round_for_incident(incident)
+        round_record = self._round_for_state(incident, state)
         if round_record.status not in {
             InvestigationStatus.CONCLUDED,
             InvestigationStatus.INCONCLUSIVE,
@@ -108,12 +108,14 @@ class V2ReportService:
         self._session.refresh(report)
         return report
 
-    @staticmethod
-    def _round_for_incident(incident: Incident) -> InvestigationRound:
-        for round_record in incident.rounds:
-            if round_record.thread_id == incident.thread_id:
-                return round_record
-        raise V2ReportError("Incident has no InvestigationRound for its V2 thread")
+    def _round_for_state(self, incident: Incident, state: AgentState) -> InvestigationRound:
+        round_id = state.get("round_id")
+        if round_id is None:
+            raise V2ReportError("V2 Report requires an explicit InvestigationRound")
+        round_record = self._session.get(InvestigationRound, round_id)
+        if round_record is None or round_record.incident_id != incident.id:
+            raise V2ReportError("V2 Report round does not belong to its Incident")
+        return round_record
 
     def _content_for(
         self,

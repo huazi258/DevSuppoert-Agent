@@ -30,7 +30,11 @@ from devsupport_backend.agent.workflow import (
     build_v2_production_investigation_graph,
 )
 from devsupport_backend.config import settings
-from devsupport_backend.investigation_lifecycle import InvestigationLifecycleService
+from devsupport_backend.investigation_lifecycle import (
+    InvestigationLifecycleError,
+    InvestigationLifecycleService,
+    current_round,
+)
 from devsupport_backend.investigation_status import InvestigationStatus
 from devsupport_backend.investigation_timeline import project_investigation_timeline
 from devsupport_backend.models import Action, Approval, Incident, InvestigationRound
@@ -183,8 +187,15 @@ class PostgresWorkflowRuntime:
             return service.get_checkpoint_history(thread_id)
 
     def start(self, incident: Incident) -> AgentState:
+        round_record = current_round(self._session, incident.id)
+        if round_record.status is not InvestigationStatus.INVESTIGATING:
+            raise WorkflowConflictError("Current InvestigationRound has not been accepted")
         with open_postgres_checkpointer() as checkpointer:
-            return WorkflowService(self._production_graph(checkpointer)).start(incident)
+            return WorkflowService(self._production_graph(checkpointer)).start(
+                incident,
+                thread_id=round_record.thread_id,
+                round_id=round_record.id,
+            )
 
     def retry_failed_task(self, thread_id: str) -> AgentState:
         """Expose the generic continuation primitive for a later policy-owned caller."""
@@ -272,7 +283,7 @@ class WorkflowConsoleService:
 
     def read(self, incident_id: UUID) -> WorkflowResponse:
         incident = self._get_incident(incident_id)
-        state = self._read_state(incident)
+        state = self._read_state(incident, self._current_round(incident))
         action = self._action_for_state(incident, state)
         return project_workflow_response(
             incident,
@@ -284,11 +295,12 @@ class WorkflowConsoleService:
     def read_progress(self, incident_id: UUID) -> WorkflowProgressResponse:
         """Read persisted progress; the stage is the latest checkpoint, not a live trace."""
         incident = self._get_incident(incident_id)
-        state = self._runtime.get_state(incident.thread_id)
+        round_record = self._current_round(incident)
+        state = self._runtime.get_state(round_record.thread_id)
         if state is None:
             return self._progress_without_checkpoint(incident)
         _validate_incident_binding(incident, state)
-        failure = self._runtime.get_failure(incident.thread_id)
+        failure = self._runtime.get_failure(round_record.thread_id)
         phase = self._progress_phase(incident, state, failure)
         latest_entry = state["tool_history"][-1] if state["tool_history"] else None
         pending_tool = state["pending_tool_call"]
@@ -332,7 +344,8 @@ class WorkflowConsoleService:
     def read_timeline(self, incident_id: UUID) -> WorkflowTimelineResponse:
         """Project the bounded persisted investigation narrative without loading report records."""
         incident = self._get_incident(incident_id)
-        history = self._runtime.get_checkpoint_history(incident.thread_id)
+        round_record = self._current_round(incident)
+        history = self._runtime.get_checkpoint_history(round_record.thread_id)
         for record in history.records:
             _validate_incident_binding(incident, record.state)
         if not history.records:
@@ -340,7 +353,7 @@ class WorkflowConsoleService:
         events = project_investigation_timeline(
             incident,
             history.records,
-            self._runtime.get_failure(incident.thread_id),
+            self._runtime.get_failure(round_record.thread_id),
             truncated=history.truncated,
         )
         return WorkflowTimelineResponse(
@@ -357,21 +370,11 @@ class WorkflowConsoleService:
         )
         if incident is None:
             raise LookupError("Incident not found")
-        round_record = self._session.scalar(
-            select(InvestigationRound)
-            .where(
-                InvestigationRound.incident_id == incident.id,
-                InvestigationRound.thread_id == incident.thread_id,
-            )
-            .with_for_update()
-        )
+        round_record = current_round(self._session, incident.id, lock=True)
         if (
             incident.investigation_status is not InvestigationStatus.OPEN
-            or round_record is None
             or round_record.status is not InvestigationStatus.OPEN
-            or not incident.thread_id
-            or not incident.thread_id.strip()
-            or self._runtime.get_state(incident.thread_id) is not None
+            or self._runtime.get_state(round_record.thread_id) is not None
         ):
             raise WorkflowConflictError("Workflow cannot be started for this Incident")
         InvestigationLifecycleService(self._session).start(round_record.id)
@@ -388,18 +391,19 @@ class WorkflowConsoleService:
     def execute_accepted_start(self, incident_id: UUID) -> AgentState:
         """Execute a previously accepted start using this caller-owned Session and runtime."""
         incident = self._session.get(Incident, incident_id)
+        round_record = self._current_round(incident) if incident is not None else None
         if (
             incident is None
-            or incident.status != "INVESTIGATING"
-            or not incident.thread_id
-            or not incident.thread_id.strip()
+            or incident.investigation_status is not InvestigationStatus.INVESTIGATING
+            or round_record is None
+            or round_record.status is not InvestigationStatus.INVESTIGATING
         ):
             raise WorkflowConflictError("Workflow start was not accepted for this Incident")
         try:
             state = self._runtime.start(incident)
         except Exception as error:
             try:
-                checkpoint = self._runtime.get_state(incident.thread_id)
+                checkpoint = self._runtime.get_state(round_record.thread_id)
             except Exception:
                 logging.getLogger(__name__).exception(
                     "Unable to read checkpoint while reconciling accepted workflow start",
@@ -407,7 +411,7 @@ class WorkflowConsoleService:
                 )
                 raise WorkflowStartError("Workflow start failed") from error
             if checkpoint is None:
-                self._restore_open_after_unstarted_failure(incident_id, incident.thread_id)
+                self._restore_open_after_unstarted_failure(incident_id, round_record.id)
             raise WorkflowStartError("Workflow start failed") from error
         return state
 
@@ -419,7 +423,7 @@ class WorkflowConsoleService:
         self._session.refresh(incident)
         return project_workflow_response(incident, state, self._action_for_state(incident, state))
 
-    def _restore_open_after_unstarted_failure(self, incident_id: UUID, thread_id: str) -> None:
+    def _restore_open_after_unstarted_failure(self, incident_id: UUID, round_id: UUID) -> None:
         """Restore only the accepted record that still lacks a persisted checkpoint."""
         self._session.rollback()
         incident = self._session.scalar(
@@ -429,17 +433,12 @@ class WorkflowConsoleService:
             incident is not None
             and incident.status == "INVESTIGATING"
             and incident.investigation_status is InvestigationStatus.INVESTIGATING
-            and incident.thread_id == thread_id
         ):
-            round_record = self._session.scalar(
-                select(InvestigationRound)
-                .where(
-                    InvestigationRound.incident_id == incident.id,
-                    InvestigationRound.thread_id == thread_id,
-                )
-                .with_for_update()
-            )
-            if round_record is None or round_record.status is not InvestigationStatus.INVESTIGATING:
+            round_record = current_round(self._session, incident.id, lock=True)
+            if (
+                round_record.id != round_id
+                or round_record.status is not InvestigationStatus.INVESTIGATING
+            ):
                 raise WorkflowStateConflict("Incident has no active V2 InvestigationRound")
             incident.status = "OPEN"
             incident.investigation_status = InvestigationStatus.OPEN
@@ -453,23 +452,22 @@ class WorkflowConsoleService:
         )
         if incident is None:
             raise LookupError("Incident not found")
-        if not incident.thread_id or not incident.thread_id.strip():
-            raise WorkflowConflictError("Incident has no stable workflow thread")
+        round_record = current_round(self._session, incident.id, lock=True)
         try:
-            state = self._runtime.get_state(incident.thread_id)
+            state = self._runtime.get_state(round_record.thread_id)
         except Exception as error:
             raise WorkflowRetryError("Workflow retry failed") from error
         if state is None:
             raise WorkflowConflictError("Workflow has no persisted checkpoint to retry")
         try:
-            failure = self._runtime.get_failure(incident.thread_id)
+            failure = self._runtime.get_failure(round_record.thread_id)
         except Exception as error:
             raise WorkflowRetryError("Workflow retry failed") from error
         if not self._is_retry_eligible(incident, state, failure):
             raise WorkflowConflictError("Workflow retry is not eligible for this Incident")
         try:
-            self._runtime.record_retry_attempt(incident.thread_id)
-            result = self._runtime.retry_failed_task(incident.thread_id)
+            self._runtime.record_retry_attempt(round_record.thread_id)
+            result = self._runtime.retry_failed_task(round_record.thread_id)
         except Exception as error:
             raise WorkflowRetryError("Workflow retry failed") from error
         self._session.refresh(incident)
@@ -485,12 +483,16 @@ class WorkflowConsoleService:
         incident = self._session.get(Incident, incident_id)
         if incident is None:
             raise LookupError("Incident not found")
-        if not incident.thread_id or not incident.thread_id.strip():
-            raise WorkflowConflictError("Incident has no stable workflow thread")
         return incident
 
-    def _read_state(self, incident: Incident) -> AgentState:
-        state = self._runtime.get_state(incident.thread_id)
+    def _current_round(self, incident: Incident) -> InvestigationRound:
+        try:
+            return current_round(self._session, incident.id)
+        except InvestigationLifecycleError:
+            raise WorkflowConflictError("Incident has no current InvestigationRound") from None
+
+    def _read_state(self, incident: Incident, round_record: InvestigationRound) -> AgentState:
+        state = self._runtime.get_state(round_record.thread_id)
         if state is None:
             raise WorkflowNotStartedError("Workflow not started")
         return state
@@ -591,10 +593,12 @@ class WorkflowConsoleService:
 
     def _retry_available(self, incident: Incident, state: AgentState) -> bool:
         """Fail closed unless persisted pre-approval facts authorize a retry projection."""
-        if not incident.thread_id or not incident.thread_id.strip():
+        try:
+            round_record = self._current_round(incident)
+        except WorkflowConflictError:
             return False
         try:
-            failure = self._runtime.get_failure(incident.thread_id)
+            failure = self._runtime.get_failure(round_record.thread_id)
         except Exception:
             return False
         return self._is_retry_eligible(incident, state, failure)
@@ -620,8 +624,6 @@ class WorkflowConsoleService:
         )
         if (
             incident.status != "INVESTIGATING"
-            or not incident.thread_id
-            or not incident.thread_id.strip()
             or failure is None
             or failure.failed_node not in RETRYABLE_PRE_APPROVAL_NODES
             or not failure.retryable

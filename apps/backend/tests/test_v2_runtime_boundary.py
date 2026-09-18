@@ -80,8 +80,10 @@ def _incident(session: Session) -> tuple[Incident, InvestigationRound]:
     return incident, round_record
 
 
-def _state(incident: Incident) -> dict[str, object]:
-    return create_initial_agent_state(incident)
+def _state(incident: Incident, round_record: InvestigationRound) -> dict[str, object]:
+    state = create_initial_agent_state(incident)
+    state["round_id"] = round_record.id
+    return state
 
 
 def test_v2_graph_has_only_investigation_and_terminal_report_nodes(
@@ -248,7 +250,7 @@ def test_v2_graph_concludes_and_terminalizes_the_current_round(
 
     result = build_v2_production_investigation_graph(
         dependencies, session=database_session
-    ).invoke(_state(incident))
+    ).invoke(_state(incident, round_record))
 
     database_session.refresh(incident)
     database_session.refresh(round_record)
@@ -296,7 +298,7 @@ def test_v2_graph_terminalizes_bounded_and_controlled_failures(
 
     result = build_v2_production_investigation_graph(
         dependencies, session=database_session
-    ).invoke(_state(incident))
+    ).invoke(_state(incident, round_record))
 
     database_session.refresh(incident)
     database_session.refresh(round_record)
@@ -309,7 +311,7 @@ def test_v2_conclusion_terminalization_creates_report_without_remediation(
     database_session: Session,
 ) -> None:
     incident, round_record = _incident(database_session)
-    state = _state(incident)
+    state = _state(incident, round_record)
     evidence = EvidenceContext(
         source="query_metrics",
         evidence_type="metric_snapshot",
@@ -375,7 +377,7 @@ def test_v2_terminalization_synchronizes_nonconclusive_statuses(
     reason: TerminalReason,
 ) -> None:
     incident, round_record = _incident(database_session)
-    state = _state(incident)
+    state = _state(incident, round_record)
     state.update({"terminal_reason": reason})
 
     V2Terminalizer(database_session).terminalize(state, status)

@@ -374,6 +374,7 @@ class AgentState(TypedDict):
     """Full runtime state carried by future workflow nodes and checkpointed safely."""
 
     incident: IncidentContext
+    round_id: UUID | None
     current_stage: AgentStage
     hypotheses: list[HypothesisContext]
     evidence: list[EvidenceContext]
@@ -415,6 +416,7 @@ def create_initial_agent_state(
             time_range_end=incident.time_range_end,
             symptoms=symptoms or [],
         ),
+        "round_id": None,
         "current_stage": AgentStage.INTAKE,
         "hypotheses": [],
         "evidence": [],
@@ -447,6 +449,7 @@ def agent_state_to_checkpoint_payload(state: AgentState) -> dict[str, object]:
     """Convert runtime models to JSON-compatible primitives for a future checkpointer."""
     return {
         "incident": state["incident"].model_dump(mode="json"),
+        "round_id": str(state["round_id"]) if state["round_id"] is not None else None,
         "current_stage": state["current_stage"].value,
         "hypotheses": [item.model_dump(mode="json") for item in state["hypotheses"]],
         "evidence": [item.model_dump(mode="json") for item in state["evidence"]],

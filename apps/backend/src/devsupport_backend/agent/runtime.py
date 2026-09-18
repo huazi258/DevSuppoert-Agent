@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from time import monotonic
 from typing import Callable, Protocol, cast
+from uuid import UUID
 
 from langgraph.checkpoint.base import ERROR, BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
@@ -82,12 +83,18 @@ class WorkflowService:
         self._monotonic_clock = monotonic_clock
 
     def start(
-        self, incident: WorkflowIncidentSource, *, symptoms: list[str] | None = None
+        self,
+        incident: WorkflowIncidentSource,
+        *,
+        symptoms: list[str] | None = None,
+        thread_id: str | None = None,
+        round_id: UUID | None = None,
     ) -> AgentState:
-        """Invoke the graph using the incident's stable, persisted thread identifier."""
+        """Invoke a persisted workflow thread, with optional explicit V2 round ownership."""
         state = create_initial_agent_state(incident, symptoms=symptoms)
+        state["round_id"] = round_id
         return self._invoke_active_execution(
-            incident.thread_id,
+            thread_id or incident.thread_id,
             state,
             state.get("active_execution_seconds", 0.0),
         )
