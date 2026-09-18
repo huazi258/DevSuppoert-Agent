@@ -12,6 +12,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -66,7 +67,10 @@ class Service(TimestampMixin, Base):
     """A target-scoped service identifier, never a free-form data-source connection."""
 
     __tablename__ = "services"
-    __table_args__ = (UniqueConstraint("target_id", "name", name="uq_services_target_id_name"),)
+    __table_args__ = (
+        UniqueConstraint("target_id", "name", name="uq_services_target_id_name"),
+        UniqueConstraint("id", "target_id", name="uq_services_id_target_id"),
+    )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     target_id: Mapped[UUID] = mapped_column(
@@ -78,11 +82,21 @@ class Service(TimestampMixin, Base):
     enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
 
     target: Mapped[InvestigationTarget] = relationship(back_populates="services")
-    incidents: Mapped[list["Incident"]] = relationship(back_populates="service_record")
+    incidents: Mapped[list["Incident"]] = relationship(
+        back_populates="service_record", overlaps="incidents,target"
+    )
 
 
 class Incident(TimestampMixin, Base):
     __tablename__ = "incidents"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["service_id", "target_id"],
+            ["services.id", "services.target_id"],
+            name="incidents_service_id_target_id_fkey",
+            ondelete="RESTRICT",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     service: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -95,14 +109,16 @@ class Incident(TimestampMixin, Base):
     target_id: Mapped[UUID] = mapped_column(
         ForeignKey("investigation_targets.id", ondelete="RESTRICT"), nullable=False, index=True
     )
-    service_id: Mapped[UUID] = mapped_column(
-        ForeignKey("services.id", ondelete="RESTRICT"), nullable=False, index=True
-    )
+    service_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
     # Retained during the V1 workflow transition.  V2 selection is represented by service_id.
     thread_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
 
-    target: Mapped[InvestigationTarget] = relationship(back_populates="incidents")
-    service_record: Mapped[Service] = relationship(back_populates="incidents")
+    target: Mapped[InvestigationTarget] = relationship(
+        back_populates="incidents", overlaps="incidents,service_record"
+    )
+    service_record: Mapped[Service] = relationship(
+        back_populates="incidents", overlaps="incidents,target"
+    )
     rounds: Mapped[list["InvestigationRound"]] = relationship(
         back_populates="incident",
         cascade="all, delete-orphan",
@@ -128,6 +144,7 @@ class InvestigationRound(TimestampMixin, Base):
         UniqueConstraint(
             "incident_id", "round_number", name="uq_investigation_rounds_incident_number"
         ),
+        UniqueConstraint("id", "incident_id", name="uq_investigation_rounds_id_incident_id"),
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
@@ -144,25 +161,41 @@ class InvestigationRound(TimestampMixin, Base):
     terminal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     incident: Mapped[Incident] = relationship(back_populates="rounds")
-    observations: Mapped[list["Observation"]] = relationship(back_populates="round")
-    hypotheses: Mapped[list["Hypothesis"]] = relationship(back_populates="round")
-    evidence_items: Mapped[list["Evidence"]] = relationship(back_populates="round")
-    tool_calls: Mapped[list["ToolCall"]] = relationship(back_populates="round")
-    report: Mapped["Report | None"] = relationship(back_populates="round", uselist=False)
+    observations: Mapped[list["Observation"]] = relationship(
+        back_populates="round", overlaps="incident,observations,round"
+    )
+    hypotheses: Mapped[list["Hypothesis"]] = relationship(
+        back_populates="round", overlaps="hypotheses,incident,round"
+    )
+    evidence_items: Mapped[list["Evidence"]] = relationship(
+        back_populates="round", overlaps="evidence_items,incident,round"
+    )
+    tool_calls: Mapped[list["ToolCall"]] = relationship(
+        back_populates="round", overlaps="incident,round,tool_calls"
+    )
+    report: Mapped["Report | None"] = relationship(
+        back_populates="round", uselist=False, overlaps="incident,report,reports"
+    )
 
 
 class Observation(Base):
     """User-supplied, unverified information that is intentionally distinct from Evidence."""
 
     __tablename__ = "observations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["round_id", "incident_id"],
+            ["investigation_rounds.id", "investigation_rounds.incident_id"],
+            name="observations_round_id_incident_id_fkey",
+            ondelete="RESTRICT",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     incident_id: Mapped[UUID] = mapped_column(
         ForeignKey("incidents.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    round_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("investigation_rounds.id", ondelete="SET NULL"), nullable=True, index=True
-    )
+    round_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True, index=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     context_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
@@ -170,8 +203,10 @@ class Observation(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    incident: Mapped[Incident] = relationship(back_populates="observations")
-    round: Mapped[InvestigationRound | None] = relationship(back_populates="observations")
+    incident: Mapped[Incident] = relationship(back_populates="observations", overlaps="round")
+    round: Mapped[InvestigationRound | None] = relationship(
+        back_populates="observations", overlaps="incident,observations"
+    )
 
 
 class IncidentRecordMixin:
@@ -185,22 +220,38 @@ class IncidentRecordMixin:
 
 class Hypothesis(TimestampMixin, IncidentRecordMixin, Base):
     __tablename__ = "hypotheses"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["round_id", "incident_id"],
+            ["investigation_rounds.id", "investigation_rounds.incident_id"],
+            name="hypotheses_round_id_incident_id_fkey",
+            ondelete="RESTRICT",
+        ),
+    )
 
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="OPEN", nullable=False)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
-    round_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("investigation_rounds.id", ondelete="SET NULL"), nullable=True, index=True
-    )
+    round_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True, index=True)
 
-    incident: Mapped[Incident] = relationship(back_populates="hypotheses")
-    round: Mapped[InvestigationRound | None] = relationship(back_populates="hypotheses")
+    incident: Mapped[Incident] = relationship(back_populates="hypotheses", overlaps="round")
+    round: Mapped[InvestigationRound | None] = relationship(
+        back_populates="hypotheses", overlaps="hypotheses,incident"
+    )
     evidence_items: Mapped[list["Evidence"]] = relationship(back_populates="hypothesis")
 
 
 class Evidence(TimestampMixin, IncidentRecordMixin, Base):
     __tablename__ = "evidence"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["round_id", "incident_id"],
+            ["investigation_rounds.id", "investigation_rounds.incident_id"],
+            name="evidence_round_id_incident_id_fkey",
+            ondelete="RESTRICT",
+        ),
+    )
 
     hypothesis_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("hypotheses.id", ondelete="SET NULL"), nullable=True, index=True
@@ -209,17 +260,25 @@ class Evidence(TimestampMixin, IncidentRecordMixin, Base):
     source: Mapped[str] = mapped_column(String(100), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
-    round_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("investigation_rounds.id", ondelete="SET NULL"), nullable=True, index=True
-    )
+    round_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True, index=True)
 
-    incident: Mapped[Incident] = relationship(back_populates="evidence_items")
-    round: Mapped[InvestigationRound | None] = relationship(back_populates="evidence_items")
+    incident: Mapped[Incident] = relationship(back_populates="evidence_items", overlaps="round")
+    round: Mapped[InvestigationRound | None] = relationship(
+        back_populates="evidence_items", overlaps="evidence_items,incident"
+    )
     hypothesis: Mapped[Hypothesis | None] = relationship(back_populates="evidence_items")
 
 
 class ToolCall(TimestampMixin, IncidentRecordMixin, Base):
     __tablename__ = "tool_calls"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["round_id", "incident_id"],
+            ["investigation_rounds.id", "investigation_rounds.incident_id"],
+            name="tool_calls_round_id_incident_id_fkey",
+            ondelete="RESTRICT",
+        ),
+    )
 
     tool_name: Mapped[str] = mapped_column(String(100), nullable=False)
     status: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -227,12 +286,12 @@ class ToolCall(TimestampMixin, IncidentRecordMixin, Base):
     result: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
-    round_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("investigation_rounds.id", ondelete="SET NULL"), nullable=True, index=True
-    )
+    round_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True, index=True)
 
-    incident: Mapped[Incident] = relationship(back_populates="tool_calls")
-    round: Mapped[InvestigationRound | None] = relationship(back_populates="tool_calls")
+    incident: Mapped[Incident] = relationship(back_populates="tool_calls", overlaps="round")
+    round: Mapped[InvestigationRound | None] = relationship(
+        back_populates="tool_calls", overlaps="incident,tool_calls"
+    )
 
 
 class Approval(TimestampMixin, IncidentRecordMixin, Base):
@@ -281,17 +340,23 @@ class Report(TimestampMixin, IncidentRecordMixin, Base):
     __table_args__ = (
         UniqueConstraint("round_id", name="uq_reports_round_id"),
         UniqueConstraint("incident_id", "version", name="uq_reports_incident_version"),
+        ForeignKeyConstraint(
+            ["round_id", "incident_id"],
+            ["investigation_rounds.id", "investigation_rounds.incident_id"],
+            name="reports_round_id_incident_id_fkey",
+            ondelete="RESTRICT",
+        ),
     )
 
-    round_id: Mapped[UUID] = mapped_column(
-        ForeignKey("investigation_rounds.id", ondelete="RESTRICT"), nullable=False, index=True
-    )
+    round_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     content: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
     root_cause: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    incident: Mapped[Incident] = relationship(back_populates="reports")
-    round: Mapped[InvestigationRound] = relationship(back_populates="report")
+    incident: Mapped[Incident] = relationship(back_populates="reports", overlaps="round")
+    round: Mapped[InvestigationRound] = relationship(
+        back_populates="report", overlaps="incident,reports"
+    )
 
 
 class KnowledgeDocument(TimestampMixin, Base):
@@ -412,6 +477,19 @@ def _compatibility_service(
     return service
 
 
+def _compatibility_round(session: Session, incident_id: UUID) -> InvestigationRound | None:
+    """Find the V1-owned round by the Incident's stable legacy workflow thread."""
+    incident = session.get(Incident, incident_id)
+    if incident is None:
+        return None
+    return session.scalar(
+        select(InvestigationRound).where(
+            InvestigationRound.incident_id == incident.id,
+            InvestigationRound.thread_id == incident.thread_id,
+        )
+    )
+
+
 @event.listens_for(Session, "before_flush")
 def _preserve_v1_incident_compatibility(
     session: Session, _flush_context: object, _instances: object
@@ -449,24 +527,14 @@ def _preserve_v1_incident_compatibility(
                 or record.incident_id is None
             ):
                 continue
-            round_record = session.scalar(
-                select(InvestigationRound)
-                .where(InvestigationRound.incident_id == record.incident_id)
-                .order_by(InvestigationRound.round_number.desc())
-                .limit(1)
-            )
+            round_record = _compatibility_round(session, record.incident_id)
             if round_record is not None:
                 record.round = round_record
 
     for report in (item for item in session.new if isinstance(item, Report)):
         round_record = report.round
         if round_record is None and report.round_id is None and report.incident_id is not None:
-            round_record = session.scalar(
-                select(InvestigationRound)
-                .where(InvestigationRound.incident_id == report.incident_id)
-                .order_by(InvestigationRound.round_number.desc())
-                .limit(1)
-            )
+            round_record = _compatibility_round(session, report.incident_id)
         if round_record is None:
             if report.round_id is None:
                 raise ValueError("Report requires an InvestigationRound")

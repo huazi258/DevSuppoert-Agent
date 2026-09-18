@@ -165,8 +165,10 @@ class FinalReportService:
         content = self._content_for(incident, state)
         round_record = self._session.scalar(
             select(InvestigationRound)
-            .where(InvestigationRound.incident_id == incident.id)
-            .order_by(InvestigationRound.round_number.desc())
+            .where(
+                InvestigationRound.incident_id == incident.id,
+                InvestigationRound.thread_id == incident.thread_id,
+            )
             .limit(1)
         )
         if round_record is None:

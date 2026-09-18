@@ -27,7 +27,14 @@ from devsupport_backend.agent.state import (
     create_initial_agent_state,
 )
 from devsupport_backend.final_report import FinalReportError, FinalReportService
-from devsupport_backend.models import Action, Approval, Incident, Report, Verification
+from devsupport_backend.models import (
+    Action,
+    Approval,
+    Incident,
+    InvestigationRound,
+    Report,
+    Verification,
+)
 from devsupport_backend.tools.schemas import ToolStatus
 
 
@@ -100,6 +107,26 @@ def test_manual_report_has_no_remediation_facts_and_is_idempotent(
         )
         == 1
     )
+
+
+def test_final_report_uses_the_incident_v1_thread_round(database_session: Session) -> None:
+    incident = _incident(database_session, "NEEDS_MANUAL_ACTION")
+    first_round = incident.rounds[0]
+    database_session.add(
+        InvestigationRound(
+            incident_id=incident.id,
+            round_number=2,
+            status="INVESTIGATING",
+            thread_id=str(uuid4()),
+        )
+    )
+    database_session.commit()
+
+    outcome = FinalReportService(database_session).generate(_state(incident))
+    report = database_session.get(Report, outcome.report_id)
+
+    assert report is not None
+    assert report.round_id == first_round.id
 
 
 def test_report_preserves_knowledge_evidence_citation(database_session: Session) -> None:
