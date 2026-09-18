@@ -19,6 +19,7 @@ from devsupport_backend.approvals import (
     WorkflowStateReader,
 )
 from devsupport_backend.database import SessionLocal, get_session
+from devsupport_backend.investigation_status import InvestigationStatus
 from devsupport_backend.models import Approval, Incident, Report
 from devsupport_backend.schemas.approvals import ApprovalCreate, ApprovalResponse
 from devsupport_backend.schemas.incidents import IncidentCreate, IncidentResponse, ReportResponse
@@ -89,6 +90,7 @@ def create_incident(payload: IncidentCreate, session: SessionDependency) -> Inci
         time_range_start=payload.time_range_start,
         time_range_end=payload.time_range_end,
         status="OPEN",
+        investigation_status=InvestigationStatus.OPEN,
         thread_id=str(uuid4()),
     )
     session.add(incident)

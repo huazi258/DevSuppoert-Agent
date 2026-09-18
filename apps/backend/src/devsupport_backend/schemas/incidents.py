@@ -5,6 +5,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from devsupport_backend.investigation_status import InvestigationStatus
+
 
 class IncidentCreate(BaseModel):
     """Input required to create an incident without starting a workflow."""
@@ -50,6 +52,7 @@ class IncidentResponse(BaseModel):
     environment: str
     description: str
     status: str
+    investigation_status: InvestigationStatus
     time_range_start: datetime
     time_range_end: datetime
     thread_id: str

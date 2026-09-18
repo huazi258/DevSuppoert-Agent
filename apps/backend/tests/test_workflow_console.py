@@ -40,6 +40,7 @@ from devsupport_backend.agent.state import (
     VerificationStatus,
     create_initial_agent_state,
 )
+from devsupport_backend.investigation_status import InvestigationStatus
 from devsupport_backend.models import Action, Approval, Incident
 from devsupport_backend.tools.registry import ToolName
 from devsupport_backend.tools.schemas import ToolError, ToolStatus
@@ -839,6 +840,8 @@ def test_accept_start_marks_open_incident_without_executing_runtime(
     assert response.incident_status == "INVESTIGATING"
     assert response.accepted is True
     assert incident.status == "INVESTIGATING"
+    assert incident.investigation_status is InvestigationStatus.INVESTIGATING
+    assert incident.rounds[0].status is InvestigationStatus.INVESTIGATING
     assert runtime.start_calls == 0
 
     with pytest.raises(WorkflowConflictError):

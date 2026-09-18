@@ -22,9 +22,14 @@ from sqlalchemy import (
     func,
     select,
 )
+from sqlalchemy import (
+    Enum as SqlEnum,
+)
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship
+
+from devsupport_backend.investigation_status import InvestigationStatus, legacy_status_projection
 
 
 class Base(DeclarativeBase):
@@ -43,6 +48,13 @@ class TimestampMixin:
 
 
 MIGRATION_COMPATIBILITY_TARGET_SLUG = "migration-compatibility-target"
+INVESTIGATION_STATUS_TYPE = SqlEnum(
+    InvestigationStatus,
+    name="investigation_status",
+    native_enum=False,
+    create_constraint=False,
+    validate_strings=True,
+)
 
 
 class InvestigationTarget(TimestampMixin, Base):
@@ -102,6 +114,12 @@ class Incident(TimestampMixin, Base):
     service: Mapped[str] = mapped_column(String(100), nullable=False)
     environment: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="OPEN", nullable=False)
+    # Retained V1 remediation state lives in status; this is the V2 product lifecycle projection.
+    investigation_status: Mapped[InvestigationStatus] = mapped_column(
+        INVESTIGATION_STATUS_TYPE,
+        default=InvestigationStatus.OPEN,
+        nullable=False,
+    )
     description: Mapped[str] = mapped_column(Text, nullable=False)
     details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
     time_range_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -152,7 +170,7 @@ class InvestigationRound(TimestampMixin, Base):
         ForeignKey("incidents.id", ondelete="CASCADE"), nullable=False, index=True
     )
     round_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    status: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[InvestigationStatus] = mapped_column(INVESTIGATION_STATUS_TYPE, nullable=False)
     thread_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -501,6 +519,8 @@ def _preserve_v1_incident_compatibility(
     """
     new_incidents = [item for item in session.new if isinstance(item, Incident)]
     for incident in new_incidents:
+        if incident.investigation_status is None:
+            incident.investigation_status = legacy_status_projection(incident.status or "OPEN")
         if incident.target is None and incident.target_id is None:
             target = _compatibility_target(session)
             incident.target = target
@@ -514,7 +534,7 @@ def _preserve_v1_incident_compatibility(
             incident.rounds.append(
                 InvestigationRound(
                     round_number=1,
-                    status=incident.status or "OPEN",
+                    status=incident.investigation_status,
                     thread_id=incident.thread_id,
                 )
             )

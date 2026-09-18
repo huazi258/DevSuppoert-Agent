@@ -32,8 +32,9 @@ from devsupport_backend.agent.workflow import (
 )
 from devsupport_backend.approvals import ApprovalDecisionService, ApprovalWaitService
 from devsupport_backend.config import settings
+from devsupport_backend.investigation_status import InvestigationStatus
 from devsupport_backend.investigation_timeline import project_investigation_timeline
-from devsupport_backend.models import Action, Approval, Incident
+from devsupport_backend.models import Action, Approval, Incident, InvestigationRound
 from devsupport_backend.rag.embeddings import OpenAICompatibleEmbeddingClient
 from devsupport_backend.rag.retrieval import RAGService
 from devsupport_backend.schemas.workflows import (
@@ -365,14 +366,27 @@ class WorkflowConsoleService:
         )
         if incident is None:
             raise LookupError("Incident not found")
+        round_record = self._session.scalar(
+            select(InvestigationRound)
+            .where(
+                InvestigationRound.incident_id == incident.id,
+                InvestigationRound.thread_id == incident.thread_id,
+            )
+            .with_for_update()
+        )
         if (
             incident.status != "OPEN"
+            or incident.investigation_status is not InvestigationStatus.OPEN
+            or round_record is None
+            or round_record.status is not InvestigationStatus.OPEN
             or not incident.thread_id
             or not incident.thread_id.strip()
             or self._runtime.get_state(incident.thread_id) is not None
         ):
             raise WorkflowConflictError("Workflow cannot be started for this Incident")
         incident.status = "INVESTIGATING"
+        incident.investigation_status = InvestigationStatus.INVESTIGATING
+        round_record.status = InvestigationStatus.INVESTIGATING
         self._session.commit()
         self._session.refresh(incident)
         return WorkflowStartResponse(
@@ -423,9 +437,22 @@ class WorkflowConsoleService:
         if (
             incident is not None
             and incident.status == "INVESTIGATING"
+            and incident.investigation_status is InvestigationStatus.INVESTIGATING
             and incident.thread_id == thread_id
         ):
+            round_record = self._session.scalar(
+                select(InvestigationRound)
+                .where(
+                    InvestigationRound.incident_id == incident.id,
+                    InvestigationRound.thread_id == thread_id,
+                )
+                .with_for_update()
+            )
+            if round_record is None or round_record.status is not InvestigationStatus.INVESTIGATING:
+                raise WorkflowStateConflict("Incident has no active V2 InvestigationRound")
             incident.status = "OPEN"
+            incident.investigation_status = InvestigationStatus.OPEN
+            round_record.status = InvestigationStatus.OPEN
             self._session.commit()
 
     def retry(self, incident_id: UUID) -> WorkflowResponse:
