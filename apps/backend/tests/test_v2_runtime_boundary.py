@@ -390,8 +390,18 @@ def test_v2_terminalization_synchronizes_nonconclusive_statuses(
     assert report.content["terminal_reason"] == reason.value
 
 
-def test_formal_v2_incident_api_has_no_approval_route() -> None:
+def test_formal_v2_incident_api_has_no_remediation_routes() -> None:
     with TestClient(app) as client:
-        response = client.post(f"/incidents/{uuid4()}/approval", json={"decision": "APPROVE"})
+        incident_approval = client.post(
+            f"/incidents/{uuid4()}/approval", json={"decision": "APPROVE"}
+        )
+        legacy_approval = client.post(
+            f"/legacy/incidents/{uuid4()}/approval", json={"decision": "APPROVE"}
+        )
+        paths = client.get("/openapi.json").json()["paths"]
 
-    assert response.status_code == 404
+    assert incident_approval.status_code == 404
+    assert legacy_approval.status_code == 404
+    assert not any(
+        term in path for path in paths for term in ("approval", "legacy", "remediation", "recovery")
+    )

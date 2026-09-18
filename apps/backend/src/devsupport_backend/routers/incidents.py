@@ -40,7 +40,7 @@ from devsupport_backend.workflow_console import (
 )
 
 router = APIRouter(prefix="/incidents", tags=["incidents"])
-# V1 remediation is intentionally mounted outside the formal V2 Incident API.
+# V1 remediation is retained for isolated compatibility applications only.
 legacy_router = APIRouter(prefix="/legacy/incidents", tags=["legacy-remediation"])
 SessionDependency = Annotated[Session, Depends(get_session)]
 

@@ -4,7 +4,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from devsupport_backend.config import settings
-from devsupport_backend.routers.incidents import legacy_router
 from devsupport_backend.routers.incidents import router as incidents_router
 
 app = FastAPI(title=settings.app_name)
@@ -16,8 +15,6 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 app.include_router(incidents_router)
-# Retained solely for V1 compatibility; the formal V2 /incidents API has no remediation route.
-app.include_router(legacy_router)
 
 
 @app.get("/health")

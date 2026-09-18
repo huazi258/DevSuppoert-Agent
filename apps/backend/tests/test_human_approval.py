@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
@@ -43,11 +44,11 @@ from devsupport_backend.approvals import (
     approval_wait_node,
 )
 from devsupport_backend.database import get_session
-from devsupport_backend.main import app
 from devsupport_backend.models import Action, Approval, Incident
 from devsupport_backend.routers.incidents import (
     get_approval_workflow_coordinator,
     get_workflow_state_reader,
+    legacy_router,
 )
 from devsupport_backend.schemas.approvals import ApprovalDecision
 from devsupport_backend.tools.schemas import ToolStatus
@@ -215,12 +216,14 @@ def approval_api_client(
     def override_get_session() -> Iterator[Session]:
         yield database_session
 
-    app.dependency_overrides[get_session] = override_get_session
-    app.dependency_overrides[get_workflow_state_reader] = lambda: reader
-    app.dependency_overrides[get_approval_workflow_coordinator] = lambda: coordinator
-    with TestClient(app) as client:
+    legacy_test_app = FastAPI()
+    legacy_test_app.include_router(legacy_router)
+    legacy_test_app.dependency_overrides[get_session] = override_get_session
+    legacy_test_app.dependency_overrides[get_workflow_state_reader] = lambda: reader
+    legacy_test_app.dependency_overrides[get_approval_workflow_coordinator] = lambda: coordinator
+    with TestClient(legacy_test_app) as client:
         yield client, reader, coordinator
-    app.dependency_overrides.clear()
+    legacy_test_app.dependency_overrides.clear()
 
 
 @pytest.mark.parametrize(

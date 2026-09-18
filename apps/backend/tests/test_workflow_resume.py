@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -39,9 +40,11 @@ from devsupport_backend.approvals import (
     build_approval_resume_graph,
 )
 from devsupport_backend.database import SessionLocal
-from devsupport_backend.main import app
 from devsupport_backend.models import Action, Approval, Incident, Verification
-from devsupport_backend.routers.incidents import get_approval_workflow_coordinator
+from devsupport_backend.routers.incidents import (
+    get_approval_workflow_coordinator,
+    legacy_router,
+)
 from devsupport_backend.schemas.approvals import ApprovalDecision
 from devsupport_backend.tools.schemas import ToolStatus
 
@@ -392,8 +395,10 @@ def _api_resume_context(
     with open_postgres_checkpointer() as checkpointer:
         _interrupt_graph(context, checkpointer=checkpointer).invoke(context.state, config)
     coordinator.bind(context)
-    app.dependency_overrides[get_approval_workflow_coordinator] = lambda: coordinator
-    client = TestClient(app)
+    legacy_test_app = FastAPI()
+    legacy_test_app.include_router(legacy_router)
+    legacy_test_app.dependency_overrides[get_approval_workflow_coordinator] = lambda: coordinator
+    client = TestClient(legacy_test_app)
     return client, f"/legacy/incidents/{context.incident.id}/approval"
 
 
@@ -426,7 +431,6 @@ def test_approval_api_resumes_once_and_duplicate_decision_does_not_replay_workfl
     finally:
         if client is not None:
             client.close()
-        app.dependency_overrides.clear()
         _delete_context(context)
 
 
@@ -454,5 +458,4 @@ def test_committed_approval_retries_resume_without_creating_a_second_record() ->
     finally:
         if client is not None:
             client.close()
-        app.dependency_overrides.clear()
         _delete_context(context)
