@@ -200,7 +200,12 @@ def get_incident(incident_id: UUID, session: SessionDependency) -> Incident:
 def get_final_report(incident_id: UUID, session: SessionDependency) -> Report:
     if session.get(Incident, incident_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Incident not found")
-    report = session.scalar(select(Report).where(Report.incident_id == incident_id))
+    report = session.scalar(
+        select(Report)
+        .where(Report.incident_id == incident_id)
+        .order_by(Report.version.desc())
+        .limit(1)
+    )
     if report is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Final report not found")
     return report

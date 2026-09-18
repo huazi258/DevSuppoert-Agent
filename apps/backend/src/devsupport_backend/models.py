@@ -1,4 +1,4 @@
-"""Initial PostgreSQL domain and knowledge models for DevSupport Agent V0."""
+"""PostgreSQL domain and knowledge models for DevSupport Agent V2."""
 
 from __future__ import annotations
 
@@ -17,11 +17,13 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     func,
+    select,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
@@ -39,6 +41,46 @@ class TimestampMixin:
     )
 
 
+MIGRATION_COMPATIBILITY_TARGET_SLUG = "migration-compatibility-target"
+
+
+class InvestigationTarget(TimestampMixin, Base):
+    """A deployment-configured microservice environment available for investigation."""
+
+    __tablename__ = "investigation_targets"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    slug: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    environment: Mapped[str] = mapped_column(String(50), nullable=False)
+    enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
+
+    services: Mapped[list["Service"]] = relationship(
+        back_populates="target", cascade="all, delete-orphan"
+    )
+    incidents: Mapped[list["Incident"]] = relationship(back_populates="target")
+
+
+class Service(TimestampMixin, Base):
+    """A target-scoped service identifier, never a free-form data-source connection."""
+
+    __tablename__ = "services"
+    __table_args__ = (UniqueConstraint("target_id", "name", name="uq_services_target_id_name"),)
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    target_id: Mapped[UUID] = mapped_column(
+        ForeignKey("investigation_targets.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
+
+    target: Mapped[InvestigationTarget] = relationship(back_populates="services")
+    incidents: Mapped[list["Incident"]] = relationship(back_populates="service_record")
+
+
 class Incident(TimestampMixin, Base):
     __tablename__ = "incidents"
 
@@ -50,8 +92,25 @@ class Incident(TimestampMixin, Base):
     details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
     time_range_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     time_range_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    target_id: Mapped[UUID] = mapped_column(
+        ForeignKey("investigation_targets.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    service_id: Mapped[UUID] = mapped_column(
+        ForeignKey("services.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    # Retained during the V1 workflow transition.  V2 selection is represented by service_id.
     thread_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
 
+    target: Mapped[InvestigationTarget] = relationship(back_populates="incidents")
+    service_record: Mapped[Service] = relationship(back_populates="incidents")
+    rounds: Mapped[list["InvestigationRound"]] = relationship(
+        back_populates="incident",
+        cascade="all, delete-orphan",
+        order_by="InvestigationRound.round_number",
+    )
+    observations: Mapped[list["Observation"]] = relationship(
+        back_populates="incident", cascade="all, delete-orphan"
+    )
     hypotheses: Mapped[list["Hypothesis"]] = relationship(back_populates="incident")
     evidence_items: Mapped[list["Evidence"]] = relationship(back_populates="incident")
     tool_calls: Mapped[list["ToolCall"]] = relationship(back_populates="incident")
@@ -59,6 +118,60 @@ class Incident(TimestampMixin, Base):
     actions: Mapped[list["Action"]] = relationship(back_populates="incident")
     verifications: Mapped[list["Verification"]] = relationship(back_populates="incident")
     reports: Mapped[list["Report"]] = relationship(back_populates="incident")
+
+
+class InvestigationRound(TimestampMixin, Base):
+    """One independently traceable investigation execution within an Incident."""
+
+    __tablename__ = "investigation_rounds"
+    __table_args__ = (
+        UniqueConstraint(
+            "incident_id", "round_number", name="uq_investigation_rounds_incident_number"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    incident_id: Mapped[UUID] = mapped_column(
+        ForeignKey("incidents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    round_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False)
+    thread_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    terminal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    incident: Mapped[Incident] = relationship(back_populates="rounds")
+    observations: Mapped[list["Observation"]] = relationship(back_populates="round")
+    hypotheses: Mapped[list["Hypothesis"]] = relationship(back_populates="round")
+    evidence_items: Mapped[list["Evidence"]] = relationship(back_populates="round")
+    tool_calls: Mapped[list["ToolCall"]] = relationship(back_populates="round")
+    report: Mapped["Report | None"] = relationship(back_populates="round", uselist=False)
+
+
+class Observation(Base):
+    """User-supplied, unverified information that is intentionally distinct from Evidence."""
+
+    __tablename__ = "observations"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    incident_id: Mapped[UUID] = mapped_column(
+        ForeignKey("incidents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    round_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("investigation_rounds.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    context_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    incident: Mapped[Incident] = relationship(back_populates="observations")
+    round: Mapped[InvestigationRound | None] = relationship(back_populates="observations")
 
 
 class IncidentRecordMixin:
@@ -77,8 +190,12 @@ class Hypothesis(TimestampMixin, IncidentRecordMixin, Base):
     status: Mapped[str] = mapped_column(String(50), default="OPEN", nullable=False)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    round_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("investigation_rounds.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     incident: Mapped[Incident] = relationship(back_populates="hypotheses")
+    round: Mapped[InvestigationRound | None] = relationship(back_populates="hypotheses")
     evidence_items: Mapped[list["Evidence"]] = relationship(back_populates="hypothesis")
 
 
@@ -92,8 +209,12 @@ class Evidence(TimestampMixin, IncidentRecordMixin, Base):
     source: Mapped[str] = mapped_column(String(100), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    round_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("investigation_rounds.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     incident: Mapped[Incident] = relationship(back_populates="evidence_items")
+    round: Mapped[InvestigationRound | None] = relationship(back_populates="evidence_items")
     hypothesis: Mapped[Hypothesis | None] = relationship(back_populates="evidence_items")
 
 
@@ -106,8 +227,12 @@ class ToolCall(TimestampMixin, IncidentRecordMixin, Base):
     result: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    round_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("investigation_rounds.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     incident: Mapped[Incident] = relationship(back_populates="tool_calls")
+    round: Mapped[InvestigationRound | None] = relationship(back_populates="tool_calls")
 
 
 class Approval(TimestampMixin, IncidentRecordMixin, Base):
@@ -153,12 +278,20 @@ class Verification(TimestampMixin, IncidentRecordMixin, Base):
 
 class Report(TimestampMixin, IncidentRecordMixin, Base):
     __tablename__ = "reports"
-    __table_args__ = (UniqueConstraint("incident_id", name="uq_reports_incident_id"),)
+    __table_args__ = (
+        UniqueConstraint("round_id", name="uq_reports_round_id"),
+        UniqueConstraint("incident_id", "version", name="uq_reports_incident_version"),
+    )
 
+    round_id: Mapped[UUID] = mapped_column(
+        ForeignKey("investigation_rounds.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
     content: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
     root_cause: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     incident: Mapped[Incident] = relationship(back_populates="reports")
+    round: Mapped[InvestigationRound] = relationship(back_populates="report")
 
 
 class KnowledgeDocument(TimestampMixin, Base):
@@ -206,3 +339,139 @@ class KnowledgeChunk(TimestampMixin, Base):
     )
 
     document: Mapped[KnowledgeDocument] = relationship(back_populates="chunks")
+
+
+def _pending_compatibility_target(session: Session) -> InvestigationTarget | None:
+    """Return a compatibility target already staged in this unit of work, if any."""
+    return next(
+        (
+            item
+            for item in session.new
+            if isinstance(item, InvestigationTarget)
+            and item.slug == MIGRATION_COMPATIBILITY_TARGET_SLUG
+        ),
+        None,
+    )
+
+
+def _compatibility_target(session: Session) -> InvestigationTarget:
+    """Load or stage the explicit V1 compatibility target used during the transition."""
+    target = _pending_compatibility_target(session)
+    if target is not None:
+        return target
+    target = session.scalar(
+        select(InvestigationTarget).where(
+            InvestigationTarget.slug == MIGRATION_COMPATIBILITY_TARGET_SLUG
+        )
+    )
+    if target is not None:
+        return target
+    target = InvestigationTarget(
+        name="Migration compatibility target (legacy V1 incidents)",
+        slug=MIGRATION_COMPATIBILITY_TARGET_SLUG,
+        description=(
+            "Automatically assigned only to preserve V1 incident and workflow compatibility."
+        ),
+        environment="legacy-compatibility",
+        enabled=True,
+    )
+    session.add(target)
+    return target
+
+
+def _compatibility_service(
+    session: Session, target: InvestigationTarget, legacy_service: str
+) -> Service:
+    """Load or stage one target-scoped Service for a legacy free-form service value."""
+    service = next(
+        (
+            item
+            for item in session.new
+            if isinstance(item, Service)
+            and item.target is target
+            and item.name == legacy_service
+        ),
+        None,
+    )
+    if service is not None:
+        return service
+    if target.id is not None:
+        service = session.scalar(
+            select(Service).where(Service.target_id == target.id, Service.name == legacy_service)
+        )
+        if service is not None:
+            return service
+    service = Service(
+        name=legacy_service,
+        display_name=legacy_service,
+        description="Compatibility mapping for the legacy Incident.service field.",
+        enabled=True,
+    )
+    service.target = target
+    session.add(service)
+    return service
+
+
+@event.listens_for(Session, "before_flush")
+def _preserve_v1_incident_compatibility(
+    session: Session, _flush_context: object, _instances: object
+) -> None:
+    """Attach legacy Incident writes to a target, service, and first investigation round.
+
+    The old workflow still owns Incident.thread_id.  This transition hook mirrors that stable
+    identifier onto round 1 so old callers continue to work while new domain records are complete.
+    """
+    new_incidents = [item for item in session.new if isinstance(item, Incident)]
+    for incident in new_incidents:
+        if incident.target is None and incident.target_id is None:
+            target = _compatibility_target(session)
+            incident.target = target
+        else:
+            target = incident.target
+        if incident.service_record is None and incident.service_id is None:
+            if target is None:
+                raise ValueError("Incident service requires an InvestigationTarget")
+            incident.service_record = _compatibility_service(session, target, incident.service)
+        if not incident.rounds:
+            incident.rounds.append(
+                InvestigationRound(
+                    round_number=1,
+                    status=incident.status or "OPEN",
+                    thread_id=incident.thread_id,
+                )
+            )
+
+    for record_type in (Hypothesis, Evidence, ToolCall):
+        for record in (item for item in session.new if isinstance(item, record_type)):
+            if (
+                record.round is not None
+                or record.round_id is not None
+                or record.incident_id is None
+            ):
+                continue
+            round_record = session.scalar(
+                select(InvestigationRound)
+                .where(InvestigationRound.incident_id == record.incident_id)
+                .order_by(InvestigationRound.round_number.desc())
+                .limit(1)
+            )
+            if round_record is not None:
+                record.round = round_record
+
+    for report in (item for item in session.new if isinstance(item, Report)):
+        round_record = report.round
+        if round_record is None and report.round_id is None and report.incident_id is not None:
+            round_record = session.scalar(
+                select(InvestigationRound)
+                .where(InvestigationRound.incident_id == report.incident_id)
+                .order_by(InvestigationRound.round_number.desc())
+                .limit(1)
+            )
+        if round_record is None:
+            if report.round_id is None:
+                raise ValueError("Report requires an InvestigationRound")
+            continue
+        if report.round is None:
+            report.round = round_record
+        if report.version is None:
+            report.version = round_record.round_number

@@ -18,7 +18,14 @@ from devsupport_backend.agent.state import (
     ReportOutcome,
     VerificationOutcome,
 )
-from devsupport_backend.models import Action, Approval, Incident, Report, Verification
+from devsupport_backend.models import (
+    Action,
+    Approval,
+    Incident,
+    InvestigationRound,
+    Report,
+    Verification,
+)
 from devsupport_backend.tools.schemas import CitationOutput
 
 
@@ -156,7 +163,15 @@ class FinalReportService:
         if incident is None or incident.status not in {"RESOLVED", "NEEDS_MANUAL_ACTION"}:
             raise FinalReportError("Incident is not terminal")
         content = self._content_for(incident, state)
-        existing = self._session.scalar(select(Report).where(Report.incident_id == incident.id))
+        round_record = self._session.scalar(
+            select(InvestigationRound)
+            .where(InvestigationRound.incident_id == incident.id)
+            .order_by(InvestigationRound.round_number.desc())
+            .limit(1)
+        )
+        if round_record is None:
+            raise FinalReportError("Incident has no InvestigationRound")
+        existing = self._session.scalar(select(Report).where(Report.round_id == round_record.id))
         if existing is not None:
             self._validate_existing(existing, content)
             return ReportOutcome(
@@ -164,6 +179,8 @@ class FinalReportService:
             )
         report = Report(
             incident_id=incident.id,
+            round_id=round_record.id,
+            version=round_record.round_number,
             content=content.model_dump(mode="json"),
             root_cause=content.root_cause.root_cause if content.root_cause else None,
         )
