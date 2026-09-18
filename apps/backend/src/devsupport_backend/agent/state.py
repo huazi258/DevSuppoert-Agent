@@ -80,6 +80,7 @@ class TerminalReason(StrEnum):
     INVESTIGATION_ROUND_LIMIT_REACHED = "investigation_round_limit_reached"
     TOOL_CALL_LIMIT_REACHED = "tool_call_limit_reached"
     INVESTIGATION_INCONCLUSIVE = "investigation_inconclusive"
+    WORKFLOW_FAILURE = "workflow_failure"
     POLICY_DENIED = "policy_denied"
     APPROVAL_REJECTED = "approval_rejected"
     ACTION_EXECUTION_FAILED = "action_execution_failed"

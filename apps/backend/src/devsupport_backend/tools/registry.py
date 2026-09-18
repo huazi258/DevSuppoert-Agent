@@ -1,4 +1,4 @@
-"""Immutable whitelist of V0 tools and their Pydantic contracts."""
+"""Tool contracts, including the separate read-only V2 runtime registry."""
 
 from dataclasses import dataclass
 from enum import StrEnum
@@ -96,3 +96,38 @@ class ToolRegistry:
 
 
 tool_registry = ToolRegistry()
+
+
+V2_READ_ONLY_TOOL_NAMES = frozenset(
+    {
+        ToolName.SEARCH_KNOWLEDGE,
+        ToolName.QUERY_LOGS,
+        ToolName.QUERY_METRICS,
+        ToolName.QUERY_TRACES,
+        ToolName.GET_DEPLOYMENT_HISTORY,
+    }
+)
+"""The complete V2 Agent allowlist; remediation tools are intentionally absent."""
+
+
+class V2ToolRegistry:
+    """Read-only view of the shared contracts used by the formal V2 runtime only."""
+
+    def get(self, name: str | ToolName) -> ToolDefinition:
+        try:
+            tool_name = ToolName(name)
+        except ValueError as error:
+            raise UnknownToolError(f"tool is not registered for V2: {name}") from error
+        if tool_name not in V2_READ_ONLY_TOOL_NAMES:
+            raise UnknownToolError(f"tool is not registered for V2: {name}")
+        return tool_registry.get(tool_name)
+
+    def list(self) -> tuple[ToolDefinition, ...]:
+        return tuple(
+            definition
+            for definition in tool_registry.list()
+            if definition.name in V2_READ_ONLY_TOOL_NAMES
+        )
+
+
+v2_tool_registry = V2ToolRegistry()

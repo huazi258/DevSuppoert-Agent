@@ -19,7 +19,6 @@ from devsupport_backend.agent.evidence_evaluator import LLMEvidenceEvaluator
 from devsupport_backend.agent.llm import OpenAICompatibleLLMClient
 from devsupport_backend.agent.nodes.tool_execution import ToolExecutionDependencies
 from devsupport_backend.agent.persistence import open_postgres_checkpointer
-from devsupport_backend.agent.policy import PolicyGateService
 from devsupport_backend.agent.runtime import (
     WorkflowCheckpointHistory,
     WorkflowFailure,
@@ -27,11 +26,11 @@ from devsupport_backend.agent.runtime import (
 )
 from devsupport_backend.agent.state import AgentStage, AgentState
 from devsupport_backend.agent.workflow import (
-    InvestigationWorkflowDependencies,
-    build_production_investigation_graph,
+    V2InvestigationWorkflowDependencies,
+    build_v2_production_investigation_graph,
 )
-from devsupport_backend.approvals import ApprovalDecisionService, ApprovalWaitService
 from devsupport_backend.config import settings
+from devsupport_backend.investigation_lifecycle import InvestigationLifecycleService
 from devsupport_backend.investigation_status import InvestigationStatus
 from devsupport_backend.investigation_timeline import project_investigation_timeline
 from devsupport_backend.models import Action, Approval, Incident, InvestigationRound
@@ -122,7 +121,7 @@ _POST_APPROVAL_OR_TERMINAL_STAGES = frozenset(
 _TERMINAL_INCIDENT_STATUSES = frozenset({"RESOLVED", "NEEDS_MANUAL_ACTION"})
 _TERMINAL_WORKFLOW_STAGES = frozenset({AgentStage.RESOLVED, AgentStage.NEEDS_MANUAL_ACTION})
 
-_PERSISTED_WORKFLOW_NODE_NAMES = (
+_V2_PERSISTED_WORKFLOW_NODE_NAMES = (
     "intake",
     "retrieval",
     "hypothesis_generation",
@@ -131,15 +130,10 @@ _PERSISTED_WORKFLOW_NODE_NAMES = (
     "tool_execution",
     "hypothesis_update",
     "evidence_evaluation",
-    "resolution_proposal",
-    "policy_gate",
-    "approval_wait",
-    "approval_interrupt",
-    "approval_decision",
-    "controlled_action_execution",
-    "recovery_verification",
-    "final_report",
-    "manual_terminalization",
+    "conclusion",
+    "conclusion_terminalization",
+    "inconclusive_terminalization",
+    "failure_terminalization",
 )
 
 
@@ -208,15 +202,15 @@ class PostgresWorkflowRuntime:
     def _checkpoint_reader_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
         """Register production node names so LangGraph can project persisted task metadata."""
         graph = StateGraph(AgentState)
-        for node_name in _PERSISTED_WORKFLOW_NODE_NAMES:
+        for node_name in _V2_PERSISTED_WORKFLOW_NODE_NAMES:
             graph.add_node(node_name, lambda state: state)
-        graph.add_edge(START, _PERSISTED_WORKFLOW_NODE_NAMES[0])
+        graph.add_edge(START, _V2_PERSISTED_WORKFLOW_NODE_NAMES[0])
         for current, following in zip(
-            _PERSISTED_WORKFLOW_NODE_NAMES,
-            _PERSISTED_WORKFLOW_NODE_NAMES[1:],
+            _V2_PERSISTED_WORKFLOW_NODE_NAMES,
+            _V2_PERSISTED_WORKFLOW_NODE_NAMES[1:],
         ):
             graph.add_edge(current, following)
-        graph.add_edge(_PERSISTED_WORKFLOW_NODE_NAMES[-1], END)
+        graph.add_edge(_V2_PERSISTED_WORKFLOW_NODE_NAMES[-1], END)
         return graph.compile(checkpointer=checkpointer)
 
     def _production_graph(self, checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
@@ -224,16 +218,13 @@ class PostgresWorkflowRuntime:
         embedding_client = OpenAICompatibleEmbeddingClient.from_settings(settings)
         rag_service = RAGService(self._session, embedding_client)
         tool_execution = self._tool_execution_dependencies(rag_service)
-        dependencies = InvestigationWorkflowDependencies(
+        dependencies = V2InvestigationWorkflowDependencies(
             rag_service=rag_service,
             llm_client=llm_client,
             tool_execution=tool_execution,
             evaluator=LLMEvidenceEvaluator(llm_client),
-            policy_gate=PolicyGateService(self._session, FaultLabDeploymentAdapter.from_settings()),
-            approval_wait=ApprovalWaitService(self._session),
-            approval_decision=ApprovalDecisionService(self._session),
         )
-        return build_production_investigation_graph(
+        return build_v2_production_investigation_graph(
             dependencies,
             session=self._session,
             checkpointer=checkpointer,
@@ -375,8 +366,7 @@ class WorkflowConsoleService:
             .with_for_update()
         )
         if (
-            incident.status != "OPEN"
-            or incident.investigation_status is not InvestigationStatus.OPEN
+            incident.investigation_status is not InvestigationStatus.OPEN
             or round_record is None
             or round_record.status is not InvestigationStatus.OPEN
             or not incident.thread_id
@@ -384,9 +374,10 @@ class WorkflowConsoleService:
             or self._runtime.get_state(incident.thread_id) is not None
         ):
             raise WorkflowConflictError("Workflow cannot be started for this Incident")
+        InvestigationLifecycleService(self._session).start(round_record.id)
+        # This field remains the V1 compatibility projection; V2 decisions use
+        # investigation_status and InvestigationRound.status exclusively.
         incident.status = "INVESTIGATING"
-        incident.investigation_status = InvestigationStatus.INVESTIGATING
-        round_record.status = InvestigationStatus.INVESTIGATING
         self._session.commit()
         self._session.refresh(incident)
         return WorkflowStartResponse(
@@ -564,7 +555,13 @@ class WorkflowConsoleService:
         failure: WorkflowFailure | None,
     ) -> WorkflowProgressPhase:
         terminal = (
-            incident.status in _TERMINAL_INCIDENT_STATUSES
+            incident.investigation_status
+            in {
+                InvestigationStatus.CONCLUDED,
+                InvestigationStatus.INCONCLUSIVE,
+                InvestigationStatus.FAILED,
+            }
+            or incident.status in _TERMINAL_INCIDENT_STATUSES
             or state["current_stage"] in _TERMINAL_WORKFLOW_STAGES
         )
         if terminal:

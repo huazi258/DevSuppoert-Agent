@@ -27,7 +27,11 @@ from devsupport_backend.tools.get_deployment_history import get_deployment_histo
 from devsupport_backend.tools.query_logs import query_logs
 from devsupport_backend.tools.query_metrics import query_metrics
 from devsupport_backend.tools.query_traces import query_traces
-from devsupport_backend.tools.registry import ToolName, tool_registry
+from devsupport_backend.tools.registry import (
+    V2_READ_ONLY_TOOL_NAMES,
+    ToolName,
+    v2_tool_registry,
+)
 from devsupport_backend.tools.schemas import (
     GetDeploymentHistoryInput,
     GetDeploymentHistoryOutput,
@@ -54,15 +58,7 @@ MAX_DEPLOYMENT_RECORDS = 10
 MAX_RUNTIME_EVIDENCE_TEXT_CHARS = 250
 """Bounds for concise runtime evidence retained after one Tool call."""
 
-READ_ONLY_INVESTIGATION_TOOLS = frozenset(
-    {
-        ToolName.SEARCH_KNOWLEDGE,
-        ToolName.QUERY_LOGS,
-        ToolName.QUERY_METRICS,
-        ToolName.QUERY_TRACES,
-        ToolName.GET_DEPLOYMENT_HISTORY,
-    }
-)
+READ_ONLY_INVESTIGATION_TOOLS = V2_READ_ONLY_TOOL_NAMES
 """Execution-time allowlist, repeated independently from Planner validation."""
 
 
@@ -80,6 +76,10 @@ class ToolExecutionDependencies:
     traces_adapter: TracesAdapter | None
     deployment_adapter: DeploymentAdapter | None
     available_tools: frozenset[ToolName] = READ_ONLY_INVESTIGATION_TOOLS
+
+    def __post_init__(self) -> None:
+        if not self.available_tools.issubset(READ_ONLY_INVESTIGATION_TOOLS):
+            raise ValueError("V2 ToolExecutionDependencies only accepts read-only tools")
 
 
 def tool_execution_node(state: AgentState, dependencies: ToolExecutionDependencies) -> AgentState:
@@ -153,7 +153,7 @@ def _capability_unavailable_state(
 
 def _validate_pending_arguments(tool_name: ToolName, arguments: dict[str, object]) -> BaseModel:
     """Revalidate persisted planner arguments against the registered input contract."""
-    definition = tool_registry.get(tool_name)
+    definition = v2_tool_registry.get(tool_name)
     try:
         return definition.input_model.model_validate(arguments)
     except ValidationError as error:

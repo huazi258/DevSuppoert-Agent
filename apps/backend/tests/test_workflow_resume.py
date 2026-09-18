@@ -394,7 +394,7 @@ def _api_resume_context(
     coordinator.bind(context)
     app.dependency_overrides[get_approval_workflow_coordinator] = lambda: coordinator
     client = TestClient(app)
-    return client, f"/incidents/{context.incident.id}/approval"
+    return client, f"/legacy/incidents/{context.incident.id}/approval"
 
 
 @pytest.mark.parametrize(

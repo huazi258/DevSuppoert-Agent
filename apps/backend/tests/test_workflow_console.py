@@ -1035,7 +1035,7 @@ def test_postgres_runtime_reads_persisted_failed_task_metadata_without_external_
             checkpointer.delete_thread(incident.thread_id)
 
 
-def test_postgres_runtime_reads_controlled_action_execution_failure_metadata(
+def test_postgres_runtime_ignores_legacy_controlled_action_execution_failure(
     database_session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1075,8 +1075,7 @@ def test_postgres_runtime_reads_controlled_action_execution_failure_metadata(
 
         failure = PostgresWorkflowRuntime(database_session).get_failure(incident.thread_id)
 
-        assert failure is not None
-        assert failure.failed_node == "controlled_action_execution"
+        assert failure is None
     finally:
         with open_postgres_checkpointer() as checkpointer:
             checkpointer.delete_thread(incident.thread_id)

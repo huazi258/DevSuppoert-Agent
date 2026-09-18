@@ -55,6 +55,9 @@ from devsupport_backend.agent.state import (
     AgentStage,
     AgentState,
     EvaluationDecision,
+    FailureCategory,
+    FinalConclusion,
+    HypothesisStatus,
     PolicyDecision,
     TerminalReason,
 )
@@ -65,6 +68,7 @@ from devsupport_backend.approvals import (
     approval_interrupt_node,
     approval_wait_node,
 )
+from devsupport_backend.investigation_status import InvestigationStatus
 from devsupport_backend.rag.retrieval import RAGService
 from devsupport_backend.tools.registry import ToolName
 
@@ -114,7 +118,7 @@ class InvestigationLoopLimits:
 
 @dataclass(frozen=True)
 class InvestigationWorkflowDependencies:
-    """Explicit existing-node dependencies; no graph node accesses infrastructure directly."""
+    """Legacy V1 remediation graph dependencies retained outside the formal V2 runtime."""
 
     rag_service: RAGService
     llm_client: LLMClient
@@ -129,6 +133,20 @@ class InvestigationWorkflowDependencies:
     manual_terminalizer: ManualTerminalizer | None = None
 
 
+@dataclass(frozen=True)
+class V2InvestigationWorkflowDependencies:
+    """Dependencies of the formal read-only V2 graph.
+
+    This boundary deliberately has no Policy, Approval, Action Execution, Recovery
+    Verification, or rollback dependency.
+    """
+
+    rag_service: RAGService
+    llm_client: LLMClient
+    tool_execution: ToolExecutionDependencies
+    evaluator: EvidenceEvaluator
+
+
 def build_investigation_graph(
     dependencies: InvestigationWorkflowDependencies,
     *,
@@ -137,7 +155,7 @@ def build_investigation_graph(
     checkpointer: BaseCheckpointSaver | None = None,
     observer: InvestigationNodeObserver | None = None,
 ) -> CompiledStateGraph:
-    """Compile the bounded Day 3 graph with an optional externally owned checkpointer."""
+    """Compile the retained legacy V1 graph with an optional external checkpointer."""
     if limits is not None and budget is not None:
         raise ValueError("pass either limits or budget, not both")
     effective_budget = budget or (
@@ -429,7 +447,7 @@ def build_production_investigation_graph(
     checkpointer: BaseCheckpointSaver | None = None,
     observer: InvestigationNodeObserver | None = None,
 ) -> CompiledStateGraph:
-    """Compose the formal start graph with its PostgreSQL terminal report boundaries."""
+    """Compose the retained V1 graph with its remediation report boundaries."""
     from devsupport_backend.agent.terminalization import PostgresManualTerminalizer
     from devsupport_backend.final_report import FinalReportService
 
@@ -444,6 +462,317 @@ def build_production_investigation_graph(
         checkpointer=checkpointer,
         observer=observer,
     )
+
+
+def build_v2_production_investigation_graph(
+    dependencies: V2InvestigationWorkflowDependencies,
+    *,
+    session: Session,
+    limits: InvestigationLoopLimits | None = None,
+    budget: InvestigationBudget | None = None,
+    checkpointer: BaseCheckpointSaver | None = None,
+    observer: InvestigationNodeObserver | None = None,
+) -> CompiledStateGraph:
+    """Compile the formal V2 graph: evidence investigation, report, then END only."""
+    from devsupport_backend.agent.v2_terminalization import V2Terminalizer
+
+    if limits is not None and budget is not None:
+        raise ValueError("pass either limits or budget, not both")
+    effective_budget = budget or (
+        limits.budget if limits is not None else DEFAULT_INVESTIGATION_BUDGET
+    )
+    loop_limits = limits or InvestigationLoopLimits.from_budget(effective_budget)
+    accounting_llm_client = UsageAccountingLLMClient(dependencies.llm_client)
+    evaluator = dependencies.evaluator
+    if isinstance(evaluator, LLMEvidenceEvaluator):
+        evaluator = evaluator.with_llm_client(accounting_llm_client)
+    dependencies = replace(
+        dependencies,
+        llm_client=accounting_llm_client,
+        evaluator=evaluator,
+    )
+    terminalizer = V2Terminalizer(session)
+    graph = StateGraph(AgentState)
+
+    graph.add_node(
+        "intake",
+        _v2_investigation_node("intake", intake_node, effective_budget, observer),
+    )
+    graph.add_node(
+        "retrieval",
+        _v2_investigation_node(
+            "retrieval",
+            lambda state: retrieval_node(state, dependencies.rag_service),
+            effective_budget,
+            observer,
+        ),
+    )
+    graph.add_node(
+        "hypothesis_generation",
+        _v2_investigation_node(
+            "hypothesis_generation",
+            _enforce_llm_budget_node(
+                _account_llm_usage_node(
+                    lambda state: hypothesis_generation_node(state, dependencies.llm_client)
+                ),
+                effective_budget,
+            ),
+            effective_budget,
+            observer,
+        ),
+    )
+    graph.add_node(
+        "planning_guard",
+        _v2_investigation_node(
+            "planning_guard",
+            lambda state: _planning_guard_node(state, loop_limits),
+            effective_budget,
+            observer,
+        ),
+    )
+    graph.add_node(
+        "investigation_planning",
+        _v2_investigation_node(
+            "investigation_planning",
+            _account_llm_usage_node(
+                lambda state: _investigation_planning_node(
+                    state,
+                    dependencies.llm_client,
+                    effective_budget,
+                    dependencies.tool_execution.available_tools,
+                )
+            ),
+            effective_budget,
+            observer,
+        ),
+    )
+    graph.add_node(
+        "tool_execution",
+        _v2_investigation_node(
+            "tool_execution",
+            lambda state: _tool_execution_with_initial_evidence_batch(
+                state, dependencies.tool_execution
+            ),
+            effective_budget,
+            observer,
+        ),
+    )
+    graph.add_node(
+        "hypothesis_update",
+        _v2_investigation_node(
+            "hypothesis_update",
+            _enforce_llm_budget_node(
+                _account_llm_usage_node(
+                    lambda state: _hypothesis_update_round_node(state, dependencies.llm_client)
+                ),
+                effective_budget,
+            ),
+            effective_budget,
+            observer,
+        ),
+    )
+    graph.add_node(
+        "evidence_evaluation",
+        _v2_investigation_node(
+            "evidence_evaluation",
+            lambda state: _evidence_evaluation_with_llm_budget(
+                state,
+                dependencies.evaluator,
+                loop_limits,
+                effective_budget,
+            ),
+            effective_budget,
+            observer,
+        ),
+    )
+    graph.add_node(
+        "conclusion",
+        _v2_investigation_node(
+            "conclusion", _v2_conclusion_node, effective_budget, observer
+        ),
+    )
+    graph.add_node(
+        "conclusion_terminalization",
+        observe_investigation_node(
+            "conclusion_terminalization",
+            lambda state: terminalizer.terminalize(state, InvestigationStatus.CONCLUDED),
+            observer,
+        ),
+    )
+    graph.add_node(
+        "inconclusive_terminalization",
+        observe_investigation_node(
+            "inconclusive_terminalization",
+            lambda state: terminalizer.terminalize(state, InvestigationStatus.INCONCLUSIVE),
+            observer,
+        ),
+    )
+    graph.add_node(
+        "failure_terminalization",
+        observe_investigation_node(
+            "failure_terminalization",
+            lambda state: terminalizer.terminalize(state, InvestigationStatus.FAILED),
+            observer,
+        ),
+    )
+
+    graph.add_edge(START, "intake")
+    graph.add_conditional_edges(
+        "intake", lambda state: _v2_route(state, AgentStage.RETRIEVAL), _v2_routes("retrieval")
+    )
+    graph.add_conditional_edges(
+        "retrieval",
+        lambda state: _v2_route(state, AgentStage.HYPOTHESIS_GENERATION),
+        _v2_routes("hypothesis_generation"),
+    )
+    graph.add_conditional_edges(
+        "hypothesis_generation",
+        lambda state: _v2_route(state, AgentStage.INVESTIGATION_PLANNING, "planning_guard"),
+        _v2_routes("planning_guard"),
+    )
+    graph.add_conditional_edges(
+        "planning_guard",
+        lambda state: _v2_route(state, AgentStage.INVESTIGATION_PLANNING),
+        _v2_routes("investigation_planning"),
+    )
+    graph.add_conditional_edges(
+        "investigation_planning",
+        lambda state: _v2_route(state, AgentStage.TOOL_EXECUTION),
+        _v2_routes("tool_execution"),
+    )
+    graph.add_conditional_edges(
+        "tool_execution",
+        _v2_route_after_tool_execution,
+        _v2_routes("hypothesis_update", "planning_guard"),
+    )
+    graph.add_conditional_edges(
+        "hypothesis_update",
+        lambda state: _v2_route(state, AgentStage.EVIDENCE_EVALUATION),
+        _v2_routes("evidence_evaluation"),
+    )
+    graph.add_conditional_edges(
+        "evidence_evaluation",
+        _v2_route_after_evidence_evaluation,
+        _v2_routes("planning_guard", "conclusion"),
+    )
+    graph.add_conditional_edges(
+        "conclusion",
+        _v2_route_after_conclusion,
+        _v2_routes("conclusion_terminalization"),
+    )
+    graph.add_edge("conclusion_terminalization", END)
+    graph.add_edge("inconclusive_terminalization", END)
+    graph.add_edge("failure_terminalization", END)
+    return graph.compile(checkpointer=checkpointer)
+
+
+def _v2_routes(*normal_targets: str) -> dict[str, str]:
+    return {
+        **{target: target for target in normal_targets},
+        "inconclusive": "inconclusive_terminalization",
+        "failed": "failure_terminalization",
+        "end": END,
+    }
+
+
+def _v2_route(
+    state: AgentState, expected_stage: AgentStage, normal_target: str | None = None
+) -> str:
+    if state.get("workflow_failure_category") is not None:
+        return "failed"
+    if state["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION:
+        return "inconclusive"
+    if state["current_stage"] is expected_stage:
+        return normal_target or expected_stage.value
+    return "end"
+
+
+def _v2_route_after_tool_execution(state: AgentState) -> str:
+    if state.get("workflow_failure_category") is not None:
+        return "failed"
+    if state["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION:
+        return "inconclusive"
+    if state["current_stage"] is AgentStage.HYPOTHESIS_UPDATE:
+        return "hypothesis_update"
+    if state["current_stage"] is AgentStage.INVESTIGATION_PLANNING:
+        return "planning_guard"
+    return "end"
+
+
+def _v2_route_after_evidence_evaluation(state: AgentState) -> str:
+    if state.get("workflow_failure_category") is not None:
+        return "failed"
+    if state["evaluation_decision"] is EvaluationDecision.CONCLUDE:
+        return "conclusion"
+    if state["evaluation_decision"] is EvaluationDecision.CONTINUE:
+        return "planning_guard"
+    return "inconclusive"
+
+
+def _v2_route_after_conclusion(state: AgentState) -> str:
+    if state.get("workflow_failure_category") is not None:
+        return "failed"
+    return "conclusion_terminalization" if state["final_conclusion"] is not None else "inconclusive"
+
+
+def _v2_investigation_node(
+    node_name: str,
+    node: Callable[[AgentState], AgentState],
+    budget: InvestigationBudget,
+    observer: InvestigationNodeObserver | None,
+) -> Callable[[AgentState], AgentState]:
+    """Turn controlled V2 node errors into a FAILED terminal report instead of retries."""
+
+    wrapped = _investigation_node(node_name, node, budget, observer)
+
+    def bounded(state: AgentState) -> AgentState:
+        try:
+            return wrapped(state)
+        except Exception:
+            return {
+                **state,
+                "workflow_failure_category": FailureCategory.WORKFLOW_RUNTIME_FAILURE,
+                "workflow_failure_retryable": False,
+                "workflow_failure_safe_message": "调查运行遇到受控错误。",
+                "terminal_reason": TerminalReason.WORKFLOW_FAILURE,
+            }
+
+    return bounded
+
+
+def _v2_conclusion_node(state: AgentState) -> AgentState:
+    """Build a non-executable conclusion from the already grounded confirmed hypothesis."""
+    if state["evaluation_decision"] is not EvaluationDecision.CONCLUDE:
+        return state
+    known_evidence_ids = {item.id for item in state["evidence"]}
+    hypothesis = next(
+        (
+            item
+            for item in state["hypotheses"]
+            if item.status is HypothesisStatus.CONFIRMED
+            and item.supporting_evidence_ids
+            and set(item.supporting_evidence_ids).issubset(known_evidence_ids)
+        ),
+        None,
+    )
+    if hypothesis is None:
+        return {
+            **state,
+            "evaluation_decision": EvaluationDecision.NEEDS_MANUAL_ACTION,
+            "terminal_reason": TerminalReason.INVESTIGATION_INCONCLUSIVE,
+        }
+    return {
+        **state,
+        "final_conclusion": FinalConclusion(
+            summary=f"已根据运行证据确认：{hypothesis.summary}",
+            root_cause=hypothesis.summary,
+            confidence=hypothesis.confidence,
+            supporting_evidence_ids=hypothesis.supporting_evidence_ids,
+            contradicting_evidence_ids=hypothesis.contradicting_evidence_ids,
+            recommended_next_action="请由值班人员根据调查结论决定后续人工处置。",
+        ),
+        "current_stage": AgentStage.CONCLUSION,
+    }
 
 
 def evidence_evaluation_node(

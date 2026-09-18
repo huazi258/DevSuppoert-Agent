@@ -245,7 +245,9 @@ def test_approval_api_persists_one_server_bound_final_decision(
     assert action is not None
     before_parameters = dict(action.parameters)
 
-    response = client.post(f"/incidents/{incident_id}/approval", json={"decision": decision.value})
+    response = client.post(
+        f"/legacy/incidents/{incident_id}/approval", json={"decision": decision.value}
+    )
 
     assert response.status_code == 200
     assert response.json()["incident_id"] == str(incident_id)
@@ -285,7 +287,7 @@ def test_approval_api_rejects_forged_client_authorization_fields(
     policy = state["policy_outcome"]
     assert policy is not None and policy.action_id is not None
 
-    response = client.post(f"/incidents/{incident_id}/approval", json=payload)
+    response = client.post(f"/legacy/incidents/{incident_id}/approval", json=payload)
 
     assert response.status_code == 422
     assert (
@@ -304,7 +306,7 @@ def test_approval_api_fails_closed_for_mismatched_checkpoint_action(
     reader._state = _waiting_state(state["incident"], other_action)
 
     response = client.post(
-        f"/incidents/{state['incident'].id}/approval", json={"decision": "APPROVE"}
+        f"/legacy/incidents/{state['incident'].id}/approval", json={"decision": "APPROVE"}
     )
 
     assert response.status_code == 409
@@ -324,7 +326,9 @@ def test_approval_api_cannot_approve_another_incidents_action(
     state = reader.get_state("test")
     other_incident = _incident(database_session)
 
-    response = client.post(f"/incidents/{other_incident.id}/approval", json={"decision": "APPROVE"})
+    response = client.post(
+        f"/legacy/incidents/{other_incident.id}/approval", json={"decision": "APPROVE"}
+    )
 
     assert response.status_code == 409
     assert (
@@ -348,7 +352,7 @@ def test_approval_api_rejects_an_already_executed_action(
     database_session.commit()
 
     response = client.post(
-        f"/incidents/{state['incident'].id}/approval", json={"decision": "APPROVE"}
+        f"/legacy/incidents/{state['incident'].id}/approval", json={"decision": "APPROVE"}
     )
 
     assert response.status_code == 409
@@ -393,9 +397,13 @@ def test_duplicate_matching_decision_is_idempotent_and_conflicting_one_is_reject
     client, reader, coordinator = approval_api_client
     incident_id = reader.get_state("test")["incident"].id
 
-    first = client.post(f"/incidents/{incident_id}/approval", json={"decision": "APPROVE"})
-    repeated = client.post(f"/incidents/{incident_id}/approval", json={"decision": "APPROVE"})
-    conflicting = client.post(f"/incidents/{incident_id}/approval", json={"decision": "REJECT"})
+    first = client.post(f"/legacy/incidents/{incident_id}/approval", json={"decision": "APPROVE"})
+    repeated = client.post(
+        f"/legacy/incidents/{incident_id}/approval", json={"decision": "APPROVE"}
+    )
+    conflicting = client.post(
+        f"/legacy/incidents/{incident_id}/approval", json={"decision": "REJECT"}
+    )
 
     assert first.status_code == 200
     assert repeated.status_code == 200
@@ -426,7 +434,9 @@ def test_resolved_approved_duplicate_returns_existing_approval_without_resuming(
     )
     reader._state = resolved_state
 
-    response = client.post(f"/incidents/{incident.id}/approval", json={"decision": "APPROVE"})
+    response = client.post(
+        f"/legacy/incidents/{incident.id}/approval", json={"decision": "APPROVE"}
+    )
 
     assert response.status_code == 200
     assert response.json()["id"] == str(approval.id)

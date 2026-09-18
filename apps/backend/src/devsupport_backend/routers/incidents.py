@@ -40,6 +40,8 @@ from devsupport_backend.workflow_console import (
 )
 
 router = APIRouter(prefix="/incidents", tags=["incidents"])
+# V1 remediation is intentionally mounted outside the formal V2 Incident API.
+legacy_router = APIRouter(prefix="/legacy/incidents", tags=["legacy-remediation"])
 SessionDependency = Annotated[Session, Depends(get_session)]
 
 
@@ -219,7 +221,7 @@ def list_incidents(session: SessionDependency) -> list[Incident]:
     return list(session.scalars(select(Incident).order_by(Incident.created_at.desc())))
 
 
-@router.post("/{incident_id}/approval", response_model=ApprovalResponse)
+@legacy_router.post("/{incident_id}/approval", response_model=ApprovalResponse)
 def record_approval(
     incident_id: UUID,
     payload: ApprovalCreate,
