@@ -249,6 +249,7 @@ class EvidenceContext(StateModel):
     """A concise evidence fact, never an unbounded raw tool payload."""
 
     id: UUID = Field(default_factory=uuid4)
+    round_id: UUID | None = None
     evidence_type: str = Field(min_length=1, max_length=100)
     source: str = Field(min_length=1, max_length=100)
     summary: str = Field(min_length=1, max_length=2_000)

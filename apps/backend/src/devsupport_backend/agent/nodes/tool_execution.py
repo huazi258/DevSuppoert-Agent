@@ -367,12 +367,14 @@ def _to_evidence(
         return _append_unique_evidence(state, search_output.results)
 
     evidence = [*state["evidence"]]
-    item = _runtime_evidence(tool_name, output)
+    item = _runtime_evidence(tool_name, output, state["round_id"])
     evidence.append(item)
     return evidence, [item.id]
 
 
-def _runtime_evidence(tool_name: ToolName, output: ToolOutput) -> EvidenceContext:
+def _runtime_evidence(
+    tool_name: ToolName, output: ToolOutput, round_id: UUID | None
+) -> EvidenceContext:
     """Keep only concise facts that a later hypothesis update can interpret."""
     if tool_name is ToolName.QUERY_LOGS:
         logs_output = cast(QueryLogsOutput, output)
@@ -381,6 +383,7 @@ def _runtime_evidence(tool_name: ToolName, output: ToolOutput) -> EvidenceContex
             for item in logs_output.error_patterns[:MAX_LOG_ERROR_PATTERNS]
         ]
         return EvidenceContext(
+            round_id=round_id,
             evidence_type="log_query_result",
             source=tool_name.value,
             summary=f"Log query matched {logs_output.match_count} event(s).",
@@ -400,6 +403,7 @@ def _runtime_evidence(tool_name: ToolName, output: ToolOutput) -> EvidenceContex
     if tool_name is ToolName.QUERY_METRICS:
         metrics_output = cast(QueryMetricsOutput, output)
         return EvidenceContext(
+            round_id=round_id,
             evidence_type="metric_snapshot",
             source=tool_name.value,
             summary="Metric snapshot returned current request, error, latency, and health facts.",
@@ -433,6 +437,7 @@ def _runtime_evidence(tool_name: ToolName, output: ToolOutput) -> EvidenceContex
             for trace in traces_output.traces[:MAX_TRACE_SUMMARIES]
         ]
         return EvidenceContext(
+            round_id=round_id,
             evidence_type="trace_query_result",
             source=tool_name.value,
             summary=f"Trace query returned {len(traces_output.traces)} trace summary record(s).",
@@ -445,6 +450,7 @@ def _runtime_evidence(tool_name: ToolName, output: ToolOutput) -> EvidenceContex
     if tool_name is ToolName.GET_DEPLOYMENT_HISTORY:
         deployments_output = cast(GetDeploymentHistoryOutput, output)
         return EvidenceContext(
+            round_id=round_id,
             evidence_type="deployment_facts",
             source=tool_name.value,
             summary=f"Deployment query returned {len(deployments_output.deployments)} record(s).",

@@ -123,6 +123,28 @@ def update_item(
     }
 
 
+def new_hypothesis_item(
+    *,
+    summary: str,
+    supporting_evidence_ids: list[UUID],
+    contradicting_evidence_ids: list[UUID] | None = None,
+    confidence: float = 0.7,
+    status: HypothesisStatus = HypothesisStatus.SUPPORTED,
+    next_check: str = "Inspect one additional runtime signal.",
+) -> dict[str, object]:
+    """Build one grounded new-hypothesis proposal for the strict update contract."""
+    return {
+        "summary": summary,
+        "supporting_evidence_ids": [str(item) for item in supporting_evidence_ids],
+        "contradicting_evidence_ids": [
+            str(item) for item in contradicting_evidence_ids or []
+        ],
+        "confidence": confidence,
+        "status": status.value,
+        "next_check": next_check,
+    }
+
+
 def valid_response(state: AgentState, new_evidence: EvidenceContext) -> str:
     """Return updates that support one hypothesis and reject another using the same new fact."""
     supported_hypothesis, contradicted_hypothesis = state["hypotheses"]
@@ -277,6 +299,82 @@ def test_unknown_hypothesis_or_evidence_reference_rejects_all_updates(
     assert state["tool_history"]
     assert state["tool_call_count"] == 0
     assert state["investigation_round"] == 0
+
+
+def test_cross_round_evidence_reference_is_rejected_without_state_changes() -> None:
+    state, supported, contradicted, prior_evidence, new_evidence = build_update_state()
+    state["round_id"] = uuid4()
+    state["evidence"] = [
+        prior_evidence.model_copy(update={"round_id": state["round_id"]}),
+        new_evidence.model_copy(update={"round_id": state["round_id"]}),
+    ]
+    foreign_evidence = EvidenceContext(
+        round_id=uuid4(),
+        evidence_type="metric_snapshot",
+        source="query_metrics",
+        summary="A prior round saw an unrelated latency increase.",
+    )
+    state["evidence"].append(foreign_evidence)
+    response = {
+        "updates": [
+            update_item(
+                supported.id,
+                supporting_evidence_ids=[foreign_evidence.id],
+            )
+        ]
+    }
+
+    client = FakeLLMClient(json.dumps(response))
+    with pytest.raises(HypothesisUpdateError, match="outside the current round"):
+        hypothesis_update_node(state, client)
+
+    assert state["hypotheses"] == [supported, contradicted]
+    assert state["current_stage"] is AgentStage.HYPOTHESIS_UPDATE
+    assert client.user_prompt is not None
+    assert str(foreign_evidence.id) not in client.user_prompt
+
+
+def test_contradicting_evidence_blocks_an_ungrounded_confirmation() -> None:
+    state, supported, _, _, new_evidence = build_update_state()
+    response = {
+        "updates": [
+            update_item(
+                supported.id,
+                supporting_evidence_ids=[new_evidence.id],
+                contradicting_evidence_ids=[new_evidence.id],
+                status=HypothesisStatus.CONFIRMED,
+            )
+        ]
+    }
+
+    with pytest.raises(HypothesisUpdateError, match="cannot ignore contradicting evidence"):
+        hypothesis_update_node(state, FakeLLMClient(json.dumps(response)))
+
+    assert state["hypotheses"][0] == supported
+
+
+def test_new_grounded_hypothesis_is_added_once_and_duplicate_is_merged() -> None:
+    state, _, _, _, new_evidence = build_update_state()
+    response = {
+        "new_hypotheses": [
+            new_hypothesis_item(
+                summary="Catalog request handling is failing under the current change.",
+                supporting_evidence_ids=[new_evidence.id],
+            )
+        ]
+    }
+
+    updated = hypothesis_update_node(state, FakeLLMClient(json.dumps(response)))
+    created = updated["hypotheses"][-1]
+    assert len(updated["hypotheses"]) == 3
+    assert created.supporting_evidence_ids == [new_evidence.id]
+
+    updated["current_stage"] = AgentStage.HYPOTHESIS_UPDATE
+    deduplicated = hypothesis_update_node(updated, FakeLLMClient(json.dumps(response)))
+
+    assert len(deduplicated["hypotheses"]) == 3
+    assert deduplicated["hypotheses"][-1].id == created.id
+    assert deduplicated["hypotheses"][-1].supporting_evidence_ids == [new_evidence.id]
 
 
 @pytest.mark.parametrize("response", ["not JSON", json.dumps({"updates": []})])

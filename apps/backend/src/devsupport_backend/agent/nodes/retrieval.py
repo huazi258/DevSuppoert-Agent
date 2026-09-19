@@ -95,7 +95,7 @@ def _append_unique_evidence(
         chunk_id = str(result.chunk_id)
         evidence_id = evidence_ids_by_chunk.get(chunk_id)
         if evidence_id is None:
-            item = _knowledge_evidence(result)
+            item = _knowledge_evidence(result, state["round_id"])
             evidence.append(item)
             evidence_id = item.id
             evidence_ids_by_chunk[chunk_id] = evidence_id
@@ -103,7 +103,9 @@ def _append_unique_evidence(
     return evidence, result_evidence_ids
 
 
-def _knowledge_evidence(result: SearchKnowledgeResult) -> EvidenceContext:
+def _knowledge_evidence(
+    result: SearchKnowledgeResult, round_id: UUID | None
+) -> EvidenceContext:
     """Project a Tool result into bounded, citation-backed workflow evidence."""
     content_summary = result.content[:MAX_KNOWLEDGE_EVIDENCE_SUMMARY_CHARS].rstrip()
     if len(result.content) > MAX_KNOWLEDGE_EVIDENCE_SUMMARY_CHARS:
@@ -111,6 +113,7 @@ def _knowledge_evidence(result: SearchKnowledgeResult) -> EvidenceContext:
     if not content_summary:
         content_summary = f"Knowledge result from {result.section}."
     return EvidenceContext(
+        round_id=round_id,
         evidence_type="knowledge_retrieval",
         source="search_knowledge",
         summary=content_summary,

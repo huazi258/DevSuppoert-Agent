@@ -34,7 +34,7 @@ from devsupport_backend.agent.workflow import (
     evidence_evaluation_node,
 )
 from devsupport_backend.models import Incident
-from devsupport_backend.tools.schemas import ToolStatus
+from devsupport_backend.tools.schemas import CitationOutput, ToolStatus
 
 
 class FakeLLMClient:
@@ -122,6 +122,36 @@ def evaluation_response(decision: str) -> str:
             "decision": decision,
             "reason": "The current structured evidence supports this evaluation decision.",
         }
+    )
+
+
+def knowledge_evidence(*, citation: CitationOutput | None = None) -> EvidenceContext:
+    """Build citation-bearing or deliberately incomplete knowledge evidence for guards."""
+    return EvidenceContext(
+        evidence_type="knowledge_retrieval",
+        source="search_knowledge",
+        summary="The runbook describes a generic catalog error response procedure.",
+        citation=citation,
+    )
+
+
+def knowledge_citation() -> CitationOutput:
+    """Return safe, complete provenance for conclusion-eligibility tests."""
+    target_id = uuid4()
+    return CitationOutput(
+        id="citation-1",
+        document_id=uuid4(),
+        chunk_id=uuid4(),
+        document_title="Catalog Runbook",
+        source="knowledge/runbooks/catalog.md",
+        source_path="knowledge/runbooks/catalog.md",
+        chunk_index=0,
+        section="Errors",
+        document_version="v1",
+        target_id=target_id,
+        scope="shared",
+        environment="common",
+        document_reference="knowledge/runbooks/catalog.md#errors",
     )
 
 
@@ -227,6 +257,50 @@ def test_confirmed_hypothesis_without_supporting_evidence_does_not_allow_conclud
 
     assert "CONCLUDE" not in contract["allowed_decisions"]
     assert contract["conclude_allowed"] is False
+
+
+def test_runbook_knowledge_alone_cannot_confirm_a_runtime_root_cause() -> None:
+    state, _, hypothesis = build_evaluation_state()
+    runbook = knowledge_evidence(citation=knowledge_citation())
+    state["evidence"] = [runbook]
+    state["hypotheses"] = [
+        hypothesis.model_copy(
+            update={
+                "status": HypothesisStatus.CONFIRMED,
+                "supporting_evidence_ids": [runbook.id],
+            }
+        )
+    ]
+
+    assert is_conclusion_eligible(state) is False
+
+
+def test_confirmed_hypothesis_requires_citation_for_referenced_knowledge() -> None:
+    state, runtime_evidence, hypothesis = build_evaluation_state()
+    runbook = knowledge_evidence()
+    state["evidence"] = [runtime_evidence, runbook]
+    state["hypotheses"] = [
+        hypothesis.model_copy(
+            update={
+                "status": HypothesisStatus.CONFIRMED,
+                "supporting_evidence_ids": [runtime_evidence.id, runbook.id],
+            }
+        )
+    ]
+
+    assert is_conclusion_eligible(state) is False
+
+    cited_runbook = runbook.model_copy(update={"citation": knowledge_citation()})
+    state["evidence"] = [runtime_evidence, cited_runbook]
+    state["hypotheses"] = [
+        state["hypotheses"][0].model_copy(
+            update={
+                "supporting_evidence_ids": [runtime_evidence.id, cited_runbook.id],
+            }
+        )
+    ]
+
+    assert is_conclusion_eligible(state) is True
 
 
 def test_confirmed_hypothesis_with_unknown_evidence_does_not_allow_conclude() -> None:

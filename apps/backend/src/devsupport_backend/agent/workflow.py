@@ -25,6 +25,7 @@ from devsupport_backend.agent.evidence_evaluator import (
     is_conclusion_eligible,
 )
 from devsupport_backend.agent.failure import classify_runtime_failure
+from devsupport_backend.agent.hypothesis_grounding import eligible_conclusion_hypothesis
 from devsupport_backend.agent.llm import LLMClient
 from devsupport_backend.agent.nodes.hypothesis_generation import hypothesis_generation_node
 from devsupport_backend.agent.nodes.hypothesis_update import hypothesis_update_node
@@ -59,7 +60,6 @@ from devsupport_backend.agent.state import (
     EvaluationDecision,
     FailureCategory,
     FinalConclusion,
-    HypothesisStatus,
     PolicyDecision,
     RuntimeFailureCategory,
     TerminalReason,
@@ -876,17 +876,7 @@ def _v2_conclusion_node(state: AgentState) -> AgentState:
     """Build a non-executable conclusion from the already grounded confirmed hypothesis."""
     if state["evaluation_decision"] is not EvaluationDecision.CONCLUDE:
         return state
-    known_evidence_ids = {item.id for item in state["evidence"]}
-    hypothesis = next(
-        (
-            item
-            for item in state["hypotheses"]
-            if item.status is HypothesisStatus.CONFIRMED
-            and item.supporting_evidence_ids
-            and set(item.supporting_evidence_ids).issubset(known_evidence_ids)
-        ),
-        None,
-    )
+    hypothesis = eligible_conclusion_hypothesis(state)
     if hypothesis is None:
         return {
             **state,

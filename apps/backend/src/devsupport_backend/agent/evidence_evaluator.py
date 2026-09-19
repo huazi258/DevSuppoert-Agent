@@ -6,6 +6,7 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from devsupport_backend.agent.hypothesis_grounding import eligible_conclusion_hypothesis
 from devsupport_backend.agent.llm import LLMClient, LLMError
 from devsupport_backend.agent.state import AgentState, EvaluationDecision, HypothesisStatus
 from devsupport_backend.agent.structured_output import (
@@ -82,14 +83,7 @@ def _validate_conclusion_safety(state: AgentState) -> None:
 
 def is_conclusion_eligible(state: AgentState) -> bool:
     """Return whether current state satisfies the non-negotiable conclude boundary."""
-    known_evidence_ids = {evidence.id for evidence in state["evidence"]}
-    for hypothesis in state["hypotheses"]:
-        if hypothesis.status is not HypothesisStatus.CONFIRMED:
-            continue
-        supporting_ids = set(hypothesis.supporting_evidence_ids)
-        if supporting_ids and supporting_ids.issubset(known_evidence_ids):
-            return True
-    return False
+    return eligible_conclusion_hypothesis(state) is not None
 
 
 def has_active_hypothesis(state: AgentState) -> bool:
@@ -123,7 +117,10 @@ def _build_decision_contract(state: AgentState) -> dict[str, object]:
         "conclude_requirements": [
             "At least one hypothesis has status CONFIRMED.",
             "That CONFIRMED hypothesis has non-empty supporting_evidence_ids.",
-            "Every supporting evidence ID exists in the supplied evidence.",
+            "Every referenced evidence ID exists in the current InvestigationRound.",
+            "At least one supporting evidence item is runtime evidence, not only knowledge.",
+            "Referenced knowledge evidence retains its Citation and no contradicting "
+            "evidence remains.",
         ],
         "supported_is_insufficient_for_conclude": True,
     }

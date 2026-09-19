@@ -241,6 +241,7 @@ def test_v2_graph_concludes_and_terminalizes_the_current_round(
 ) -> None:
     incident, round_record = _incident(database_session)
     evidence = EvidenceContext(
+        round_id=round_record.id,
         source="query_logs",
         evidence_type="log_query_result",
         summary="依赖连接被拒绝。",
