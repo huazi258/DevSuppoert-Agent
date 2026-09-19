@@ -549,7 +549,8 @@ def test_v2_runtime_retries_timeout_within_budget_without_fabricating_evidence(
     database_session.refresh(incident)
     assert tool_calls == 2
     assert result["tool_call_count"] == 2
-    assert result["retry_count"] == 1
+    assert result["retry_count"] == 0
+    assert result["retry_pending"] is False
     assert result["consecutive_failures"] == 0
     assert result["last_failure_category"].value == "timeout"
     assert len(result["evidence"]) == 1
@@ -627,6 +628,7 @@ def test_v2_structured_output_failure_uses_the_bounded_workflow_retry_budget() -
         == "hypothesis_generation"
     )
     assert recovered["retry_pending"] is False
+    assert recovered["retry_count"] == 0
     assert recovered["current_stage"] is AgentStage.INVESTIGATION_PLANNING
 
 

@@ -144,6 +144,7 @@ def tool_execution_node(
         "tool_history": [*state["tool_history"], tool_history_entry],
         "tool_call_count": state["tool_call_count"] + 1,
         "consecutive_failures": 0,
+        "retry_count": 0,
         "retry_pending": False,
         "pending_tool_call": None,
         "current_stage": AgentStage.HYPOTHESIS_UPDATE,
@@ -257,6 +258,7 @@ def _tool_failure_state(
         return {
             **base_state,
             "retry_count": state.get("retry_count", 0) + 1,
+            "retry_pending": True,
             "pending_tool_call": pending_tool_call,
             "current_stage": AgentStage.TOOL_EXECUTION,
         }

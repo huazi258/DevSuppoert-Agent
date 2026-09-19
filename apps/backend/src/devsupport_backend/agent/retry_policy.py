@@ -70,12 +70,14 @@ def retry_decision(
 
 
 def exhausted_tool_capabilities(state: AgentState) -> frozenset[ToolName]:
-    """Return capabilities whose latest non-success result is not safely retryable."""
+    """Return only capabilities that deployment configuration has explicitly disabled."""
     exhausted: set[ToolName] = set()
     for entry in state["tool_history"]:
         if entry.status.value == "success":
             exhausted.discard(entry.tool_name)
             continue
-        if entry.error is not None and not is_retryable(classify_tool_error(entry.error)):
+        if entry.error is not None and (
+            classify_tool_error(entry.error) is RuntimeFailureCategory.CAPABILITY_UNAVAILABLE
+        ):
             exhausted.add(entry.tool_name)
     return frozenset(exhausted)

@@ -326,13 +326,59 @@ def test_retryable_tool_failure_retries_within_the_runtime_budget(
 
     assert retrying["tool_call_count"] == 1
     assert retrying["retry_count"] == 1
+    assert retrying["retry_pending"] is True
     assert retrying["consecutive_failures"] == 1
     assert retrying["pending_tool_call"] is not None
     assert retrying["current_stage"] is AgentStage.TOOL_EXECUTION
     assert recovered["tool_call_count"] == 2
-    assert recovered["retry_count"] == 1
+    assert recovered["retry_count"] == 0
+    assert recovered["retry_pending"] is False
     assert recovered["consecutive_failures"] == 0
     assert recovered["evidence"]
+
+
+def test_successful_retry_resets_the_budget_for_a_new_independent_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = build_execution_state(
+        ToolName.QUERY_METRICS, tool_arguments(ToolName.QUERY_METRICS)
+    )
+    outputs = [
+        QueryMetricsOutput(
+            status=ToolStatus.FAILURE,
+            error=ToolError(code="timeout", message="safe timeout", retryable=True),
+        ),
+        successful_output(ToolName.QUERY_METRICS),
+        QueryMetricsOutput(
+            status=ToolStatus.FAILURE,
+            error=ToolError(code="timeout", message="safe timeout", retryable=True),
+        ),
+    ]
+    monkeypatch.setattr(execution_module, "query_metrics", lambda *_: outputs.pop(0))
+    budget = InvestigationBudget(max_workflow_retries=1)
+
+    retrying = tool_execution_node(state, fake_dependencies(), budget=budget)
+    recovered = tool_execution_node(retrying, fake_dependencies(), budget=budget)
+    assert recovered["retry_count"] == 0
+    assert recovered["retry_pending"] is False
+
+    next_state = build_execution_state(
+        ToolName.QUERY_METRICS, tool_arguments(ToolName.QUERY_METRICS)
+    )
+    next_state.update(
+        {
+            "tool_history": recovered["tool_history"],
+            "tool_call_count": recovered["tool_call_count"],
+            "evidence": recovered["evidence"],
+            "retry_count": recovered["retry_count"],
+            "retry_pending": recovered["retry_pending"],
+        }
+    )
+    new_retry = tool_execution_node(next_state, fake_dependencies(), budget=budget)
+
+    assert new_retry["retry_count"] == 1
+    assert new_retry["retry_pending"] is True
+    assert new_retry["pending_tool_call"] is not None
 
 
 def test_retryable_tool_failure_exhaustion_fails_without_evidence(

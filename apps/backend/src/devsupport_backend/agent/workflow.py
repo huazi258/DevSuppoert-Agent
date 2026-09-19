@@ -800,7 +800,9 @@ def _v2_investigation_node(
     def bounded(state: AgentState) -> AgentState:
         try:
             updated = wrapped(state)
-            return {**updated, "retry_pending": False}
+            if state.get("retry_pending", False) and node_name == state["current_stage"].value:
+                return {**updated, "retry_count": 0, "retry_pending": False}
+            return updated
         except Exception as error:
             classification = classify_runtime_failure(error)
             if classification is not None:

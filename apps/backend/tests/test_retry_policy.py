@@ -15,8 +15,10 @@ from devsupport_backend.tools.schemas import ToolError, ToolStatus
 
 
 class _FallbackPlanner:
-    def __init__(self) -> None:
+    def __init__(self, *, tool_name: str = "query_logs", environment: str = "local") -> None:
         self.system_prompt = ""
+        self._tool_name = tool_name
+        self._environment = environment
 
     def complete(self, *, system_prompt: str, user_prompt: str) -> str:
         del user_prompt
@@ -24,16 +26,21 @@ class _FallbackPlanner:
         return json.dumps(
             {
                 "investigation_goal": "Check bounded error logs.",
-                "tool_name": "query_logs",
-                "tool_arguments": {
-                    "service": "order-service",
-                    "environment": "local",
-                    "time_range_start": "2026-08-08T10:00:00+00:00",
-                    "time_range_end": "2026-08-08T10:05:00+00:00",
-                },
+                "tool_name": self._tool_name,
+                "tool_arguments": self._tool_arguments(),
                 "reason": "Logs remain a legal independent investigation path.",
             }
         )
+
+    def _tool_arguments(self) -> dict[str, str]:
+        if self._tool_name == "query_metrics":
+            return {"service": "order-service", "environment": self._environment}
+        return {
+            "service": "order-service",
+            "environment": self._environment,
+            "time_range_start": "2026-08-08T10:00:00+00:00",
+            "time_range_end": "2026-08-08T10:05:00+00:00",
+        }
 
 
 def _planning_state() -> dict[str, object]:
@@ -51,7 +58,7 @@ def _planning_state() -> dict[str, object]:
     return state
 
 
-def test_nonretryable_tool_is_removed_before_planner_selects_a_fallback() -> None:
+def test_invalid_request_allows_planner_to_select_the_same_tool_with_new_arguments() -> None:
     state = _planning_state()
     state["tool_history"] = [
         ToolHistoryEntry(
@@ -59,6 +66,33 @@ def test_nonretryable_tool_is_removed_before_planner_selects_a_fallback() -> Non
             tool_arguments={"service": "order-service", "environment": "local"},
             status=ToolStatus.FAILURE,
             error=ToolError(code="invalid_request", message="safe invalid request"),
+        )
+    ]
+    planner = _FallbackPlanner(tool_name="query_metrics", environment="staging")
+
+    updated = _investigation_planning_node(
+        state,  # type: ignore[arg-type]
+        planner,
+        InvestigationBudget(),
+        frozenset({ToolName.QUERY_METRICS, ToolName.QUERY_LOGS}),
+    )
+
+    assert updated["pending_tool_call"] is not None
+    assert updated["pending_tool_call"].tool_name is ToolName.QUERY_METRICS
+    assert updated["pending_tool_call"].tool_arguments["environment"] == "staging"
+    assert "query_metrics" in planner.system_prompt
+
+
+def test_capability_unavailable_removes_that_tool_before_planner_falls_back() -> None:
+    state = _planning_state()
+    state["tool_history"] = [
+        ToolHistoryEntry(
+            tool_name=ToolName.QUERY_METRICS,
+            tool_arguments={"service": "order-service", "environment": "local"},
+            status=ToolStatus.UNAVAILABLE,
+            error=ToolError(
+                code="capability_unavailable", message="safe unavailable capability"
+            ),
         )
     ]
     planner = _FallbackPlanner()
@@ -82,8 +116,10 @@ def test_no_remaining_legal_capability_ends_with_no_further_investigation() -> N
         ToolHistoryEntry(
             tool_name=ToolName.QUERY_METRICS,
             tool_arguments={"service": "order-service", "environment": "local"},
-            status=ToolStatus.FAILURE,
-            error=ToolError(code="invalid_request", message="safe invalid request"),
+            status=ToolStatus.UNAVAILABLE,
+            error=ToolError(
+                code="capability_unavailable", message="safe unavailable capability"
+            ),
         ),
         ToolHistoryEntry(
             tool_name=ToolName.QUERY_LOGS,
