@@ -84,7 +84,9 @@ def _incident() -> Incident:
     "kwargs",
     [
         {"max_rounds": 0},
+        {"max_iterations": 0},
         {"max_tool_calls": -1},
+        {"max_consecutive_failures": 0},
         {"max_llm_calls": 0},
         {"max_workflow_retries": -1},
         {"max_active_execution_seconds": 0.0},
@@ -100,7 +102,9 @@ def test_budget_freezes_initial_v1_limits_with_calibrated_active_time() -> None:
     limits = InvestigationLoopLimits()
 
     assert budget.max_rounds == DEFAULT_MAX_INVESTIGATION_ROUNDS == 5
+    assert budget.iteration_limit == DEFAULT_MAX_INVESTIGATION_ROUNDS
     assert budget.max_tool_calls == DEFAULT_MAX_TOOL_CALLS == 6
+    assert budget.max_consecutive_failures == 3
     assert budget.max_llm_calls == 8
     assert budget.max_workflow_retries == 1
     assert budget.max_active_execution_seconds == 95.0
@@ -141,6 +145,50 @@ def test_deterministic_node_does_not_consume_llm_usage() -> None:
     result = WorkflowService(graph.compile(checkpointer=InMemorySaver())).start(incident)
 
     assert result["llm_call_count"] == 0
+
+
+def test_budget_counters_survive_checkpoint_resume() -> None:
+    incident = _incident()
+    state = create_initial_agent_state(incident)
+    state.update(
+        {
+            "investigation_round": 2,
+            "tool_call_count": 3,
+            "consecutive_failures": 1,
+        }
+    )
+    checkpointer = InMemorySaver()
+    graph = StateGraph(AgentState)
+
+    def checkpoint_pause(current: AgentState) -> AgentState:
+        interrupt("resume budgeted investigation")
+        return current
+
+    def verify_counters(current: AgentState) -> AgentState:
+        assert current["investigation_round"] == 2
+        assert current["tool_call_count"] == 3
+        assert current["consecutive_failures"] == 1
+        return current
+
+    graph.add_node("checkpoint_pause", checkpoint_pause)
+    graph.add_node("verify_counters", verify_counters)
+    graph.add_edge(START, "checkpoint_pause")
+    graph.add_edge("checkpoint_pause", "verify_counters")
+    graph.add_edge("verify_counters", END)
+    compiled = graph.compile(checkpointer=checkpointer)
+    config = WorkflowService.config_for(incident.thread_id)
+
+    interrupted = compiled.invoke(state, config)
+    paused = compiled.get_state(config).values
+    resumed = WorkflowService(compiled).resume(incident.thread_id, {"continue": True})
+
+    assert "__interrupt__" in interrupted
+    assert paused["investigation_round"] == 2
+    assert paused["tool_call_count"] == 3
+    assert paused["consecutive_failures"] == 1
+    assert resumed["investigation_round"] == 2
+    assert resumed["tool_call_count"] == 3
+    assert resumed["consecutive_failures"] == 1
 
 
 def test_retry_usage_is_persisted_before_a_later_retry_invocation() -> None:

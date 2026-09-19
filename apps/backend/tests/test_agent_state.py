@@ -151,6 +151,7 @@ def test_state_checkpoint_payload_is_json_serializable_without_orm_or_session() 
     state["intake_decision"] = IntakeDecision.NEEDS_INFORMATION
     state["missing_information"] = ["Exact incident time range"]
     state["llm_call_count"] = 3
+    state["consecutive_failures"] = 2
     state["workflow_retry_count"] = 2
     state["terminal_reason"] = TerminalReason.INVESTIGATION_INCONCLUSIVE
     state["tool_history"].append(
@@ -170,6 +171,7 @@ def test_state_checkpoint_payload_is_json_serializable_without_orm_or_session() 
     assert payload["intake_decision"] == "NEEDS_INFORMATION"
     assert payload["missing_information"] == ["Exact incident time range"]
     assert payload["llm_call_count"] == 3
+    assert payload["consecutive_failures"] == 2
     assert payload["workflow_retry_count"] == 2
     assert payload["terminal_reason"] == "investigation_inconclusive"
 

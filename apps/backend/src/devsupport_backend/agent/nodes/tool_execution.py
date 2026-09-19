@@ -118,6 +118,7 @@ def tool_execution_node(state: AgentState, dependencies: ToolExecutionDependenci
             **state,
             "tool_history": [*state["tool_history"], tool_history_entry],
             "tool_call_count": state["tool_call_count"] + 1,
+            "consecutive_failures": state.get("consecutive_failures", 0) + 1,
             "pending_tool_call": None,
             "current_stage": AgentStage.INVESTIGATION_PLANNING,
         }
@@ -129,6 +130,7 @@ def tool_execution_node(state: AgentState, dependencies: ToolExecutionDependenci
         "evidence": evidence,
         "tool_history": [*state["tool_history"], tool_history_entry],
         "tool_call_count": state["tool_call_count"] + 1,
+        "consecutive_failures": 0,
         "pending_tool_call": None,
         "current_stage": AgentStage.HYPOTHESIS_UPDATE,
     }
@@ -151,6 +153,7 @@ def _capability_unavailable_state(
         **state,
         "tool_history": [*state["tool_history"], entry],
         "tool_call_count": state["tool_call_count"] + 1,
+        "consecutive_failures": state.get("consecutive_failures", 0) + 1,
         "pending_tool_call": None,
         "current_stage": AgentStage.INVESTIGATION_PLANNING,
     }

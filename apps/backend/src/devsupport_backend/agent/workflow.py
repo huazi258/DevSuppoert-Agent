@@ -72,7 +72,7 @@ from devsupport_backend.investigation_status import InvestigationStatus
 from devsupport_backend.rag.retrieval import RAGService
 from devsupport_backend.tools.registry import ToolName
 
-DEFAULT_MAX_INVESTIGATION_ROUNDS = DEFAULT_INVESTIGATION_BUDGET.max_rounds
+DEFAULT_MAX_INVESTIGATION_ROUNDS = DEFAULT_INVESTIGATION_BUDGET.iteration_limit
 DEFAULT_MAX_TOOL_CALLS = DEFAULT_INVESTIGATION_BUDGET.max_tool_calls
 """Conservative V0 workflow limits, kept central rather than in graph edges."""
 
@@ -101,19 +101,41 @@ class InvestigationLoopLimits:
 
     max_rounds: int = DEFAULT_MAX_INVESTIGATION_ROUNDS
     max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS
+    max_iterations: int | None = None
+    max_consecutive_failures: int = DEFAULT_INVESTIGATION_BUDGET.max_consecutive_failures
 
     def __post_init__(self) -> None:
-        InvestigationBudget(max_rounds=self.max_rounds, max_tool_calls=self.max_tool_calls)
+        InvestigationBudget(
+            max_rounds=self.max_rounds,
+            max_iterations=self.max_iterations,
+            max_tool_calls=self.max_tool_calls,
+            max_consecutive_failures=self.max_consecutive_failures,
+        )
 
     @classmethod
     def from_budget(cls, budget: InvestigationBudget) -> "InvestigationLoopLimits":
         """Preserve the existing loop-limit API while deriving it from one budget contract."""
-        return cls(max_rounds=budget.max_rounds, max_tool_calls=budget.max_tool_calls)
+        return cls(
+            max_rounds=budget.max_rounds,
+            max_iterations=budget.max_iterations,
+            max_tool_calls=budget.max_tool_calls,
+            max_consecutive_failures=budget.max_consecutive_failures,
+        )
 
     @property
     def budget(self) -> InvestigationBudget:
         """Project existing enforced dimensions into the unified budget contract."""
-        return InvestigationBudget(max_rounds=self.max_rounds, max_tool_calls=self.max_tool_calls)
+        return InvestigationBudget(
+            max_rounds=self.max_rounds,
+            max_iterations=self.max_iterations,
+            max_tool_calls=self.max_tool_calls,
+            max_consecutive_failures=self.max_consecutive_failures,
+        )
+
+    @property
+    def iteration_limit(self) -> int:
+        """Return the configured V2 iteration limit, retaining the old alias."""
+        return self.max_iterations if self.max_iterations is not None else self.max_rounds
 
 
 @dataclass(frozen=True)
@@ -525,7 +547,7 @@ def build_v2_production_investigation_graph(
         "planning_guard",
         _v2_investigation_node(
             "planning_guard",
-            lambda state: _planning_guard_node(state, loop_limits),
+            lambda state: _v2_planning_guard_node(state, loop_limits),
             effective_budget,
             observer,
         ),
@@ -772,6 +794,7 @@ def _v2_conclusion_node(state: AgentState) -> AgentState:
             recommended_next_action="请由值班人员根据调查结论决定后续人工处置。",
         ),
         "current_stage": AgentStage.CONCLUSION,
+        "terminal_reason": TerminalReason.SUFFICIENT_EVIDENCE,
     }
 
 
@@ -837,6 +860,14 @@ def _investigation_planning_node(
     available_tools: frozenset[ToolName] = READ_ONLY_INVESTIGATION_TOOLS,
 ) -> AgentState:
     """Use bounded first-pass evidence collection before falling back to the LLM planner."""
+    if state["current_stage"] is not AgentStage.INVESTIGATION_PLANNING:
+        return state
+    if not available_tools:
+        return {
+            **state,
+            "evaluation_decision": EvaluationDecision.NEEDS_MANUAL_ACTION,
+            "terminal_reason": TerminalReason.NO_FURTHER_INVESTIGATION,
+        }
     initial_plan = deterministic_initial_evidence_plan(state, available_tools)
     if initial_plan is None:
         if _llm_budget_exhausted(state, budget):
@@ -1000,6 +1031,28 @@ def _planning_guard_node(state: AgentState, limits: InvestigationLoopLimits) -> 
     return state
 
 
+def _v2_planning_guard_node(state: AgentState, limits: InvestigationLoopLimits) -> AgentState:
+    """Apply V2 budget outcomes with deterministic terminal lifecycle semantics."""
+    if state["current_stage"] is not AgentStage.INVESTIGATION_PLANNING:
+        return state
+    reason = _v2_planning_limit_terminal_reason(state, limits)
+    if reason is None:
+        return state
+    if reason is TerminalReason.REPEATED_FAILURES:
+        return {
+            **state,
+            "workflow_failure_category": FailureCategory.TOOL_FAILURE,
+            "workflow_failure_retryable": False,
+            "workflow_failure_safe_message": "调查工具连续执行失败，已停止本轮调查。",
+            "terminal_reason": reason,
+        }
+    return {
+        **state,
+        "evaluation_decision": EvaluationDecision.NEEDS_MANUAL_ACTION,
+        "terminal_reason": reason,
+    }
+
+
 def _limits_reached(state: AgentState, limits: InvestigationLoopLimits) -> bool:
     """Keep workflow limits independent from LangGraph's recursion protection."""
     return _planning_limit_terminal_reason(state, limits) is not None
@@ -1013,6 +1066,19 @@ def _planning_limit_terminal_reason(
         return TerminalReason.INVESTIGATION_ROUND_LIMIT_REACHED
     if state["tool_call_count"] >= limits.max_tool_calls:
         return TerminalReason.TOOL_CALL_LIMIT_REACHED
+    return None
+
+
+def _v2_planning_limit_terminal_reason(
+    state: AgentState, limits: InvestigationLoopLimits
+) -> TerminalReason | None:
+    """Choose V2 stop reasons before another planner or Tool invocation starts."""
+    if state.get("consecutive_failures", 0) >= limits.max_consecutive_failures:
+        return TerminalReason.REPEATED_FAILURES
+    if state["investigation_round"] >= limits.iteration_limit:
+        return TerminalReason.ITERATION_BUDGET_EXHAUSTED
+    if state["tool_call_count"] >= limits.max_tool_calls:
+        return TerminalReason.TOOL_BUDGET_EXHAUSTED
     return None
 
 

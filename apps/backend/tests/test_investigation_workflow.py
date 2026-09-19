@@ -731,7 +731,7 @@ def test_duplicate_second_planner_call_terminalizes_without_a_second_tool_execut
     )
 
     assert result["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
-    assert result["terminal_reason"] is TerminalReason.INVESTIGATION_INCONCLUSIVE
+    assert result["terminal_reason"] is TerminalReason.NO_FURTHER_INVESTIGATION
     assert result["current_stage"] is AgentStage.NEEDS_MANUAL_ACTION
     assert result["pending_tool_call"] is None
     assert result["investigation_round"] == 1

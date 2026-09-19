@@ -227,6 +227,7 @@ def test_each_read_only_tool_dispatches_and_records_success(
     monkeypatch, tool_name: ToolName, executor_name: str
 ) -> None:
     state = build_execution_state(tool_name, tool_arguments(tool_name))
+    state["consecutive_failures"] = 2
     calls = 0
 
     def fake_executor(*_: object):
@@ -241,6 +242,7 @@ def test_each_read_only_tool_dispatches_and_records_success(
     assert updated["current_stage"] is AgentStage.HYPOTHESIS_UPDATE
     assert updated["pending_tool_call"] is None
     assert updated["tool_call_count"] == 1
+    assert updated["consecutive_failures"] == 0
     assert updated["investigation_round"] == 0
     assert updated["hypotheses"] == state["hypotheses"]
     assert len(updated["evidence"]) == 1
@@ -289,6 +291,7 @@ def test_failed_tool_records_error_without_evidence_and_returns_to_planning(
     assert updated["pending_tool_call"] is None
     assert updated["evidence"] == []
     assert updated["tool_call_count"] == 1
+    assert updated["consecutive_failures"] == 1
     history = updated["tool_history"][0]
     assert history.status is status
     assert history.duration_ms == 7.0

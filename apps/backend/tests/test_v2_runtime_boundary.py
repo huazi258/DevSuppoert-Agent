@@ -19,6 +19,7 @@ from devsupport_backend.agent.state import (
     HypothesisContext,
     HypothesisStatus,
     TerminalReason,
+    ToolHistoryEntry,
     create_initial_agent_state,
 )
 from devsupport_backend.agent.v2_terminalization import V2Terminalizer
@@ -45,7 +46,7 @@ from devsupport_backend.tools.registry import (
     UnknownToolError,
     v2_tool_registry,
 )
-from devsupport_backend.tools.schemas import CitationOutput
+from devsupport_backend.tools.schemas import CitationOutput, ToolStatus
 from devsupport_backend.workflow_console import PostgresWorkflowRuntime
 
 
@@ -86,6 +87,39 @@ def _state(incident: Incident, round_record: InvestigationRound) -> dict[str, ob
     state = create_initial_agent_state(incident)
     state["round_id"] = round_record.id
     return state
+
+
+def _v2_dependencies() -> V2InvestigationWorkflowDependencies:
+    return V2InvestigationWorkflowDependencies(
+        rag_service=object(),  # type: ignore[arg-type]
+        llm_client=_UnusedLLM(),  # type: ignore[arg-type]
+        tool_execution=SimpleNamespace(available_tools=V2_READ_ONLY_TOOL_NAMES),  # type: ignore[arg-type]
+        evaluator=_UnusedEvaluator(),  # type: ignore[arg-type]
+    )
+
+
+def _route_v2_graph_to_planning_guard(
+    monkeypatch: pytest.MonkeyPatch, **state_updates: object
+) -> None:
+    monkeypatch.setattr(
+        workflow_module,
+        "intake_node",
+        lambda state: {**state, "current_stage": AgentStage.RETRIEVAL},
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "retrieval_node",
+        lambda state, _: {**state, "current_stage": AgentStage.HYPOTHESIS_GENERATION},
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "hypothesis_generation_node",
+        lambda state, _: {
+            **state,
+            **state_updates,
+            "current_stage": AgentStage.INVESTIGATION_PLANNING,
+        },
+    )
 
 
 def test_v2_graph_has_only_investigation_and_terminal_report_nodes(
@@ -259,6 +293,186 @@ def test_v2_graph_concludes_and_terminalizes_the_current_round(
     assert result["report_outcome"] is not None
     assert incident.investigation_status is InvestigationStatus.CONCLUDED
     assert round_record.status is InvestigationStatus.CONCLUDED
+    assert round_record.terminal_reason == TerminalReason.SUFFICIENT_EVIDENCE.value
+
+
+@pytest.mark.parametrize(
+    ("limits", "state_updates", "expected_status", "expected_reason"),
+    [
+        (
+            InvestigationLoopLimits(max_iterations=1, max_tool_calls=5),
+            {"investigation_round": 1},
+            InvestigationStatus.INCONCLUSIVE,
+            TerminalReason.ITERATION_BUDGET_EXHAUSTED,
+        ),
+        (
+            InvestigationLoopLimits(max_iterations=5, max_tool_calls=1),
+            {"tool_call_count": 1},
+            InvestigationStatus.INCONCLUSIVE,
+            TerminalReason.TOOL_BUDGET_EXHAUSTED,
+        ),
+        (
+            InvestigationLoopLimits(max_consecutive_failures=2),
+            {"consecutive_failures": 2},
+            InvestigationStatus.FAILED,
+            TerminalReason.REPEATED_FAILURES,
+        ),
+    ],
+)
+def test_v2_runtime_terminalizes_deterministic_budget_stop_conditions(
+    database_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    limits: InvestigationLoopLimits,
+    state_updates: dict[str, object],
+    expected_status: InvestigationStatus,
+    expected_reason: TerminalReason,
+) -> None:
+    incident, round_record = _incident(database_session)
+    _route_v2_graph_to_planning_guard(monkeypatch, **state_updates)
+
+    result = build_v2_production_investigation_graph(
+        _v2_dependencies(), session=database_session, limits=limits
+    ).invoke(_state(incident, round_record))
+
+    database_session.refresh(incident)
+    database_session.refresh(round_record)
+    assert result["report_outcome"] is not None
+    assert result["terminal_reason"] is expected_reason
+    assert incident.investigation_status is expected_status
+    assert round_record.status is expected_status
+    assert round_record.terminal_reason == expected_reason.value
+
+
+def test_v2_planning_guard_continues_when_counters_are_within_budget() -> None:
+    state = create_initial_agent_state(
+        Incident(
+            id=uuid4(),
+            service="order-service",
+            environment="local",
+            description="调查仍有可执行检查。",
+            time_range_start=datetime.now(UTC),
+            time_range_end=datetime.now(UTC) + timedelta(minutes=5),
+        )
+    )
+    state.update(
+        {
+            "current_stage": AgentStage.INVESTIGATION_PLANNING,
+            "investigation_round": 1,
+            "tool_call_count": 1,
+            "consecutive_failures": 1,
+            "evaluation_decision": workflow_module.EvaluationDecision.CONTINUE,
+        }
+    )
+
+    guarded = workflow_module._v2_planning_guard_node(
+        state,
+        InvestigationLoopLimits(
+            max_iterations=2, max_tool_calls=2, max_consecutive_failures=2
+        ),
+    )
+
+    assert guarded is state
+    assert guarded["terminal_reason"] is None
+
+
+def test_v2_runtime_stops_inconclusively_when_no_tool_is_executable(
+    database_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    incident, round_record = _incident(database_session)
+    _route_v2_graph_to_planning_guard(monkeypatch)
+    dependencies = V2InvestigationWorkflowDependencies(
+        rag_service=object(),  # type: ignore[arg-type]
+        llm_client=_UnusedLLM(),  # type: ignore[arg-type]
+        tool_execution=SimpleNamespace(available_tools=frozenset()),  # type: ignore[arg-type]
+        evaluator=_UnusedEvaluator(),  # type: ignore[arg-type]
+    )
+
+    result = build_v2_production_investigation_graph(
+        dependencies, session=database_session
+    ).invoke(_state(incident, round_record))
+
+    database_session.refresh(incident)
+    database_session.refresh(round_record)
+    assert result["terminal_reason"] is TerminalReason.NO_FURTHER_INVESTIGATION
+    assert incident.investigation_status is InvestigationStatus.INCONCLUSIVE
+    assert round_record.terminal_reason == TerminalReason.NO_FURTHER_INVESTIGATION.value
+
+
+def test_v2_runtime_does_not_execute_a_successful_equivalent_tool_call(
+    database_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class RepeatToolPlanner:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+            del user_prompt
+            assert system_prompt.startswith("Plan exactly")
+            self.calls += 1
+            return (
+                '{"investigation_goal":"Collect one metric snapshot.",'
+                '"tool_name":"query_metrics",'
+                '"tool_arguments":{"service":"order-service","environment":"local"},'
+                '"reason":"Metrics can distinguish the active hypothesis."}'
+            )
+
+    incident, round_record = _incident(database_session)
+    previous_call = ToolHistoryEntry(
+        tool_name=ToolName.QUERY_METRICS,
+        tool_arguments={"service": "order-service", "environment": "local"},
+        status=ToolStatus.SUCCESS,
+    )
+    _route_v2_graph_to_planning_guard(monkeypatch, tool_history=[previous_call])
+    monkeypatch.setattr(
+        workflow_module,
+        "_tool_execution_with_initial_evidence_batch",
+        lambda *_: (_ for _ in ()).throw(AssertionError("duplicate call must not execute")),
+    )
+    planner = RepeatToolPlanner()
+    dependencies = V2InvestigationWorkflowDependencies(
+        rag_service=object(),  # type: ignore[arg-type]
+        llm_client=planner,  # type: ignore[arg-type]
+        tool_execution=SimpleNamespace(available_tools=V2_READ_ONLY_TOOL_NAMES),  # type: ignore[arg-type]
+        evaluator=_UnusedEvaluator(),  # type: ignore[arg-type]
+    )
+
+    result = build_v2_production_investigation_graph(
+        dependencies, session=database_session
+    ).invoke(_state(incident, round_record))
+
+    database_session.refresh(incident)
+    assert planner.calls == 1
+    assert result["tool_call_count"] == 0
+    assert len(result["tool_history"]) == 1
+    assert result["terminal_reason"] is TerminalReason.NO_FURTHER_INVESTIGATION
+    assert incident.investigation_status is InvestigationStatus.INCONCLUSIVE
+
+
+def test_v2_concluded_state_routes_only_to_terminalization() -> None:
+    state = create_initial_agent_state(
+        Incident(
+            id=uuid4(),
+            service="order-service",
+            environment="local",
+            description="结论已经形成。",
+            time_range_start=datetime.now(UTC),
+            time_range_end=datetime.now(UTC) + timedelta(minutes=5),
+        )
+    )
+    state.update(
+        {
+            "current_stage": AgentStage.CONCLUSION,
+            "final_conclusion": FinalConclusion(
+                summary="已有足够证据。",
+                root_cause="已确认的运行条件。",
+                confidence=0.9,
+                supporting_evidence_ids=[],
+            ),
+            "terminal_reason": TerminalReason.SUFFICIENT_EVIDENCE,
+        }
+    )
+
+    assert workflow_module._v2_route_after_conclusion(state) == "conclusion_terminalization"
 
 
 @pytest.mark.parametrize(

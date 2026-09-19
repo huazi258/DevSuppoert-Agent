@@ -901,7 +901,7 @@ def test_duplicate_planner_call_records_planner_but_not_tool_execution_observabi
 
     result = observed_planner(state)
 
-    assert result["terminal_reason"] is TerminalReason.INVESTIGATION_INCONCLUSIVE
+    assert result["terminal_reason"] is TerminalReason.NO_FURTHER_INVESTIGATION
     assert [event.node_name for event in collector.node_calls] == ["investigation_planning"]
     assert [event.node_name for event in collector.llm_calls] == ["investigation_planning"]
     assert all(event.node_name != "tool_execution" for event in collector.node_calls)

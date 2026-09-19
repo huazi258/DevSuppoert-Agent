@@ -86,7 +86,7 @@ def investigation_planner_node(
             **state,
             "pending_tool_call": None,
             "evaluation_decision": EvaluationDecision.NEEDS_MANUAL_ACTION,
-            "terminal_reason": TerminalReason.INVESTIGATION_INCONCLUSIVE,
+            "terminal_reason": TerminalReason.NO_FURTHER_INVESTIGATION,
         }
     return {
         **state,

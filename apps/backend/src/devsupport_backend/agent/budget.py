@@ -14,10 +14,16 @@ from devsupport_backend.agent.state import AgentState
 
 @dataclass(frozen=True)
 class InvestigationBudget:
-    """Investigation budget dimensions, including the initial V1 discrete limits."""
+    """Runtime-owned limits for one bounded investigation round.
+
+    ``max_rounds`` remains as a compatibility alias for older callers.  Formal V2
+    runtime wiring uses ``max_iterations`` when it is explicitly configured.
+    """
 
     max_rounds: int = 5
+    max_iterations: int | None = None
     max_tool_calls: int = 6
+    max_consecutive_failures: int = 3
     max_llm_calls: int | None = 8
     max_workflow_retries: int | None = 1
     max_active_execution_seconds: float | None = 95.0
@@ -25,13 +31,20 @@ class InvestigationBudget:
     def __post_init__(self) -> None:
         for name, value in (
             ("max_rounds", self.max_rounds),
+            ("max_iterations", self.max_iterations),
             ("max_tool_calls", self.max_tool_calls),
+            ("max_consecutive_failures", self.max_consecutive_failures),
             ("max_llm_calls", self.max_llm_calls),
             ("max_workflow_retries", self.max_workflow_retries),
             ("max_active_execution_seconds", self.max_active_execution_seconds),
         ):
             if value is not None and value <= 0:
                 raise ValueError(f"{name} must be greater than zero when set")
+
+    @property
+    def iteration_limit(self) -> int:
+        """Return the formal V2 iteration limit, preferring its explicit setting."""
+        return self.max_iterations if self.max_iterations is not None else self.max_rounds
 
 
 DEFAULT_INVESTIGATION_BUDGET = InvestigationBudget()

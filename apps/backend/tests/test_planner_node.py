@@ -164,7 +164,7 @@ def test_successful_exact_equivalent_call_stops_planning_without_creating_tool_f
     assert updated["current_stage"] is AgentStage.INVESTIGATION_PLANNING
     assert updated["pending_tool_call"] is None
     assert updated["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
-    assert updated["terminal_reason"] is TerminalReason.INVESTIGATION_INCONCLUSIVE
+    assert updated["terminal_reason"] is TerminalReason.NO_FURTHER_INVESTIGATION
     assert updated["tool_call_count"] == 0
     assert len(updated["tool_history"]) == 2
 
@@ -303,7 +303,7 @@ def test_resumed_checkpointed_successful_call_is_still_blocked_as_a_duplicate() 
     result = WorkflowService(resumed_graph).resume(thread_id, {"resumed": True})
 
     assert result["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION
-    assert result["terminal_reason"] is TerminalReason.INVESTIGATION_INCONCLUSIVE
+    assert result["terminal_reason"] is TerminalReason.NO_FURTHER_INVESTIGATION
     assert result["pending_tool_call"] is None
     assert tool_execution_calls == 0
 

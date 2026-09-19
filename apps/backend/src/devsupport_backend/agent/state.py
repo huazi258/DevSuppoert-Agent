@@ -75,6 +75,11 @@ class FailureCategory(StrEnum):
 class TerminalReason(StrEnum):
     """Stable reasons for a workflow's deliberate non-resolved terminal path."""
 
+    SUFFICIENT_EVIDENCE = "sufficient_evidence"
+    ITERATION_BUDGET_EXHAUSTED = "iteration_budget_exhausted"
+    TOOL_BUDGET_EXHAUSTED = "tool_budget_exhausted"
+    REPEATED_FAILURES = "repeated_failures"
+    NO_FURTHER_INVESTIGATION = "no_further_investigation"
     ACTIVE_EXECUTION_BUDGET_EXHAUSTED = "active_execution_budget_exhausted"
     LLM_CALL_BUDGET_EXHAUSTED = "llm_call_budget_exhausted"
     INVESTIGATION_ROUND_LIMIT_REACHED = "investigation_round_limit_reached"
@@ -388,6 +393,7 @@ class AgentState(TypedDict):
     tool_history: list[ToolHistoryEntry]
     investigation_round: int
     tool_call_count: int
+    consecutive_failures: int
     llm_call_count: int
     workflow_retry_count: int
     active_execution_seconds: float
@@ -432,6 +438,7 @@ def create_initial_agent_state(
         "tool_history": [],
         "investigation_round": 0,
         "tool_call_count": 0,
+        "consecutive_failures": 0,
         "llm_call_count": 0,
         "workflow_retry_count": 0,
         "active_execution_seconds": 0.0,
@@ -469,6 +476,7 @@ def agent_state_to_checkpoint_payload(state: AgentState) -> dict[str, object]:
         "tool_history": [item.model_dump(mode="json") for item in state["tool_history"]],
         "investigation_round": state["investigation_round"],
         "tool_call_count": state["tool_call_count"],
+        "consecutive_failures": state.get("consecutive_failures", 0),
         "llm_call_count": state["llm_call_count"],
         "workflow_retry_count": state["workflow_retry_count"],
         "active_execution_seconds": state.get("active_execution_seconds", 0.0),
