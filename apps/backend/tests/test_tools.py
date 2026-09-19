@@ -12,6 +12,7 @@ from devsupport_backend.models import KnowledgeChunk, KnowledgeDocument
 from devsupport_backend.rag.retrieval import RAGService
 from devsupport_backend.tools.registry import ToolName, UnknownToolError, tool_registry
 from devsupport_backend.tools.schemas import (
+    CitationOutput,
     GetDeploymentHistoryInput,
     GetDeploymentHistoryOutput,
     QueryLogsInput,
@@ -156,6 +157,39 @@ def test_tool_models_reject_invalid_and_arbitrary_parameters() -> None:
         )
     with pytest.raises(ValidationError, match="must include an error"):
         QueryLogsOutput(status=ToolStatus.FAILURE)
+    with pytest.raises(ValidationError, match="provider address"):
+        CitationOutput(
+            id="knowledge:document:chunk",
+            document_id=uuid4(),
+            chunk_id=uuid4(),
+            document_title="Runbook",
+            source="https://internal.example/runbook",
+            source_path="https://internal.example/runbook",
+            chunk_index=0,
+            section="Checks",
+            document_version="v1",
+            target_id=uuid4(),
+            scope="shared",
+            environment="common",
+            document_reference="https://internal.example/runbook#chunk-0",
+        )
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        CitationOutput(
+            id="knowledge:document:chunk",
+            document_id=uuid4(),
+            chunk_id=uuid4(),
+            document_title="Runbook",
+            source="knowledge/runbook.md",
+            source_path="knowledge/runbook.md",
+            chunk_index=0,
+            section="Checks",
+            document_version="v1",
+            target_id=uuid4(),
+            scope="shared",
+            environment="common",
+            document_reference="knowledge/runbook.md#chunk-0",
+            embedding=[0.1, 0.2],
+        )
 
 
 def test_search_knowledge_tool_uses_rag_service_and_preserves_scores_and_citation(
@@ -213,8 +247,33 @@ def test_search_knowledge_tool_uses_rag_service_and_preserves_scores_and_citatio
     assert result.keyword_score is not None
     assert result.citation.document_id == document.id
     assert result.citation.chunk_id == chunk.id
-    assert result.citation.source == "tool-test-runbook"
+    assert result.citation.document_title == document.title
+    assert result.citation.source_path == document.source_path
+    assert result.citation.source == document.source_path
+    assert result.citation.chunk_index == chunk.chunk_index
+    assert result.citation.document_version == document.version
+    assert result.citation.target_id == document.target_id
+    assert result.citation.scope == document.scope
+    assert result.citation.service_id == document.service_id
+    assert result.citation.environment == document.environment
     assert result.citation.section == "Evidence"
+    assert result.citation.id == f"knowledge:{document.id}:{chunk.id}"
+    assert set(result.citation.model_dump()) == {
+        "id",
+        "document_id",
+        "chunk_id",
+        "document_title",
+        "source",
+        "source_path",
+        "chunk_index",
+        "section",
+        "document_version",
+        "target_id",
+        "scope",
+        "service_id",
+        "environment",
+        "document_reference",
+    }
 
 
 def test_search_knowledge_tool_returns_structured_failure(database_session: Session) -> None:

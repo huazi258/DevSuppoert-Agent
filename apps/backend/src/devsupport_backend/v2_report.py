@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
@@ -12,6 +13,7 @@ from sqlalchemy.orm import Session
 from devsupport_backend.agent.state import AgentState, EvidenceContext, FinalConclusion
 from devsupport_backend.investigation_status import InvestigationStatus
 from devsupport_backend.models import Incident, InvestigationRound, Report
+from devsupport_backend.tools.schemas import CitationOutput
 
 
 class V2ReportError(RuntimeError):
@@ -35,6 +37,7 @@ class V2EvidenceReference(BaseModel):
     source: str
     summary: str
     reference: str | None
+    citation: CitationOutput | None = None
 
 
 class V2Conclusion(BaseModel):
@@ -45,6 +48,7 @@ class V2Conclusion(BaseModel):
     confidence: float | None
     supporting_evidence_ids: list[str]
     contradicting_evidence_ids: list[str]
+    citations: list[CitationOutput] = Field(default_factory=list)
 
 
 class V2TimelineEntry(BaseModel):
@@ -124,6 +128,8 @@ class V2ReportService:
         state: AgentState,
     ) -> V2ReportContent:
         conclusion = state["final_conclusion"]
+        evidence = {item.id: item for item in state["evidence"]}
+        _validate_knowledge_evidence_bindings(state, evidence)
         return V2ReportContent(
             input_summary=V2InputSummary(
                 service=incident.service,
@@ -132,9 +138,9 @@ class V2ReportService:
                 time_range_start=incident.time_range_start,
                 time_range_end=incident.time_range_end,
             ),
-            conclusion=_conclusion(conclusion),
+            conclusion=_conclusion(conclusion, evidence),
             hypotheses=[item.model_dump(mode="json") for item in state["hypotheses"]],
-            key_evidence=[_evidence_reference(item) for item in state["evidence"]],
+            key_evidence=[_evidence_reference(item) for item in evidence.values()],
             unknowns=_unknowns(state),
             manual_suggestions=_manual_suggestions(conclusion, round_record.status),
             terminal_reason=round_record.terminal_reason,
@@ -149,7 +155,9 @@ class V2ReportService:
         )
 
 
-def _conclusion(value: FinalConclusion | None) -> V2Conclusion | None:
+def _conclusion(
+    value: FinalConclusion | None, evidence: dict[UUID, EvidenceContext]
+) -> V2Conclusion | None:
     if value is None:
         return None
     return V2Conclusion(
@@ -158,13 +166,47 @@ def _conclusion(value: FinalConclusion | None) -> V2Conclusion | None:
         confidence=value.confidence,
         supporting_evidence_ids=[str(item) for item in value.supporting_evidence_ids],
         contradicting_evidence_ids=[str(item) for item in value.contradicting_evidence_ids],
+        citations=[
+            evidence[evidence_id].citation
+            for evidence_id in value.supporting_evidence_ids
+            if evidence[evidence_id].citation is not None
+        ],
     )
 
 
 def _evidence_reference(item: EvidenceContext) -> V2EvidenceReference:
     return V2EvidenceReference(
-        id=str(item.id), source=item.source, summary=item.summary, reference=item.reference
+        id=str(item.id),
+        source=item.source,
+        summary=item.summary,
+        reference=item.reference,
+        citation=item.citation,
     )
+
+
+def _validate_knowledge_evidence_bindings(
+    state: AgentState, evidence: dict[UUID, EvidenceContext]
+) -> None:
+    """Require every knowledge fact used by a hypothesis or conclusion to retain provenance."""
+    referenced: set[UUID] = set()
+    for hypothesis in state["hypotheses"]:
+        referenced.update(hypothesis.supporting_evidence_ids)
+        referenced.update(hypothesis.contradicting_evidence_ids)
+    conclusion = state["final_conclusion"]
+    if conclusion is not None:
+        referenced.update(conclusion.supporting_evidence_ids)
+        referenced.update(conclusion.contradicting_evidence_ids)
+    unknown = referenced.difference(evidence)
+    if unknown:
+        raise V2ReportError("V2 Report references unknown Evidence")
+    for evidence_id in referenced:
+        item = evidence[evidence_id]
+        if (
+            item.source == "search_knowledge"
+            and item.evidence_type == "knowledge_retrieval"
+            and item.citation is None
+        ):
+            raise V2ReportError("knowledge Evidence requires a Citation")
 
 
 def _unknowns(state: AgentState) -> list[str]:

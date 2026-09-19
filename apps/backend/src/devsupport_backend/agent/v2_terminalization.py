@@ -87,7 +87,15 @@ class V2Terminalizer:
                     evidence_type=item.evidence_type,
                     source=item.source,
                     content=item.summary,
-                    data={**item.data, "reference": item.reference},
+                    data={
+                        **item.data,
+                        "reference": item.reference,
+                        "citation": (
+                            item.citation.model_dump(mode="json")
+                            if item.citation is not None
+                            else None
+                        ),
+                    },
                 )
             )
         for item in state["tool_history"]:

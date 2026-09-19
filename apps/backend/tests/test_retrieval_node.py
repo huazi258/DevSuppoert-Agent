@@ -65,8 +65,16 @@ def search_result(
             id=f"citation:{result_chunk_id}",
             document_id=document_id,
             chunk_id=result_chunk_id,
+            document_title="Order-service 500 runbook",
             source="knowledge/runbooks/order-service-500.md",
+            source_path="knowledge/runbooks/order-service-500.md",
+            chunk_index=0,
             section="Investigate errors",
+            document_version="v1",
+            target_id=uuid4(),
+            scope="service",
+            service_id=uuid4(),
+            environment="local",
             document_reference=f"knowledge/runbooks/order-service-500.md#chunk-{result_chunk_id}",
         ),
     )
@@ -102,6 +110,7 @@ def test_successful_retrieval_adds_cited_evidence_and_advances_stage(monkeypatch
     assert evidence.data["chunk_id"] == str(result.chunk_id)
     assert evidence.data["document_id"] == str(result.document_id)
     assert evidence.data["citation"] == result.citation.model_dump(mode="json")
+    assert evidence.citation == result.citation
     assert updated["tool_history"][0].evidence_ids == [evidence.id]
 
 
@@ -141,6 +150,28 @@ def test_repeated_retrieval_does_not_duplicate_existing_chunk_evidence(monkeypat
     assert second["tool_call_count"] == 2
     assert len(second["tool_history"]) == 2
     assert second["tool_history"][1].evidence_ids == [second["evidence"][0].id]
+
+
+def test_multiple_knowledge_chunks_retain_independent_citations(monkeypatch) -> None:
+    state = build_ready_state()
+    first = search_result(chunk_id=uuid4())
+    second = search_result(chunk_id=uuid4())
+
+    def fake_search(_: SearchKnowledgeInput, __: object) -> SearchKnowledgeOutput:
+        return SearchKnowledgeOutput(status=ToolStatus.SUCCESS, results=[first, second])
+
+    monkeypatch.setattr(retrieval_module, "search_knowledge", fake_search)
+    updated = retrieval_node(state, object())  # type: ignore[arg-type]
+
+    assert len(updated["evidence"]) == 2
+    assert {item.citation.id for item in updated["evidence"] if item.citation} == {
+        first.citation.id,
+        second.citation.id,
+    }
+    assert updated["tool_history"][0].evidence_ids == [
+        updated["evidence"][0].id,
+        updated["evidence"][1].id,
+    ]
 
 
 def test_retrieval_does_not_call_tool_when_intake_or_stage_is_not_ready(monkeypatch) -> None:

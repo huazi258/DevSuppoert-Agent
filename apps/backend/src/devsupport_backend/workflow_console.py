@@ -803,6 +803,8 @@ def _evidence_citation(item) -> WorkflowEvidenceCitationResponse | None:
     """Project only a validated knowledge citation; legacy and runtime data remain opaque."""
     if item.source != "search_knowledge" or item.evidence_type != "knowledge_retrieval":
         return None
+    if item.citation is not None:
+        return WorkflowEvidenceCitationResponse(**item.citation.model_dump())
     raw = item.data.get("citation")
     if not isinstance(raw, dict):
         return None

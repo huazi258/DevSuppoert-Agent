@@ -35,7 +35,7 @@ from devsupport_backend.models import (
     Report,
     Verification,
 )
-from devsupport_backend.tools.schemas import ToolStatus
+from devsupport_backend.tools.schemas import CitationOutput, ToolStatus
 
 
 def _incident(session: Session, status: str) -> Incident:
@@ -132,27 +132,34 @@ def test_final_report_uses_the_incident_v1_thread_round(database_session: Sessio
 def test_report_preserves_knowledge_evidence_citation(database_session: Session) -> None:
     incident = _incident(database_session, "NEEDS_MANUAL_ACTION")
     state = _state(incident)
-    citation = {
-        "id": "knowledge:runbook#1",
-        "document_id": str(uuid4()),
-        "chunk_id": str(uuid4()),
-        "source": "runbook",
-        "section": "Checks",
-        "document_reference": "knowledge/runbook.md#checks",
-    }
+    citation_model = CitationOutput(
+        id="knowledge:runbook#1",
+        document_id=uuid4(),
+        chunk_id=uuid4(),
+        document_title="Order runbook",
+        source="knowledge/runbook.md",
+        source_path="knowledge/runbook.md",
+        chunk_index=1,
+        section="Checks",
+        document_version="v1",
+        target_id=uuid4(),
+        scope="shared",
+        environment="common",
+        document_reference="knowledge/runbook.md#chunk-1",
+    )
     state["evidence"] = [
         state["evidence"][0].model_copy(
             update={
                 "evidence_type": "knowledge_retrieval",
                 "source": "search_knowledge",
-                "data": {"citation": citation},
+                "citation": citation_model,
             }
         )
     ]
     outcome = FinalReportService(database_session).generate(state)
     report = database_session.get(Report, outcome.report_id)
     assert report is not None
-    assert report.content["key_evidence"][0]["citation"] == citation
+    assert report.content["key_evidence"][0]["citation"] == citation_model.model_dump(mode="json")
 
 
 def test_resolved_report_persists_exact_execution_chain_as_jsonb(database_session: Session) -> None:

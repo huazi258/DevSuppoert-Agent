@@ -16,7 +16,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from devsupport_backend.tools.registry import ToolName
-from devsupport_backend.tools.schemas import ToolError, ToolStatus
+from devsupport_backend.tools.schemas import CitationOutput, ToolError, ToolStatus
 
 MAX_EVIDENCE_DATA_SERIALIZED_BYTES = 16_000
 """Maximum UTF-8 JSON size retained for one concise evidence data payload."""
@@ -236,6 +236,7 @@ class EvidenceContext(StateModel):
     summary: str = Field(min_length=1, max_length=2_000)
     data: dict[str, JsonValue] = Field(default_factory=dict, max_length=50)
     reference: str | None = Field(default=None, min_length=1, max_length=1_000)
+    citation: CitationOutput | None = None
 
     @model_validator(mode="after")
     def validate_data_size(self) -> "EvidenceContext":

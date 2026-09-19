@@ -50,8 +50,16 @@ class Citation:
     id: str
     document_id: UUID
     chunk_id: UUID
+    document_title: str
     source: str
+    source_path: str
+    chunk_index: int
     section: str
+    document_version: str
+    target_id: UUID
+    scope: str
+    service_id: UUID | None
+    environment: str
     document_reference: str
 
 
@@ -361,30 +369,39 @@ class RAGService:
     def _result(candidate: _Candidate) -> RetrievalResult:
         metadata = candidate.chunk.metadata_data
         try:
-            source = str(metadata["source"])
             section = str(metadata["section"])
-            document_reference = str(metadata["document_id"])
         except KeyError as error:
             raise RetrievalError(
                 f"knowledge chunk {candidate.chunk.id} is missing citation metadata "
                 f"{error.args[0]!r}"
             ) from error
+        document = candidate.document
+        source_path = document.source_path
+        document_reference = f"{source_path}#chunk-{candidate.chunk.chunk_index}"
         citation = Citation(
-            id=f"knowledge:{candidate.document.id}:{candidate.chunk.id}",
-            document_id=candidate.document.id,
+            id=f"knowledge:{document.id}:{candidate.chunk.id}",
+            document_id=document.id,
             chunk_id=candidate.chunk.id,
-            source=source,
+            document_title=document.title,
+            source=source_path,
+            source_path=source_path,
+            chunk_index=candidate.chunk.chunk_index,
             section=section,
+            document_version=document.version,
+            target_id=document.target_id,
+            scope=document.scope,
+            service_id=document.service_id,
+            environment=document.environment,
             document_reference=document_reference,
         )
         return RetrievalResult(
             chunk_id=candidate.chunk.id,
             document_id=candidate.document.id,
             content=candidate.chunk.content,
-            service=candidate.document.service,
-            environment=candidate.document.environment,
-            document_type=candidate.document.document_type,
-            source=source,
+            service=document.service,
+            environment=document.environment,
+            document_type=document.document_type,
+            source=source_path,
             section=section,
             vector_score=candidate.vector_score,
             keyword_score=candidate.keyword_score,

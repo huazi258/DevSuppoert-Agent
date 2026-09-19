@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -92,9 +93,34 @@ class CitationOutput(BaseModel):
     id: str = Field(min_length=1)
     document_id: UUID
     chunk_id: UUID
-    source: str = Field(min_length=1)
+    document_title: str = Field(min_length=1, max_length=500)
+    source: str = Field(min_length=1, max_length=1_000)
+    source_path: str = Field(min_length=1, max_length=1_000)
+    chunk_index: int = Field(ge=0)
     section: str = Field(min_length=1)
-    document_reference: str = Field(min_length=1)
+    document_version: str = Field(min_length=1, max_length=100)
+    target_id: UUID
+    scope: Literal["shared", "service"]
+    service_id: UUID | None = None
+    environment: str = Field(min_length=1, max_length=50)
+    document_reference: str = Field(min_length=1, max_length=1_000)
+
+    @field_validator("source", "source_path", "document_reference")
+    @classmethod
+    def reject_provider_addresses(cls, value: str) -> str:
+        if "://" in value:
+            raise ValueError("knowledge citation must not contain a provider address")
+        return value
+
+    @model_validator(mode="after")
+    def validate_scope_and_source(self) -> "CitationOutput":
+        if self.scope == "shared" and self.service_id is not None:
+            raise ValueError("shared knowledge citation must not have a service_id")
+        if self.scope == "service" and self.service_id is None:
+            raise ValueError("service knowledge citation requires a service_id")
+        if self.source != self.source_path:
+            raise ValueError("knowledge citation source must match its source_path")
+        return self
 
 
 class SearchKnowledgeResult(BaseModel):

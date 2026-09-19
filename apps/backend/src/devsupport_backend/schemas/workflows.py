@@ -123,8 +123,16 @@ class WorkflowEvidenceCitationResponse(WorkflowResponseModel):
     id: str
     document_id: UUID
     chunk_id: UUID
+    document_title: str
     source: str
+    source_path: str
+    chunk_index: int
     section: str
+    document_version: str
+    target_id: UUID
+    scope: str
+    service_id: UUID | None
+    environment: str
     document_reference: str
 
 

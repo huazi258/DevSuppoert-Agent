@@ -78,8 +78,16 @@ class EvidenceCitationReportSection(StrictReportModel):
     id: str
     document_id: UUID
     chunk_id: UUID
+    document_title: str
     source: str
+    source_path: str
+    chunk_index: int
     section: str
+    document_version: str
+    target_id: UUID
+    scope: str
+    service_id: UUID | None
+    environment: str
     document_reference: str
 
 
@@ -395,6 +403,8 @@ def _evidence_citation(item) -> EvidenceCitationReportSection | None:
     """Keep structured provenance only for validated current knowledge evidence."""
     if item.source != "search_knowledge" or item.evidence_type != "knowledge_retrieval":
         return None
+    if item.citation is not None:
+        return EvidenceCitationReportSection(**item.citation.model_dump())
     raw = item.data.get("citation")
     if not isinstance(raw, dict):
         return None

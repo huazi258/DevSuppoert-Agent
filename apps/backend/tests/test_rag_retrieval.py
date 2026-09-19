@@ -169,9 +169,11 @@ def test_metadata_filters_include_common_environment_and_complete_citation(
         result.document_id for result in results if result.chunk_id == local_chunk.id
     )
     assert citation.chunk_id == local_chunk.id
-    assert citation.source == "local-source"
+    assert citation.source == local_chunk.document.source_path
+    assert citation.source_path == local_chunk.document.source_path
+    assert citation.chunk_index == local_chunk.chunk_index
     assert citation.section == "Local"
-    assert citation.document_reference.startswith("doc-")
+    assert citation.document_reference == f"{local_chunk.document.source_path}#chunk-0"
     assert citation.id.startswith("knowledge:")
 
     runbook_results = RAGService(database_session, QueryEmbeddingClient([1.0, 0.0])).search(

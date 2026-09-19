@@ -128,4 +128,5 @@ def _knowledge_evidence(result: SearchKnowledgeResult) -> EvidenceContext:
             "citation": result.citation.model_dump(mode="json"),
         },
         reference=result.citation.document_reference,
+        citation=result.citation,
     )

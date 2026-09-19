@@ -33,6 +33,7 @@ from devsupport_backend.main import app
 from devsupport_backend.models import (
     Action,
     Approval,
+    Evidence,
     Incident,
     InvestigationRound,
     Report,
@@ -44,6 +45,7 @@ from devsupport_backend.tools.registry import (
     UnknownToolError,
     v2_tool_registry,
 )
+from devsupport_backend.tools.schemas import CitationOutput
 from devsupport_backend.workflow_console import PostgresWorkflowRuntime
 
 
@@ -362,6 +364,65 @@ def test_v2_conclusion_terminalization_creates_report_without_remediation(
         database_session.scalar(select(Verification).where(Verification.incident_id == incident.id))
         is None
     )
+
+
+def test_v2_knowledge_evidence_binds_hypothesis_conclusion_and_report_citations(
+    database_session: Session,
+) -> None:
+    incident, round_record = _incident(database_session)
+    state = _state(incident, round_record)
+    citation = CitationOutput(
+        id=f"knowledge:{uuid4()}:{uuid4()}",
+        document_id=uuid4(),
+        chunk_id=uuid4(),
+        document_title="订单服务故障排查手册",
+        source="knowledge/runbooks/order-errors.md",
+        source_path="knowledge/runbooks/order-errors.md",
+        chunk_index=3,
+        section="依赖检查",
+        document_version="2026.09",
+        target_id=incident.target_id,
+        scope="service",
+        service_id=incident.service_id,
+        environment="local",
+        document_reference="knowledge/runbooks/order-errors.md#chunk-3",
+    )
+    evidence = EvidenceContext(
+        source="search_knowledge",
+        evidence_type="knowledge_retrieval",
+        summary="手册要求先检查订单服务到依赖服务的连接失败。",
+        citation=citation,
+    )
+    hypothesis = HypothesisContext(
+        summary="订单服务的依赖调用失败。",
+        status=HypothesisStatus.CONFIRMED,
+        confidence=0.9,
+        supporting_evidence_ids=[evidence.id],
+    )
+    state.update(
+        {
+            "evidence": [evidence],
+            "hypotheses": [hypothesis],
+            "final_conclusion": FinalConclusion(
+                summary="知识证据支持优先检查依赖调用。",
+                root_cause=hypothesis.summary,
+                confidence=0.9,
+                supporting_evidence_ids=[evidence.id],
+            ),
+        }
+    )
+
+    V2Terminalizer(database_session).terminalize(state, InvestigationStatus.CONCLUDED)
+
+    persisted_evidence = database_session.scalar(
+        select(Evidence).where(Evidence.round_id == round_record.id)
+    )
+    report = database_session.scalar(select(Report).where(Report.round_id == round_record.id))
+    assert persisted_evidence is not None
+    assert persisted_evidence.data["citation"] == citation.model_dump(mode="json")
+    assert report is not None
+    assert report.content["key_evidence"][0]["citation"] == citation.model_dump(mode="json")
+    assert report.content["conclusion"]["citations"] == [citation.model_dump(mode="json")]
 
 
 @pytest.mark.parametrize(

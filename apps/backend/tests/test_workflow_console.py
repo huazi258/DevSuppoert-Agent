@@ -43,7 +43,7 @@ from devsupport_backend.agent.state import (
 from devsupport_backend.investigation_status import InvestigationStatus
 from devsupport_backend.models import Action, Approval, Incident
 from devsupport_backend.tools.registry import ToolName
-from devsupport_backend.tools.schemas import ToolError, ToolStatus
+from devsupport_backend.tools.schemas import CitationOutput, ToolError, ToolStatus
 from devsupport_backend.workflow_console import (
     PostgresWorkflowRuntime,
     WorkflowConflictError,
@@ -248,24 +248,29 @@ def test_projector_preserves_only_validated_knowledge_citation(database_session:
         update={
             "evidence_type": "knowledge_retrieval",
             "source": "search_knowledge",
-            "data": {
-                "citation": {
-                    "id": "knowledge:runbook#1",
-                    "document_id": str(uuid4()),
-                    "chunk_id": str(uuid4()),
-                    "source": "runbook",
-                    "section": "Checks",
-                    "document_reference": "knowledge/runbook.md#checks",
-                }
-            },
+            "citation": CitationOutput(
+                id="knowledge:runbook#1",
+                document_id=uuid4(),
+                chunk_id=uuid4(),
+                document_title="Order runbook",
+                source="knowledge/runbook.md",
+                source_path="knowledge/runbook.md",
+                chunk_index=1,
+                section="Checks",
+                document_version="v1",
+                target_id=uuid4(),
+                scope="shared",
+                environment="common",
+                document_reference="knowledge/runbook.md#chunk-1",
+            ),
         }
     )
     state["evidence"] = [evidence]
     response = project_workflow_response(incident, state, None)
     assert response.evidence[0].citation is not None
-    assert response.evidence[0].citation.document_reference == "knowledge/runbook.md#checks"
+    assert response.evidence[0].citation.document_reference == "knowledge/runbook.md#chunk-1"
 
-    state["evidence"] = [evidence.model_copy(update={"data": {"citation": {"private": "nope"}}})]
+    state["evidence"] = [evidence.model_copy(update={"citation": None})]
     assert project_workflow_response(incident, state, None).evidence[0].citation is None
 
 
