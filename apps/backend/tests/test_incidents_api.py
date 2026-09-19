@@ -25,14 +25,29 @@ from devsupport_backend.agent.state import (
 )
 from devsupport_backend.database import engine, get_session
 from devsupport_backend.main import app
-from devsupport_backend.models import Action, Approval, Incident, Report
+from devsupport_backend.models import (
+    Action,
+    Approval,
+    Incident,
+    InvestigationTarget,
+    Report,
+    Service,
+)
 from devsupport_backend.routers import incidents as incidents_router
 from devsupport_backend.routers.incidents import (
     execute_accepted_start as production_execute_accepted_start,
 )
 from devsupport_backend.routers.incidents import (
+    get_target_config_registry,
     get_workflow_runtime,
     start_workflow,
+)
+from devsupport_backend.target_config import (
+    AdapterType,
+    CapabilityConfig,
+    InvestigationTargetConfig,
+    TargetConfigRegistry,
+    TargetServiceConfig,
 )
 from devsupport_backend.tools.schemas import ToolStatus
 
@@ -129,11 +144,41 @@ def database_session() -> Iterator[Session]:
 
 
 @pytest.fixture
-def api_client(database_session: Session) -> Iterator[TestClient]:
+def configured_target(database_session: Session) -> tuple[InvestigationTarget, Service]:
+    target = InvestigationTarget(
+        name="Incident API test target",
+        slug=f"incident-api-{uuid4()}",
+        environment="local",
+        enabled=True,
+    )
+    service = Service(name="order-service", display_name="Order service", enabled=True)
+    target.services.append(service)
+    database_session.add(target)
+    database_session.commit()
+    return target, service
+
+
+@pytest.fixture
+def api_client(
+    database_session: Session, configured_target: tuple[InvestigationTarget, Service]
+) -> Iterator[TestClient]:
+    target, service = configured_target
     def override_get_session() -> Iterator[Session]:
         yield database_session
 
     app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_target_config_registry] = lambda: TargetConfigRegistry(
+        [
+            InvestigationTargetConfig(
+                target_id=target.id,
+                slug=target.slug,
+                environment=target.environment,
+                services=[TargetServiceConfig(name=service.name)],
+                logs=CapabilityConfig(enabled=True, adapter_type=AdapterType.FAULT_LAB),
+                metrics=CapabilityConfig(enabled=True, adapter_type=AdapterType.FAULT_LAB),
+            )
+        ]
+    )
     with TestClient(app) as client:
         yield client
     app.dependency_overrides.clear()
@@ -146,10 +191,11 @@ def prevent_real_background_execution(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def incident_payload() -> dict[str, str]:
+def incident_payload(configured_target: tuple[InvestigationTarget, Service]) -> dict[str, str]:
+    target, service = configured_target
     return {
-        "service": "order-service",
-        "environment": "local",
+        "target_id": str(target.id),
+        "service_id": str(service.id),
         "description": "POST /orders returns 500 after deployment.",
         "time_range_start": "2026-08-08T10:00:00+00:00",
         "time_range_end": "2026-08-08T10:05:00+00:00",
@@ -204,7 +250,9 @@ def test_create_incident_persists_open_record(
     assert stored.status == "OPEN"
     assert stored.thread_id == body["thread_id"]
     assert body["thread_id"]
-    assert body["service"] == incident_payload["service"]
+    assert body["target_id"] == incident_payload["target_id"]
+    assert body["service_id"] == incident_payload["service_id"]
+    assert body["service"] == stored.service_record.name
     assert datetime.fromisoformat(str(body["time_range_start"])) == datetime.fromisoformat(
         incident_payload["time_range_start"]
     )
@@ -227,6 +275,31 @@ def test_get_missing_incident_returns_not_found(api_client: TestClient) -> None:
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Incident not found"}
+
+
+def test_create_incident_rejects_a_service_outside_target_config_whitelist(
+    api_client: TestClient,
+    database_session: Session,
+    configured_target: tuple[InvestigationTarget, Service],
+    incident_payload: dict[str, str],
+) -> None:
+    target, _ = configured_target
+    unconfigured_service = Service(
+        target_id=target.id,
+        name="unconfigured-service",
+        display_name="Unconfigured service",
+        enabled=True,
+    )
+    database_session.add(unconfigured_service)
+    database_session.commit()
+
+    response = api_client.post(
+        "/incidents",
+        json={**incident_payload, "service_id": str(unconfigured_service.id)},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "service is not whitelisted for InvestigationTarget"
 
 
 def test_workflow_api_start_and_read_use_the_persisted_thread(
@@ -678,15 +751,19 @@ def test_workflow_get_invalid_persisted_action_parameters_returns_conflict(
 def test_start_route_registers_background_execution_without_running_it(
     database_session: Session,
     incident_payload: dict[str, str],
+    configured_target: tuple[InvestigationTarget, Service],
 ) -> None:
+    target, service = configured_target
     incident = Incident(
-        service=incident_payload["service"],
-        environment=incident_payload["environment"],
+        service=service.name,
+        environment=target.environment,
         status="OPEN",
         description=incident_payload["description"],
         time_range_start=datetime.fromisoformat(incident_payload["time_range_start"]),
         time_range_end=datetime.fromisoformat(incident_payload["time_range_end"]),
         thread_id=str(uuid4()),
+        target=target,
+        service_record=service,
     )
     database_session.add(incident)
     database_session.commit()
@@ -812,7 +889,7 @@ def test_incident_rejects_invalid_time_range(
     assert response.status_code == 422
 
 
-@pytest.mark.parametrize("field_name", ["service", "environment", "description"])
+@pytest.mark.parametrize("field_name", ["description"])
 def test_incident_rejects_blank_required_text(
     api_client: TestClient, incident_payload: dict[str, str], field_name: str
 ) -> None:

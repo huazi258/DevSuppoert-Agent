@@ -5,6 +5,8 @@ from typing import Literal
 from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from devsupport_backend.target_config import InvestigationTargetConfig
+
 
 class Settings(BaseSettings):
     """Configuration loaded from environment variables when the backend starts."""
@@ -57,10 +59,17 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("PROMETHEUS_URL", "DEVSUPPORT_PROMETHEUS_URL"),
     )
+    # Compatibility-only global switch; M2.2 will select adapters from target configuration.
     runtime_evidence_provider: Literal["fault_lab", "otel_demo"] = Field(
         default="fault_lab",
         validation_alias=AliasChoices(
             "RUNTIME_EVIDENCE_PROVIDER", "DEVSUPPORT_RUNTIME_EVIDENCE_PROVIDER"
+        ),
+    )
+    investigation_target_configs: list[InvestigationTargetConfig] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices(
+            "INVESTIGATION_TARGET_CONFIGS", "DEVSUPPORT_INVESTIGATION_TARGET_CONFIGS"
         ),
     )
 

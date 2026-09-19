@@ -18,9 +18,10 @@ from devsupport_backend.approvals import (
     PostgresWorkflowStateReader,
     WorkflowStateReader,
 )
+from devsupport_backend.config import settings
 from devsupport_backend.database import SessionLocal, get_session
 from devsupport_backend.investigation_status import InvestigationStatus
-from devsupport_backend.models import Approval, Incident, Report
+from devsupport_backend.models import Approval, Incident, InvestigationTarget, Report, Service
 from devsupport_backend.schemas.approvals import ApprovalCreate, ApprovalResponse
 from devsupport_backend.schemas.incidents import IncidentCreate, IncidentResponse, ReportResponse
 from devsupport_backend.schemas.workflows import (
@@ -29,6 +30,7 @@ from devsupport_backend.schemas.workflows import (
     WorkflowStartResponse,
     WorkflowTimelineResponse,
 )
+from devsupport_backend.target_config import TargetConfigError, TargetConfigRegistry
 from devsupport_backend.workflow_console import (
     PostgresWorkflowRuntime,
     WorkflowConflictError,
@@ -67,6 +69,16 @@ ApprovalWorkflowCoordinatorDependency = Annotated[
 WorkflowRuntimeDependency = Annotated[WorkflowRuntime, Depends(get_workflow_runtime)]
 
 
+def get_target_config_registry() -> TargetConfigRegistry:
+    """Load deployment-owned target capabilities without exposing provider credentials."""
+    return TargetConfigRegistry.from_settings(settings)
+
+
+TargetConfigRegistryDependency = Annotated[
+    TargetConfigRegistry, Depends(get_target_config_registry)
+]
+
+
 def execute_accepted_start(incident_id: UUID) -> None:
     """Run one accepted workflow in an in-process task with an independent DB Session."""
     try:
@@ -83,17 +95,45 @@ def execute_accepted_start(incident_id: UUID) -> None:
 
 
 @router.post("", response_model=IncidentResponse, status_code=status.HTTP_201_CREATED)
-def create_incident(payload: IncidentCreate, session: SessionDependency) -> Incident:
+def create_incident(
+    payload: IncidentCreate,
+    session: SessionDependency,
+    target_configs: TargetConfigRegistryDependency,
+) -> Incident:
     """Persist a new OPEN incident without starting an investigation workflow."""
+    target = session.get(InvestigationTarget, payload.target_id)
+    service_record = session.scalar(
+        select(Service).where(
+            Service.id == payload.service_id,
+            Service.target_id == payload.target_id,
+        )
+    )
+    if target is None or service_record is None or not target.enabled or not service_record.enabled:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Unknown target or service",
+        )
+    try:
+        target_config = target_configs.get(target_id=target.id, slug=target.slug)
+        if target_config.environment != target.environment:
+            raise TargetConfigError("target environment does not match deployment configuration")
+        target_configs.require_service(service_record.name, target_id=target.id)
+    except TargetConfigError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(error),
+        ) from error
     incident = Incident(
-        service=payload.service,
-        environment=payload.environment,
+        service=service_record.name,
+        environment=target.environment,
         description=payload.description,
         time_range_start=payload.time_range_start,
         time_range_end=payload.time_range_end,
         status="OPEN",
         investigation_status=InvestigationStatus.OPEN,
         thread_id=str(uuid4()),
+        target=target,
+        service_record=service_record,
     )
     session.add(incident)
     session.commit()

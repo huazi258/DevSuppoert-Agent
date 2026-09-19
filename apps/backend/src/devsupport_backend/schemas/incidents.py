@@ -11,13 +11,13 @@ from devsupport_backend.investigation_status import InvestigationStatus
 class IncidentCreate(BaseModel):
     """Input required to create an incident without starting a workflow."""
 
-    service: str = Field(max_length=100)
-    environment: str = Field(max_length=50)
+    target_id: UUID
+    service_id: UUID
     description: str = Field(max_length=10_000)
     time_range_start: datetime
     time_range_end: datetime
 
-    @field_validator("service", "environment", "description")
+    @field_validator("description")
     @classmethod
     def require_non_blank_text(cls, value: str) -> str:
         """Normalize required text and reject whitespace-only values."""
@@ -48,6 +48,8 @@ class IncidentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    target_id: UUID
+    service_id: UUID
     service: str
     environment: str
     description: str
