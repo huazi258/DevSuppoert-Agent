@@ -18,12 +18,14 @@ from devsupport_backend.agent.state import (
     IntakeDecision,
     IntakeOutcome,
     PendingToolCall,
+    RuntimeFailureCategory,
     TerminalReason,
     ToolHistoryEntry,
     agent_state_to_checkpoint_payload,
     create_initial_agent_state,
 )
 from devsupport_backend.models import Incident
+from devsupport_backend.tools.registry import ToolName
 from devsupport_backend.tools.schemas import ToolError, ToolStatus
 
 
@@ -152,6 +154,11 @@ def test_state_checkpoint_payload_is_json_serializable_without_orm_or_session() 
     state["missing_information"] = ["Exact incident time range"]
     state["llm_call_count"] = 3
     state["consecutive_failures"] = 2
+    state["retry_count"] = 1
+    state["retry_pending"] = True
+    state["last_failure_category"] = RuntimeFailureCategory.TIMEOUT
+    state["last_failed_tool"] = ToolName.QUERY_METRICS
+    state["last_failed_tool_arguments"] = {"service": "order-service", "environment": "local"}
     state["workflow_retry_count"] = 2
     state["terminal_reason"] = TerminalReason.INVESTIGATION_INCONCLUSIVE
     state["tool_history"].append(
@@ -172,6 +179,10 @@ def test_state_checkpoint_payload_is_json_serializable_without_orm_or_session() 
     assert payload["missing_information"] == ["Exact incident time range"]
     assert payload["llm_call_count"] == 3
     assert payload["consecutive_failures"] == 2
+    assert payload["retry_count"] == 1
+    assert payload["retry_pending"] is True
+    assert payload["last_failure_category"] == "timeout"
+    assert payload["last_failed_tool"] == "query_metrics"
     assert payload["workflow_retry_count"] == 2
     assert payload["terminal_reason"] == "investigation_inconclusive"
 

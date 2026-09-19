@@ -9,11 +9,13 @@ from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
 from devsupport_backend.agent.llm import LLMError, LLMProviderTimeoutError
+from devsupport_backend.agent.nodes.planner import PlanningError
 from devsupport_backend.agent.nodes.tool_execution import ToolExecutionError
-from devsupport_backend.agent.state import FailureCategory
+from devsupport_backend.agent.state import FailureCategory, RuntimeFailureCategory
 from devsupport_backend.agent.structured_output import StructuredOutputParseError
 from devsupport_backend.rag.embeddings import EmbeddingError
 from devsupport_backend.rag.retrieval import RetrievalError
+from devsupport_backend.tools.adapter_contracts import AdapterError
 from devsupport_backend.tools.deployments import DeploymentAdapterError
 from devsupport_backend.tools.logs import LogsAdapterError
 from devsupport_backend.tools.metrics import MetricsAdapterError
@@ -27,6 +29,13 @@ class FailureClassification:
     category: FailureCategory
     retryable: bool
     safe_message: str
+
+
+@dataclass(frozen=True)
+class RuntimeFailureClassification:
+    """V2 retry facts derived only from typed exceptions, never provider text."""
+
+    category: RuntimeFailureCategory
 
 
 _SAFE_MESSAGES = {
@@ -73,6 +82,29 @@ def classify_workflow_failure(error: BaseException) -> FailureClassification:
     if any(isinstance(item, (PsycopgError, SQLAlchemyError)) for item in chain):
         return _classification(FailureCategory.PERSISTENCE_FAILURE, retryable=False)
     return _classification(FailureCategory.WORKFLOW_RUNTIME_FAILURE, retryable=False)
+
+
+def classify_runtime_failure(error: BaseException) -> RuntimeFailureClassification | None:
+    """Return a retry-policy category for a typed V2 node failure when one exists."""
+    chain = tuple(_exception_chain(error))
+    if any(isinstance(item, StructuredOutputParseError) for item in chain):
+        return RuntimeFailureClassification(RuntimeFailureCategory.STRUCTURED_OUTPUT_FAILURE)
+    if any(isinstance(item, PlanningError) for item in chain):
+        return RuntimeFailureClassification(RuntimeFailureCategory.PLANNER_FAILURE)
+    if any(isinstance(item, LLMProviderTimeoutError) for item in chain):
+        return RuntimeFailureClassification(RuntimeFailureCategory.TIMEOUT)
+    if any(isinstance(item, LLMError) for item in chain):
+        return RuntimeFailureClassification(RuntimeFailureCategory.PROVIDER_UNAVAILABLE)
+    if any(isinstance(item, ToolExecutionError) for item in chain):
+        return RuntimeFailureClassification(RuntimeFailureCategory.INVALID_REQUEST)
+    adapter_error = next((item for item in chain if isinstance(item, AdapterError)), None)
+    if adapter_error is not None:
+        try:
+            category = RuntimeFailureCategory(adapter_error.code)
+        except ValueError:
+            category = RuntimeFailureCategory.PROVIDER_UNAVAILABLE
+        return RuntimeFailureClassification(category)
+    return None
 
 
 def _exception_chain(error: BaseException):

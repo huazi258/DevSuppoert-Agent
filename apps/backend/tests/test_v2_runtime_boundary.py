@@ -9,8 +9,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+import devsupport_backend.agent.nodes.tool_execution as execution_module
 import devsupport_backend.agent.workflow as workflow_module
 import devsupport_backend.workflow_console as workflow_console_module
+from devsupport_backend.agent.budget import InvestigationBudget
 from devsupport_backend.agent.nodes.tool_execution import ToolExecutionDependencies
 from devsupport_backend.agent.state import (
     AgentStage,
@@ -18,10 +20,12 @@ from devsupport_backend.agent.state import (
     FinalConclusion,
     HypothesisContext,
     HypothesisStatus,
+    PendingToolCall,
     TerminalReason,
     ToolHistoryEntry,
     create_initial_agent_state,
 )
+from devsupport_backend.agent.structured_output import StructuredOutputParseError
 from devsupport_backend.agent.v2_terminalization import V2Terminalizer
 from devsupport_backend.agent.workflow import (
     InvestigationLoopLimits,
@@ -46,7 +50,14 @@ from devsupport_backend.tools.registry import (
     UnknownToolError,
     v2_tool_registry,
 )
-from devsupport_backend.tools.schemas import CitationOutput, ToolStatus
+from devsupport_backend.tools.schemas import (
+    CitationOutput,
+    MetricSnapshot,
+    QueryMetricsOutput,
+    RuntimeEvidenceProvenance,
+    ToolError,
+    ToolStatus,
+)
 from devsupport_backend.workflow_console import PostgresWorkflowRuntime
 
 
@@ -265,7 +276,7 @@ def test_v2_graph_concludes_and_terminalizes_the_current_round(
     monkeypatch.setattr(
         workflow_module,
         "_tool_execution_with_initial_evidence_batch",
-        lambda state, _: {**state, "current_stage": AgentStage.HYPOTHESIS_UPDATE},
+        lambda state, *_: {**state, "current_stage": AgentStage.HYPOTHESIS_UPDATE},
     )
     monkeypatch.setattr(
         workflow_module,
@@ -448,6 +459,103 @@ def test_v2_runtime_does_not_execute_a_successful_equivalent_tool_call(
     assert incident.investigation_status is InvestigationStatus.INCONCLUSIVE
 
 
+def test_v2_runtime_retries_timeout_within_budget_without_fabricating_evidence(
+    database_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    incident, round_record = _incident(database_session)
+    _route_v2_graph_to_planning_guard(monkeypatch)
+    pending_call = PendingToolCall(
+        investigation_goal="Collect one metric snapshot.",
+        tool_name=ToolName.QUERY_METRICS,
+        tool_arguments={"service": "order-service", "environment": "local"},
+        reason="Metrics are a legal read-only investigation path.",
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "_investigation_planning_node",
+        lambda state, *_: {
+            **state,
+            "pending_tool_call": pending_call,
+            "current_stage": AgentStage.TOOL_EXECUTION,
+        },
+    )
+    outputs = [
+        QueryMetricsOutput(
+            status=ToolStatus.FAILURE,
+            error=ToolError(code="timeout", message="safe timeout", retryable=True),
+        ),
+            QueryMetricsOutput(
+                status=ToolStatus.SUCCESS,
+                provenance=RuntimeEvidenceProvenance(
+                    source="test_adapter",
+                    service="order-service",
+                    environment="local",
+                    observed_at=datetime.now(UTC),
+                ),
+                metrics=MetricSnapshot(
+                service="order-service",
+                environment="local",
+                health_status="degraded",
+                request_count=10,
+                success_count=8,
+                error_count=2,
+                error_rate=0.2,
+                last_request_duration_ms=20.0,
+                average_request_duration_ms=15.0,
+            ),
+        ),
+    ]
+    tool_calls = 0
+
+    def query_metrics_once(*_: object) -> QueryMetricsOutput:
+        nonlocal tool_calls
+        tool_calls += 1
+        return outputs.pop(0)
+
+    monkeypatch.setattr(execution_module, "query_metrics", query_metrics_once)
+    monkeypatch.setattr(
+        workflow_module,
+        "_hypothesis_update_round_node",
+        lambda state, _: {**state, "current_stage": AgentStage.EVIDENCE_EVALUATION},
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "_evidence_evaluation_with_llm_budget",
+        lambda state, *_: {
+            **state,
+            "evaluation_decision": workflow_module.EvaluationDecision.NEEDS_MANUAL_ACTION,
+        },
+    )
+    dependencies = V2InvestigationWorkflowDependencies(
+        rag_service=object(),  # type: ignore[arg-type]
+        llm_client=_UnusedLLM(),  # type: ignore[arg-type]
+        tool_execution=ToolExecutionDependencies(  # type: ignore[arg-type]
+            rag_service=object(),
+            logs_adapter=None,
+            metrics_adapter=object(),
+            traces_adapter=None,
+            deployment_adapter=None,
+            available_tools=frozenset({ToolName.QUERY_METRICS}),
+        ),
+        evaluator=_UnusedEvaluator(),  # type: ignore[arg-type]
+    )
+
+    result = build_v2_production_investigation_graph(
+        dependencies,
+        session=database_session,
+        budget=InvestigationBudget(max_workflow_retries=1),
+    ).invoke(_state(incident, round_record))
+
+    database_session.refresh(incident)
+    assert tool_calls == 2
+    assert result["tool_call_count"] == 2
+    assert result["retry_count"] == 1
+    assert result["consecutive_failures"] == 0
+    assert result["last_failure_category"].value == "timeout"
+    assert len(result["evidence"]) == 1
+    assert incident.investigation_status is InvestigationStatus.INCONCLUSIVE
+
+
 def test_v2_concluded_state_routes_only_to_terminalization() -> None:
     state = create_initial_agent_state(
         Incident(
@@ -473,6 +581,53 @@ def test_v2_concluded_state_routes_only_to_terminalization() -> None:
     )
 
     assert workflow_module._v2_route_after_conclusion(state) == "conclusion_terminalization"
+
+
+def test_v2_structured_output_failure_uses_the_bounded_workflow_retry_budget() -> None:
+    state = create_initial_agent_state(
+        Incident(
+            id=uuid4(),
+            service="order-service",
+            environment="local",
+            description="结构化输出需要重试。",
+            time_range_start=datetime.now(UTC),
+            time_range_end=datetime.now(UTC) + timedelta(minutes=5),
+        )
+    )
+    state["current_stage"] = AgentStage.HYPOTHESIS_GENERATION
+    attempts = 0
+
+    def structured_node(current: dict[str, object]) -> dict[str, object]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise StructuredOutputParseError("raw provider response must not persist")
+        return {**current, "current_stage": AgentStage.INVESTIGATION_PLANNING}
+
+    bounded = workflow_module._v2_investigation_node(
+        "hypothesis_generation",
+        structured_node,  # type: ignore[arg-type]
+        InvestigationBudget(max_workflow_retries=1),
+        None,
+    )
+
+    retrying = bounded(state)
+    recovered = bounded(retrying)
+
+    assert retrying["retry_count"] == 1
+    assert retrying["retry_pending"] is True
+    assert retrying["last_failure_category"].value == "structured_output_failure"
+    assert (
+        workflow_module._v2_route(
+            retrying,
+            AgentStage.INVESTIGATION_PLANNING,
+            "planning_guard",
+            retry_target="hypothesis_generation",
+        )
+        == "hypothesis_generation"
+    )
+    assert recovered["retry_pending"] is False
+    assert recovered["current_stage"] is AgentStage.INVESTIGATION_PLANNING
 
 
 @pytest.mark.parametrize(

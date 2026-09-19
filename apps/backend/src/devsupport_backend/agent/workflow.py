@@ -24,6 +24,7 @@ from devsupport_backend.agent.evidence_evaluator import (
     has_active_hypothesis,
     is_conclusion_eligible,
 )
+from devsupport_backend.agent.failure import classify_runtime_failure
 from devsupport_backend.agent.llm import LLMClient
 from devsupport_backend.agent.nodes.hypothesis_generation import hypothesis_generation_node
 from devsupport_backend.agent.nodes.hypothesis_update import hypothesis_update_node
@@ -51,6 +52,7 @@ from devsupport_backend.agent.post_approval import (
     add_post_approval_continuation,
 )
 from devsupport_backend.agent.resolution_proposal import resolution_proposal_node
+from devsupport_backend.agent.retry_policy import exhausted_tool_capabilities, retry_decision
 from devsupport_backend.agent.state import (
     AgentStage,
     AgentState,
@@ -59,6 +61,7 @@ from devsupport_backend.agent.state import (
     FinalConclusion,
     HypothesisStatus,
     PolicyDecision,
+    RuntimeFailureCategory,
     TerminalReason,
 )
 from devsupport_backend.approvals import (
@@ -573,7 +576,7 @@ def build_v2_production_investigation_graph(
         _v2_investigation_node(
             "tool_execution",
             lambda state: _tool_execution_with_initial_evidence_batch(
-                state, dependencies.tool_execution
+                state, dependencies.tool_execution, effective_budget
             ),
             effective_budget,
             observer,
@@ -640,47 +643,60 @@ def build_v2_production_investigation_graph(
 
     graph.add_edge(START, "intake")
     graph.add_conditional_edges(
-        "intake", lambda state: _v2_route(state, AgentStage.RETRIEVAL), _v2_routes("retrieval")
+        "intake",
+        lambda state: _v2_route(state, AgentStage.RETRIEVAL, retry_target="intake"),
+        _v2_routes("retrieval", "intake"),
     )
     graph.add_conditional_edges(
         "retrieval",
-        lambda state: _v2_route(state, AgentStage.HYPOTHESIS_GENERATION),
-        _v2_routes("hypothesis_generation"),
+        lambda state: _v2_route(
+            state, AgentStage.HYPOTHESIS_GENERATION, retry_target="retrieval"
+        ),
+        _v2_routes("hypothesis_generation", "retrieval"),
     )
     graph.add_conditional_edges(
         "hypothesis_generation",
-        lambda state: _v2_route(state, AgentStage.INVESTIGATION_PLANNING, "planning_guard"),
-        _v2_routes("planning_guard"),
+        lambda state: _v2_route(
+            state,
+            AgentStage.INVESTIGATION_PLANNING,
+            "planning_guard",
+            retry_target="hypothesis_generation",
+        ),
+        _v2_routes("planning_guard", "hypothesis_generation"),
     )
     graph.add_conditional_edges(
         "planning_guard",
-        lambda state: _v2_route(state, AgentStage.INVESTIGATION_PLANNING),
-        _v2_routes("investigation_planning"),
+        lambda state: _v2_route(
+            state, AgentStage.INVESTIGATION_PLANNING, retry_target="planning_guard"
+        ),
+        _v2_routes("investigation_planning", "planning_guard"),
     )
     graph.add_conditional_edges(
         "investigation_planning",
-        lambda state: _v2_route(state, AgentStage.TOOL_EXECUTION),
-        _v2_routes("tool_execution"),
+        _v2_route_after_planning,
+        _v2_routes("tool_execution", "planning_guard"),
     )
     graph.add_conditional_edges(
         "tool_execution",
         _v2_route_after_tool_execution,
-        _v2_routes("hypothesis_update", "planning_guard"),
+        _v2_routes("tool_execution", "hypothesis_update", "planning_guard"),
     )
     graph.add_conditional_edges(
         "hypothesis_update",
-        lambda state: _v2_route(state, AgentStage.EVIDENCE_EVALUATION),
-        _v2_routes("evidence_evaluation"),
+        lambda state: _v2_route(
+            state, AgentStage.EVIDENCE_EVALUATION, retry_target="hypothesis_update"
+        ),
+        _v2_routes("evidence_evaluation", "hypothesis_update"),
     )
     graph.add_conditional_edges(
         "evidence_evaluation",
         _v2_route_after_evidence_evaluation,
-        _v2_routes("planning_guard", "conclusion"),
+        _v2_routes("planning_guard", "conclusion", "evidence_evaluation"),
     )
     graph.add_conditional_edges(
         "conclusion",
         _v2_route_after_conclusion,
-        _v2_routes("conclusion_terminalization"),
+        _v2_routes("conclusion_terminalization", "conclusion"),
     )
     graph.add_edge("conclusion_terminalization", END)
     graph.add_edge("inconclusive_terminalization", END)
@@ -698,12 +714,18 @@ def _v2_routes(*normal_targets: str) -> dict[str, str]:
 
 
 def _v2_route(
-    state: AgentState, expected_stage: AgentStage, normal_target: str | None = None
+    state: AgentState,
+    expected_stage: AgentStage,
+    normal_target: str | None = None,
+    *,
+    retry_target: str | None = None,
 ) -> str:
     if state.get("workflow_failure_category") is not None:
         return "failed"
     if state["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION:
         return "inconclusive"
+    if state.get("retry_pending", False) and retry_target is not None:
+        return retry_target
     if state["current_stage"] is expected_stage:
         return normal_target or expected_stage.value
     return "end"
@@ -714,6 +736,11 @@ def _v2_route_after_tool_execution(state: AgentState) -> str:
         return "failed"
     if state["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION:
         return "inconclusive"
+    if (
+        state["current_stage"] is AgentStage.TOOL_EXECUTION
+        and state["pending_tool_call"] is not None
+    ):
+        return "tool_execution"
     if state["current_stage"] is AgentStage.HYPOTHESIS_UPDATE:
         return "hypothesis_update"
     if state["current_stage"] is AgentStage.INVESTIGATION_PLANNING:
@@ -721,9 +748,30 @@ def _v2_route_after_tool_execution(state: AgentState) -> str:
     return "end"
 
 
+def _v2_route_after_planning(state: AgentState) -> str:
+    """Retry a bounded planner failure through the normal budget guard."""
+    if state.get("workflow_failure_category") is not None:
+        return "failed"
+    if state["evaluation_decision"] is EvaluationDecision.NEEDS_MANUAL_ACTION:
+        return "inconclusive"
+    if (
+        state.get("retry_pending", False)
+        and state["current_stage"] is AgentStage.INVESTIGATION_PLANNING
+    ):
+        return "planning_guard"
+    if state["current_stage"] is AgentStage.TOOL_EXECUTION:
+        return "tool_execution"
+    return "end"
+
+
 def _v2_route_after_evidence_evaluation(state: AgentState) -> str:
     if state.get("workflow_failure_category") is not None:
         return "failed"
+    if (
+        state.get("retry_pending", False)
+        and state["current_stage"] is AgentStage.EVIDENCE_EVALUATION
+    ):
+        return "evidence_evaluation"
     if state["evaluation_decision"] is EvaluationDecision.CONCLUDE:
         return "conclusion"
     if state["evaluation_decision"] is EvaluationDecision.CONTINUE:
@@ -734,6 +782,8 @@ def _v2_route_after_evidence_evaluation(state: AgentState) -> str:
 def _v2_route_after_conclusion(state: AgentState) -> str:
     if state.get("workflow_failure_category") is not None:
         return "failed"
+    if state.get("retry_pending", False) and state["current_stage"] is AgentStage.CONCLUSION:
+        return "conclusion"
     return "conclusion_terminalization" if state["final_conclusion"] is not None else "inconclusive"
 
 
@@ -743,23 +793,81 @@ def _v2_investigation_node(
     budget: InvestigationBudget,
     observer: InvestigationNodeObserver | None,
 ) -> Callable[[AgentState], AgentState]:
-    """Turn controlled V2 node errors into a FAILED terminal report instead of retries."""
+    """Apply bounded retries to typed V2 failures before producing a safe terminal state."""
 
     wrapped = _investigation_node(node_name, node, budget, observer)
 
     def bounded(state: AgentState) -> AgentState:
         try:
-            return wrapped(state)
-        except Exception:
+            updated = wrapped(state)
+            return {**updated, "retry_pending": False}
+        except Exception as error:
+            classification = classify_runtime_failure(error)
+            if classification is not None:
+                decision = retry_decision(state, budget, classification.category)
+                if decision.retry:
+                    return {
+                        **state,
+                        "retry_count": state.get("retry_count", 0) + 1,
+                        "retry_pending": True,
+                        "last_failure_category": classification.category,
+                        "workflow_failure_category": None,
+                        "workflow_failure_retryable": None,
+                        "workflow_failure_safe_message": None,
+                    }
+                if decision.exhausted:
+                    return _v2_retry_exhausted_state(state, classification.category)
             return {
                 **state,
-                "workflow_failure_category": FailureCategory.WORKFLOW_RUNTIME_FAILURE,
+                "last_failure_category": (
+                    classification.category
+                    if classification is not None
+                    else state.get("last_failure_category")
+                ),
+                "workflow_failure_category": _legacy_failure_category(
+                    classification.category if classification is not None else None
+                ),
                 "workflow_failure_retryable": False,
                 "workflow_failure_safe_message": "调查运行遇到受控错误。",
                 "terminal_reason": TerminalReason.WORKFLOW_FAILURE,
             }
 
     return bounded
+
+
+def _v2_retry_exhausted_state(
+    state: AgentState, category: RuntimeFailureCategory
+) -> AgentState:
+    """End after a retryable V2 failure consumes the configured retry budget."""
+    return {
+        **state,
+        "last_failure_category": category,
+        "workflow_failure_category": _legacy_failure_category(category),
+        "workflow_failure_retryable": False,
+        "workflow_failure_safe_message": "调查运行重试次数已耗尽。",
+        "terminal_reason": TerminalReason.RETRY_BUDGET_EXHAUSTED,
+    }
+
+
+def _legacy_failure_category(
+    category: RuntimeFailureCategory | None,
+) -> FailureCategory:
+    """Keep legacy failure projections while V2 retains the exact safe category."""
+    if category is RuntimeFailureCategory.STRUCTURED_OUTPUT_FAILURE:
+        return FailureCategory.STRUCTURED_OUTPUT_INVALID
+    if category in {
+        RuntimeFailureCategory.TIMEOUT,
+        RuntimeFailureCategory.PROVIDER_UNAVAILABLE,
+        RuntimeFailureCategory.PLANNER_FAILURE,
+    }:
+        return FailureCategory.LLM_PROVIDER_ERROR
+    if category in {
+        RuntimeFailureCategory.INVALID_PROVIDER_RESPONSE,
+        RuntimeFailureCategory.INVALID_REQUEST,
+        RuntimeFailureCategory.CAPABILITY_UNAVAILABLE,
+    }:
+        return FailureCategory.TOOL_FAILURE
+    return FailureCategory.WORKFLOW_RUNTIME_FAILURE
 
 
 def _v2_conclusion_node(state: AgentState) -> AgentState:
@@ -862,17 +970,18 @@ def _investigation_planning_node(
     """Use bounded first-pass evidence collection before falling back to the LLM planner."""
     if state["current_stage"] is not AgentStage.INVESTIGATION_PLANNING:
         return state
-    if not available_tools:
+    remaining_tools = available_tools - exhausted_tool_capabilities(state)
+    if not remaining_tools:
         return {
             **state,
             "evaluation_decision": EvaluationDecision.NEEDS_MANUAL_ACTION,
             "terminal_reason": TerminalReason.NO_FURTHER_INVESTIGATION,
         }
-    initial_plan = deterministic_initial_evidence_plan(state, available_tools)
+    initial_plan = deterministic_initial_evidence_plan(state, remaining_tools)
     if initial_plan is None:
         if _llm_budget_exhausted(state, budget):
             return _llm_budget_exhausted_state(state)
-        return investigation_planner_node(state, llm_client, available_tools)
+        return investigation_planner_node(state, llm_client, remaining_tools)
     return {
         **state,
         "current_goal": initial_plan.investigation_goal,
@@ -882,10 +991,12 @@ def _investigation_planning_node(
 
 
 def _tool_execution_with_initial_evidence_batch(
-    state: AgentState, dependencies: ToolExecutionDependencies
+    state: AgentState,
+    dependencies: ToolExecutionDependencies,
+    budget: InvestigationBudget | None = None,
 ) -> AgentState:
     """Collect the complementary initial probe before spending an LLM update call."""
-    updated = tool_execution_node(state, dependencies)
+    updated = tool_execution_node(state, dependencies, budget=budget)
     if not _should_collect_complementary_initial_probe(updated, dependencies.available_tools):
         return updated
     return {**updated, "current_stage": AgentStage.INVESTIGATION_PLANNING}

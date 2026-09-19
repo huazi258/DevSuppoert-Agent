@@ -8,12 +8,21 @@ from uuid import UUID
 
 from pydantic import BaseModel, ValidationError
 
+from devsupport_backend.agent.budget import InvestigationBudget
 from devsupport_backend.agent.nodes.retrieval import _append_unique_evidence
+from devsupport_backend.agent.retry_policy import (
+    classify_tool_error,
+    counts_as_execution_failure,
+    retry_decision,
+)
 from devsupport_backend.agent.state import (
     AgentStage,
     AgentState,
     EvidenceContext,
+    FailureCategory,
     PendingToolCall,
+    RuntimeFailureCategory,
+    TerminalReason,
     ToolHistoryEntry,
 )
 from devsupport_backend.rag.retrieval import RAGService
@@ -86,7 +95,12 @@ class ToolExecutionDependencies:
             raise ValueError("query_metrics requires a configured metrics adapter")
 
 
-def tool_execution_node(state: AgentState, dependencies: ToolExecutionDependencies) -> AgentState:
+def tool_execution_node(
+    state: AgentState,
+    dependencies: ToolExecutionDependencies,
+    *,
+    budget: InvestigationBudget | None = None,
+) -> AgentState:
     """Execute one revalidated read-only Tool and record compact structured facts."""
     pending_tool_call = state["pending_tool_call"]
     if pending_tool_call is None or state["current_stage"] != AgentStage.TOOL_EXECUTION:
@@ -99,12 +113,18 @@ def tool_execution_node(state: AgentState, dependencies: ToolExecutionDependenci
     if pending_tool_call.tool_name not in dependencies.available_tools:
         return _capability_unavailable_state(state, pending_tool_call)
 
-    validated_input = _validate_pending_arguments(
-        pending_tool_call.tool_name,
-        pending_tool_call.tool_arguments,
-        state,
-    )
-    tool_output = _dispatch(pending_tool_call.tool_name, validated_input, dependencies)
+    try:
+        validated_input = _validate_pending_arguments(
+            pending_tool_call.tool_name,
+            pending_tool_call.tool_arguments,
+            state,
+        )
+    except ToolExecutionError:
+        return _invalid_request_state(state, pending_tool_call)
+    try:
+        tool_output = _dispatch(pending_tool_call.tool_name, validated_input, dependencies)
+    except Exception:
+        return _provider_exception_state(state, pending_tool_call, budget)
     tool_history_entry = ToolHistoryEntry(
         tool_name=pending_tool_call.tool_name,
         tool_arguments=validated_input.model_dump(mode="json"),
@@ -114,14 +134,7 @@ def tool_execution_node(state: AgentState, dependencies: ToolExecutionDependenci
     )
 
     if tool_output.status is not ToolStatus.SUCCESS:
-        return {
-            **state,
-            "tool_history": [*state["tool_history"], tool_history_entry],
-            "tool_call_count": state["tool_call_count"] + 1,
-            "consecutive_failures": state.get("consecutive_failures", 0) + 1,
-            "pending_tool_call": None,
-            "current_stage": AgentStage.INVESTIGATION_PLANNING,
-        }
+        return _tool_failure_state(state, pending_tool_call, tool_history_entry, budget)
 
     evidence, evidence_ids = _to_evidence(state, pending_tool_call.tool_name, tool_output)
     tool_history_entry = tool_history_entry.model_copy(update={"evidence_ids": evidence_ids})
@@ -131,6 +144,7 @@ def tool_execution_node(state: AgentState, dependencies: ToolExecutionDependenci
         "tool_history": [*state["tool_history"], tool_history_entry],
         "tool_call_count": state["tool_call_count"] + 1,
         "consecutive_failures": 0,
+        "retry_pending": False,
         "pending_tool_call": None,
         "current_stage": AgentStage.HYPOTHESIS_UPDATE,
     }
@@ -149,13 +163,140 @@ def _capability_unavailable_state(
             message="The requested investigation capability is not enabled.",
         ),
     )
+    return _record_nonretryable_tool_failure(
+        state,
+        pending_tool_call,
+        entry,
+        RuntimeFailureCategory.CAPABILITY_UNAVAILABLE,
+    )
+
+
+def _invalid_request_state(state: AgentState, pending_tool_call: PendingToolCall) -> AgentState:
+    """Record a rejected request without retaining unvalidated planner input."""
+    entry = ToolHistoryEntry(
+        tool_name=pending_tool_call.tool_name,
+        tool_arguments=_safe_pending_arguments(pending_tool_call),
+        status=ToolStatus.FAILURE,
+        error=ToolError(
+            code=RuntimeFailureCategory.INVALID_REQUEST.value,
+            message="The investigation request is invalid.",
+        ),
+    )
+    return _record_nonretryable_tool_failure(
+        state,
+        pending_tool_call,
+        entry,
+        RuntimeFailureCategory.INVALID_REQUEST,
+    )
+
+
+def _provider_exception_state(
+    state: AgentState,
+    pending_tool_call: PendingToolCall,
+    budget: InvestigationBudget | None,
+) -> AgentState:
+    """Convert an unexpected provider exception into a bounded safe failure record."""
+    entry = ToolHistoryEntry(
+        tool_name=pending_tool_call.tool_name,
+        tool_arguments=_safe_pending_arguments(pending_tool_call),
+        status=ToolStatus.FAILURE,
+        error=ToolError(
+            code=RuntimeFailureCategory.PROVIDER_UNAVAILABLE.value,
+            message="The runtime evidence provider is unavailable.",
+            retryable=True,
+        ),
+    )
+    return _tool_failure_state(state, pending_tool_call, entry, budget)
+
+
+def _tool_failure_state(
+    state: AgentState,
+    pending_tool_call: PendingToolCall,
+    entry: ToolHistoryEntry,
+    budget: InvestigationBudget | None,
+) -> AgentState:
+    """Record one Tool failure, then retry, fall back, or fail deterministically."""
+    assert entry.error is not None
+    category = classify_tool_error(entry.error)
+    next_tool_call_count = state["tool_call_count"] + 1
+    base_state = {
+        **state,
+        "tool_history": [*state["tool_history"], entry],
+        "tool_call_count": next_tool_call_count,
+        "consecutive_failures": (
+            state.get("consecutive_failures", 0) + 1
+            if counts_as_execution_failure(category)
+            else state.get("consecutive_failures", 0)
+        ),
+        "last_failure_category": category,
+        "last_failed_tool": pending_tool_call.tool_name,
+        "last_failed_tool_arguments": entry.tool_arguments,
+        "pending_tool_call": None,
+        "current_stage": AgentStage.INVESTIGATION_PLANNING,
+    }
+    if budget is None:
+        return base_state
+    if (
+        counts_as_execution_failure(category)
+        and base_state["consecutive_failures"] >= budget.max_consecutive_failures
+    ):
+        return {
+            **base_state,
+            "workflow_failure_category": FailureCategory.TOOL_FAILURE,
+            "workflow_failure_retryable": False,
+            "workflow_failure_safe_message": "调查工具连续执行失败，已停止本轮调查。",
+            "terminal_reason": TerminalReason.REPEATED_FAILURES,
+        }
+    decision = retry_decision(
+        state,
+        budget,
+        category,
+        next_tool_call_count=next_tool_call_count,
+    )
+    if decision.retry:
+        return {
+            **base_state,
+            "retry_count": state.get("retry_count", 0) + 1,
+            "pending_tool_call": pending_tool_call,
+            "current_stage": AgentStage.TOOL_EXECUTION,
+        }
+    if decision.exhausted:
+        return {
+            **base_state,
+            "workflow_failure_category": FailureCategory.TOOL_FAILURE,
+            "workflow_failure_retryable": False,
+            "workflow_failure_safe_message": "调查工具重试次数已耗尽。",
+            "terminal_reason": TerminalReason.RETRY_BUDGET_EXHAUSTED,
+        }
+    return base_state
+
+
+def _record_nonretryable_tool_failure(
+    state: AgentState,
+    pending_tool_call: PendingToolCall,
+    entry: ToolHistoryEntry,
+    category: RuntimeFailureCategory,
+) -> AgentState:
+    """Fall back to another legal Tool without inflating the execution failure streak."""
     return {
         **state,
         "tool_history": [*state["tool_history"], entry],
         "tool_call_count": state["tool_call_count"] + 1,
-        "consecutive_failures": state.get("consecutive_failures", 0) + 1,
+        "last_failure_category": category,
+        "last_failed_tool": pending_tool_call.tool_name,
+        "last_failed_tool_arguments": entry.tool_arguments,
         "pending_tool_call": None,
         "current_stage": AgentStage.INVESTIGATION_PLANNING,
+    }
+
+
+def _safe_pending_arguments(pending_tool_call: PendingToolCall) -> dict[str, object]:
+    """Retain only registered input keys after validation fails, excluding arbitrary payloads."""
+    input_model = v2_tool_registry.get(pending_tool_call.tool_name).input_model
+    return {
+        key: value
+        for key, value in pending_tool_call.tool_arguments.items()
+        if key in input_model.model_fields
     }
 
 

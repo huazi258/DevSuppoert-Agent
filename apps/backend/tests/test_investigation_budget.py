@@ -155,6 +155,8 @@ def test_budget_counters_survive_checkpoint_resume() -> None:
             "investigation_round": 2,
             "tool_call_count": 3,
             "consecutive_failures": 1,
+            "retry_count": 1,
+            "retry_pending": True,
         }
     )
     checkpointer = InMemorySaver()
@@ -168,6 +170,8 @@ def test_budget_counters_survive_checkpoint_resume() -> None:
         assert current["investigation_round"] == 2
         assert current["tool_call_count"] == 3
         assert current["consecutive_failures"] == 1
+        assert current["retry_count"] == 1
+        assert current["retry_pending"] is True
         return current
 
     graph.add_node("checkpoint_pause", checkpoint_pause)
@@ -186,9 +190,13 @@ def test_budget_counters_survive_checkpoint_resume() -> None:
     assert paused["investigation_round"] == 2
     assert paused["tool_call_count"] == 3
     assert paused["consecutive_failures"] == 1
+    assert paused["retry_count"] == 1
+    assert paused["retry_pending"] is True
     assert resumed["investigation_round"] == 2
     assert resumed["tool_call_count"] == 3
     assert resumed["consecutive_failures"] == 1
+    assert resumed["retry_count"] == 1
+    assert resumed["retry_pending"] is True
 
 
 def test_retry_usage_is_persisted_before_a_later_retry_invocation() -> None:

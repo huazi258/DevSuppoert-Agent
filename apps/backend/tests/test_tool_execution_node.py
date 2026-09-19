@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 
 import devsupport_backend.agent.nodes.tool_execution as execution_module
+from devsupport_backend.agent.budget import InvestigationBudget
 from devsupport_backend.agent.nodes.tool_execution import (
     ToolExecutionDependencies,
     ToolExecutionError,
@@ -301,6 +302,133 @@ def test_failed_tool_records_error_without_evidence_and_returns_to_planning(
     assert updated["hypotheses"] == state["hypotheses"]
 
 
+@pytest.mark.parametrize(
+    "error_code", ["timeout", "provider_unavailable", "invalid_provider_response"]
+)
+def test_retryable_tool_failure_retries_within_the_runtime_budget(
+    monkeypatch: pytest.MonkeyPatch, error_code: str
+) -> None:
+    state = build_execution_state(
+        ToolName.QUERY_METRICS, tool_arguments(ToolName.QUERY_METRICS)
+    )
+    outputs = [
+        QueryMetricsOutput(
+            status=ToolStatus.FAILURE,
+            error=ToolError(code=error_code, message="safe failure", retryable=True),
+        ),
+        successful_output(ToolName.QUERY_METRICS),
+    ]
+    monkeypatch.setattr(execution_module, "query_metrics", lambda *_: outputs.pop(0))
+    budget = InvestigationBudget(max_workflow_retries=1)
+
+    retrying = tool_execution_node(state, fake_dependencies(), budget=budget)
+    recovered = tool_execution_node(retrying, fake_dependencies(), budget=budget)
+
+    assert retrying["tool_call_count"] == 1
+    assert retrying["retry_count"] == 1
+    assert retrying["consecutive_failures"] == 1
+    assert retrying["pending_tool_call"] is not None
+    assert retrying["current_stage"] is AgentStage.TOOL_EXECUTION
+    assert recovered["tool_call_count"] == 2
+    assert recovered["retry_count"] == 1
+    assert recovered["consecutive_failures"] == 0
+    assert recovered["evidence"]
+
+
+def test_retryable_tool_failure_exhaustion_fails_without_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = build_execution_state(
+        ToolName.QUERY_METRICS, tool_arguments(ToolName.QUERY_METRICS)
+    )
+    failure = QueryMetricsOutput(
+        status=ToolStatus.FAILURE,
+        error=ToolError(code="timeout", message="safe timeout", retryable=True),
+    )
+    monkeypatch.setattr(execution_module, "query_metrics", lambda *_: failure)
+    budget = InvestigationBudget(max_workflow_retries=1)
+
+    retrying = tool_execution_node(state, fake_dependencies(), budget=budget)
+    exhausted = tool_execution_node(retrying, fake_dependencies(), budget=budget)
+
+    assert exhausted["tool_call_count"] == 2
+    assert exhausted["retry_count"] == 1
+    assert exhausted["evidence"] == []
+    assert exhausted["terminal_reason"].value == "retry_budget_exhausted"
+    assert exhausted["workflow_failure_category"] is not None
+
+
+@pytest.mark.parametrize("error_code", ["invalid_request", "capability_unavailable"])
+def test_nonretryable_tool_failure_falls_back_without_failure_streak(
+    monkeypatch: pytest.MonkeyPatch, error_code: str
+) -> None:
+    state = build_execution_state(
+        ToolName.QUERY_METRICS, tool_arguments(ToolName.QUERY_METRICS)
+    )
+    output = QueryMetricsOutput(
+        status=ToolStatus.FAILURE,
+        error=ToolError(code=error_code, message="safe request failure"),
+    )
+    monkeypatch.setattr(execution_module, "query_metrics", lambda *_: output)
+
+    updated = tool_execution_node(
+        state, fake_dependencies(), budget=InvestigationBudget(max_workflow_retries=3)
+    )
+
+    assert updated["current_stage"] is AgentStage.INVESTIGATION_PLANNING
+    assert updated["pending_tool_call"] is None
+    assert updated["retry_count"] == 0
+    assert updated["consecutive_failures"] == 0
+    assert updated["last_failure_category"].value == error_code
+    assert updated["evidence"] == []
+
+
+def test_disabled_capability_does_not_increment_the_execution_failure_streak() -> None:
+    state = build_execution_state(
+        ToolName.QUERY_METRICS, tool_arguments(ToolName.QUERY_METRICS)
+    )
+    dependencies = ToolExecutionDependencies(  # type: ignore[arg-type]
+        rag_service=object(),
+        logs_adapter=None,
+        metrics_adapter=None,
+        traces_adapter=None,
+        deployment_adapter=None,
+        available_tools=frozenset(),
+    )
+
+    updated = tool_execution_node(
+        state, dependencies, budget=InvestigationBudget(max_workflow_retries=3)
+    )
+
+    assert updated["retry_count"] == 0
+    assert updated["consecutive_failures"] == 0
+    assert updated["last_failure_category"].value == "capability_unavailable"
+    assert updated["tool_history"][0].status is ToolStatus.UNAVAILABLE
+
+
+def test_raw_provider_exception_is_replaced_with_a_safe_retryable_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = build_execution_state(
+        ToolName.QUERY_METRICS, tool_arguments(ToolName.QUERY_METRICS)
+    )
+    monkeypatch.setattr(
+        execution_module,
+        "query_metrics",
+        lambda *_: (_ for _ in ()).throw(RuntimeError("token=top-secret")),
+    )
+
+    updated = tool_execution_node(
+        state, fake_dependencies(), budget=InvestigationBudget(max_workflow_retries=1)
+    )
+
+    history_error = updated["tool_history"][0].error
+    assert history_error is not None
+    assert history_error.code == "provider_unavailable"
+    assert "top-secret" not in history_error.message
+    assert "top-secret" not in str(updated)
+
+
 def test_executor_rejects_tampered_rollback_before_dispatch(monkeypatch) -> None:
     state = build_execution_state(
         ToolName.ROLLBACK_DEPLOYMENT,
@@ -360,9 +488,11 @@ def test_executor_revalidates_tampered_pending_arguments_before_dispatch(monkeyp
 
     monkeypatch.setattr(execution_module, "query_logs", fake_query_logs)
 
-    with pytest.raises(ToolExecutionError, match="pending tool arguments are invalid"):
-        tool_execution_node(state, fake_dependencies())
+    updated = tool_execution_node(state, fake_dependencies())
 
     assert calls == 0
-    assert state["tool_history"] == []
-    assert state["tool_call_count"] == 0
+    assert updated["tool_call_count"] == 1
+    assert updated["consecutive_failures"] == 0
+    assert updated["last_failure_category"].value == "invalid_request"
+    assert updated["tool_history"][0].error is not None
+    assert updated["tool_history"][0].error.code == "invalid_request"

@@ -72,6 +72,18 @@ class FailureCategory(StrEnum):
     WORKFLOW_RUNTIME_FAILURE = "WORKFLOW_RUNTIME_FAILURE"
 
 
+class RuntimeFailureCategory(StrEnum):
+    """Finite V2 failure facts used for retry and fallback decisions."""
+
+    TIMEOUT = "timeout"
+    PROVIDER_UNAVAILABLE = "provider_unavailable"
+    INVALID_PROVIDER_RESPONSE = "invalid_provider_response"
+    INVALID_REQUEST = "invalid_request"
+    CAPABILITY_UNAVAILABLE = "capability_unavailable"
+    PLANNER_FAILURE = "planner_failure"
+    STRUCTURED_OUTPUT_FAILURE = "structured_output_failure"
+
+
 class TerminalReason(StrEnum):
     """Stable reasons for a workflow's deliberate non-resolved terminal path."""
 
@@ -79,6 +91,7 @@ class TerminalReason(StrEnum):
     ITERATION_BUDGET_EXHAUSTED = "iteration_budget_exhausted"
     TOOL_BUDGET_EXHAUSTED = "tool_budget_exhausted"
     REPEATED_FAILURES = "repeated_failures"
+    RETRY_BUDGET_EXHAUSTED = "retry_budget_exhausted"
     NO_FURTHER_INVESTIGATION = "no_further_investigation"
     ACTIVE_EXECUTION_BUDGET_EXHAUSTED = "active_execution_budget_exhausted"
     LLM_CALL_BUDGET_EXHAUSTED = "llm_call_budget_exhausted"
@@ -394,6 +407,11 @@ class AgentState(TypedDict):
     investigation_round: int
     tool_call_count: int
     consecutive_failures: int
+    retry_count: int
+    retry_pending: bool
+    last_failure_category: RuntimeFailureCategory | None
+    last_failed_tool: ToolName | None
+    last_failed_tool_arguments: dict[str, JsonValue] | None
     llm_call_count: int
     workflow_retry_count: int
     active_execution_seconds: float
@@ -439,6 +457,11 @@ def create_initial_agent_state(
         "investigation_round": 0,
         "tool_call_count": 0,
         "consecutive_failures": 0,
+        "retry_count": 0,
+        "retry_pending": False,
+        "last_failure_category": None,
+        "last_failed_tool": None,
+        "last_failed_tool_arguments": None,
         "llm_call_count": 0,
         "workflow_retry_count": 0,
         "active_execution_seconds": 0.0,
@@ -477,6 +500,17 @@ def agent_state_to_checkpoint_payload(state: AgentState) -> dict[str, object]:
         "investigation_round": state["investigation_round"],
         "tool_call_count": state["tool_call_count"],
         "consecutive_failures": state.get("consecutive_failures", 0),
+        "retry_count": state.get("retry_count", 0),
+        "retry_pending": state.get("retry_pending", False),
+        "last_failure_category": (
+            state["last_failure_category"].value
+            if state.get("last_failure_category") is not None
+            else None
+        ),
+        "last_failed_tool": (
+            state["last_failed_tool"].value if state.get("last_failed_tool") is not None else None
+        ),
+        "last_failed_tool_arguments": state.get("last_failed_tool_arguments"),
         "llm_call_count": state["llm_call_count"],
         "workflow_retry_count": state["workflow_retry_count"],
         "active_execution_seconds": state.get("active_execution_seconds", 0.0),
