@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    CheckConstraint,
     Computed,
     DateTime,
     Float,
@@ -73,6 +74,9 @@ class InvestigationTarget(TimestampMixin, Base):
     services: Mapped[list["Service"]] = relationship(
         back_populates="target", cascade="all, delete-orphan"
     )
+    knowledge_documents: Mapped[list["KnowledgeDocument"]] = relationship(
+        back_populates="target", overlaps="service_record,knowledge_documents"
+    )
     incidents: Mapped[list["Incident"]] = relationship(back_populates="target")
 
 
@@ -97,6 +101,9 @@ class Service(TimestampMixin, Base):
     target: Mapped[InvestigationTarget] = relationship(back_populates="services")
     incidents: Mapped[list["Incident"]] = relationship(
         back_populates="service_record", overlaps="incidents,target"
+    )
+    knowledge_documents: Mapped[list["KnowledgeDocument"]] = relationship(
+        back_populates="service_record", overlaps="knowledge_documents,target"
     )
 
 
@@ -380,16 +387,61 @@ class Report(TimestampMixin, IncidentRecordMixin, Base):
 
 class KnowledgeDocument(TimestampMixin, Base):
     __tablename__ = "knowledge_documents"
+    __table_args__ = (
+        CheckConstraint(
+            "scope IN ('shared', 'service')",
+            name="ck_knowledge_documents_scope",
+        ),
+        CheckConstraint(
+            "document_type IN ('architecture', 'runbook', 'postmortem', 'config_note')",
+            name="ck_knowledge_documents_document_type",
+        ),
+        CheckConstraint(
+            "status IN ('enabled', 'disabled')",
+            name="ck_knowledge_documents_status",
+        ),
+        CheckConstraint(
+            "environment <> ''",
+            name="ck_knowledge_documents_environment_not_blank",
+        ),
+        CheckConstraint(
+            "(scope = 'shared' AND service_id IS NULL AND service IS NULL) "
+            "OR (scope = 'service' AND service_id IS NOT NULL)",
+            name="ck_knowledge_documents_scope_service",
+        ),
+        ForeignKeyConstraint(
+            ["service_id", "target_id"],
+            ["services.id", "services.target_id"],
+            name="knowledge_documents_service_id_target_id_fkey",
+            ondelete="RESTRICT",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     source_path: Mapped[str] = mapped_column(String(500), unique=True, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_id: Mapped[UUID] = mapped_column(
+        ForeignKey("investigation_targets.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    scope: Mapped[str] = mapped_column(String(20), nullable=False, default="shared")
+    service_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=True, index=True
+    )
+    environment: Mapped[str] = mapped_column(String(50), nullable=False, default="common")
     document_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    version: Mapped[str] = mapped_column(String(100), nullable=False, default="v1")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="enabled")
+    # Retained for legacy retrieval projection until M3.3 switches to scoped query filters.
     service: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    environment: Mapped[str | None] = mapped_column(String(50), nullable=True)
     metadata_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
 
+    target: Mapped[InvestigationTarget] = relationship(
+        back_populates="knowledge_documents", overlaps="knowledge_documents,service_record"
+    )
+    service_record: Mapped[Service | None] = relationship(
+        back_populates="knowledge_documents", overlaps="knowledge_documents,target"
+    )
     chunks: Mapped[list["KnowledgeChunk"]] = relationship(
         back_populates="document", cascade="all, delete-orphan"
     )
@@ -496,6 +548,26 @@ def _compatibility_service(
     return service
 
 
+def _preserve_legacy_knowledge_document_scope(
+    session: Session, document: KnowledgeDocument
+) -> None:
+    """Backfill pre-M3 documents only into the explicit compatibility target.
+
+    Legacy documents carry a free-form service name but no target identity.  They must never be
+    assigned to an arbitrary configured target, so the compatibility target is their sole route.
+    """
+    if document.target is not None or document.target_id is not None:
+        return
+    target = _compatibility_target(session)
+    document.target = target
+    if document.service:
+        document.scope = "service"
+        document.service_record = _compatibility_service(session, target, document.service)
+    else:
+        document.scope = "shared"
+        document.service_id = None
+
+
 def _compatibility_round(session: Session, incident_id: UUID) -> InvestigationRound | None:
     """Find the V1-owned round by the Incident's stable legacy workflow thread."""
     incident = session.get(Incident, incident_id)
@@ -539,6 +611,9 @@ def _preserve_v1_incident_compatibility(
                     thread_id=incident.thread_id,
                 )
             )
+
+    for document in (item for item in session.new if isinstance(item, KnowledgeDocument)):
+        _preserve_legacy_knowledge_document_scope(session, document)
 
     for record_type in (Hypothesis, Evidence, ToolCall):
         for record in (item for item in session.new if isinstance(item, record_type)):
