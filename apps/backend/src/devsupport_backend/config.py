@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from devsupport_backend.target_config import InvestigationTargetConfig
+from devsupport_backend.target_config import InvestigationTargetConfig, ProviderConfig
 
 
 class Settings(BaseSettings):
@@ -71,6 +71,10 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices(
             "INVESTIGATION_TARGET_CONFIGS", "DEVSUPPORT_INVESTIGATION_TARGET_CONFIGS"
         ),
+    )
+    provider_configs: list[ProviderConfig] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("PROVIDER_CONFIGS", "DEVSUPPORT_PROVIDER_CONFIGS"),
     )
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="DEVSUPPORT_")

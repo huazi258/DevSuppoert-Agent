@@ -6,8 +6,10 @@ from uuid import uuid4
 
 import pytest
 
+import devsupport_backend.adapter_runtime as adapter_runtime_module
 import devsupport_backend.agent.nodes.tool_execution as execution_module
 import devsupport_backend.workflow_console as console_module
+from devsupport_backend.adapter_runtime import TargetAdapterResolver
 from devsupport_backend.agent.nodes.planner import (
     PlanningError,
     deterministic_initial_evidence_plan,
@@ -17,10 +19,23 @@ from devsupport_backend.agent.nodes.tool_execution import (
     ToolExecutionDependencies,
     tool_execution_node,
 )
-from devsupport_backend.agent.state import AgentStage, PendingToolCall, create_initial_agent_state
+from devsupport_backend.agent.state import (
+    AgentStage,
+    PendingToolCall,
+    agent_state_to_checkpoint_payload,
+    create_initial_agent_state,
+)
 from devsupport_backend.config import Settings
 from devsupport_backend.models import Incident
-from devsupport_backend.tools.adapter_contracts import AdapterError
+from devsupport_backend.target_config import (
+    AdapterType,
+    CapabilityConfig,
+    InvestigationTargetConfig,
+    ProviderConfig,
+    ProviderConfigRegistry,
+    TargetConfigError,
+    TargetServiceConfig,
+)
 from devsupport_backend.tools.registry import ToolName
 from devsupport_backend.tools.schemas import ToolStatus
 
@@ -62,92 +77,203 @@ def test_runtime_evidence_provider_defaults_to_fault_lab_and_accepts_aliases(
     assert Settings().runtime_evidence_provider == "otel_demo"
 
 
-def test_default_composition_retains_every_fault_lab_read_only_capability(
+def _target(
+    *,
+    logs: AdapterType,
+    metrics: AdapterType,
+    traces: bool = False,
+    deployment_facts: bool = False,
+) -> InvestigationTargetConfig:
+    provider_ref = {
+        AdapterType.FAULT_LAB: "fault-lab-local",
+        AdapterType.OPENSEARCH: "otel-logs",
+        AdapterType.PROMETHEUS: "otel-metrics",
+    }
+    return InvestigationTargetConfig(
+        target_id=uuid4(),
+        slug=f"target-{uuid4()}",
+        environment="local",
+        services=[TargetServiceConfig(name="checkout")],
+        logs=CapabilityConfig(
+            enabled=True,
+            adapter_type=logs,
+            provider_config_ref=provider_ref[logs],
+        ),
+        metrics=CapabilityConfig(
+            enabled=True, adapter_type=metrics, provider_config_ref=provider_ref[metrics]
+        ),
+        traces=(
+            CapabilityConfig(
+                enabled=True,
+                adapter_type=AdapterType.FAULT_LAB,
+                provider_config_ref="fault-lab-local",
+            )
+            if traces
+            else CapabilityConfig()
+        ),
+        deployment_facts=(
+            CapabilityConfig(
+                enabled=True,
+                adapter_type=AdapterType.FAULT_LAB,
+                provider_config_ref="fault-lab-local",
+            )
+            if deployment_facts
+            else CapabilityConfig()
+        ),
+    )
+
+
+def _resolver() -> TargetAdapterResolver:
+    return TargetAdapterResolver(
+        ProviderConfigRegistry(
+            [
+                ProviderConfig(
+                    provider_config_ref="fault-lab-local", adapter_type=AdapterType.FAULT_LAB
+                ),
+                ProviderConfig(
+                    provider_config_ref="otel-logs", adapter_type=AdapterType.OPENSEARCH
+                ),
+                ProviderConfig(
+                    provider_config_ref="otel-metrics", adapter_type=AdapterType.PROMETHEUS
+                ),
+            ]
+        ),
+        SimpleNamespace(),  # type: ignore[arg-type]
+    )
+
+
+def test_target_adapter_resolver_uses_each_targets_logs_and_metrics_adapters(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    target_a = _target(logs=AdapterType.FAULT_LAB, metrics=AdapterType.FAULT_LAB)
+    target_b = _target(logs=AdapterType.OPENSEARCH, metrics=AdapterType.PROMETHEUS)
     monkeypatch.setattr(
-        console_module, "settings", SimpleNamespace(runtime_evidence_provider="fault_lab")
+        adapter_runtime_module.FaultLabLogsAdapter, "from_settings", lambda _: "a-logs"
     )
-    for name in (
-        "FaultLabLogsAdapter",
-        "FaultLabMetricsAdapter",
-        "FaultLabTracesAdapter",
-        "FaultLabDeploymentAdapter",
-    ):
-        monkeypatch.setattr(getattr(console_module, name), "from_settings", lambda: object())
+    monkeypatch.setattr(
+        adapter_runtime_module.FaultLabMetricsAdapter, "from_settings", lambda _: "a-metrics"
+    )
+    monkeypatch.setattr(
+        adapter_runtime_module.OpenSearchLogsAdapter, "from_settings", lambda _: "b-logs"
+    )
+    monkeypatch.setattr(
+        adapter_runtime_module.PrometheusMetricsAdapter, "from_settings", lambda _: "b-metrics"
+    )
 
-    dependencies = console_module.PostgresWorkflowRuntime._tool_execution_dependencies(object())
+    dependencies_a = _resolver().build_tool_execution_dependencies(target_a, object())
+    dependencies_b = _resolver().build_tool_execution_dependencies(target_b, object())
 
-    assert dependencies.available_tools == execution_module.READ_ONLY_INVESTIGATION_TOOLS
-    assert dependencies.traces_adapter is not None
-    assert dependencies.deployment_adapter is not None
+    assert dependencies_a.logs_adapter == "a-logs"
+    assert dependencies_a.metrics_adapter == "a-metrics"
+    assert dependencies_b.logs_adapter == "b-logs"
+    assert dependencies_b.metrics_adapter == "b-metrics"
+    assert dependencies_a.logs_adapter != dependencies_b.logs_adapter
+    assert dependencies_a.metrics_adapter != dependencies_b.metrics_adapter
 
 
-def test_otel_composition_uses_only_logs_metrics_and_knowledge_capabilities(
+def test_disabled_target_capabilities_are_not_constructed_or_exposed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    target = _target(logs=AdapterType.FAULT_LAB, metrics=AdapterType.FAULT_LAB)
     monkeypatch.setattr(
-        console_module, "settings", SimpleNamespace(runtime_evidence_provider="otel_demo")
+        adapter_runtime_module.FaultLabLogsAdapter, "from_settings", lambda _: object()
     )
-    monkeypatch.setattr(console_module.OpenSearchLogsAdapter, "from_settings", lambda: object())
-    monkeypatch.setattr(console_module.PrometheusMetricsAdapter, "from_settings", lambda: object())
-    for name in (
-        "FaultLabLogsAdapter",
-        "FaultLabMetricsAdapter",
-        "FaultLabTracesAdapter",
-        "FaultLabDeploymentAdapter",
-    ):
-        monkeypatch.setattr(
-            getattr(console_module, name),
-            "from_settings",
-            lambda: (_ for _ in ()).throw(AssertionError("Fault Lab adapter must not construct")),
-        )
-
-    dependencies = console_module.PostgresWorkflowRuntime._tool_execution_dependencies(object())
-
-    assert dependencies.available_tools == frozenset(
-        {ToolName.SEARCH_KNOWLEDGE, ToolName.QUERY_LOGS, ToolName.QUERY_METRICS}
+    monkeypatch.setattr(
+        adapter_runtime_module.FaultLabMetricsAdapter, "from_settings", lambda _: object()
     )
+    monkeypatch.setattr(
+        adapter_runtime_module.FaultLabTracesAdapter,
+        "from_settings",
+        lambda _: (_ for _ in ()).throw(AssertionError("disabled adapter must not construct")),
+    )
+
+    dependencies = _resolver().build_tool_execution_dependencies(target, object())
+
+    assert ToolName.QUERY_TRACES not in dependencies.available_tools
+    assert ToolName.GET_DEPLOYMENT_HISTORY not in dependencies.available_tools
     assert dependencies.traces_adapter is None
     assert dependencies.deployment_adapter is None
 
 
-def test_otel_composition_fails_early_when_real_provider_configuration_is_missing(
+def test_unknown_provider_reference_and_mismatched_adapter_fail_closed() -> None:
+    target = _target(logs=AdapterType.FAULT_LAB, metrics=AdapterType.FAULT_LAB)
+    unknown = target.model_copy(
+        update={
+            "logs": CapabilityConfig(
+                enabled=True,
+                adapter_type=AdapterType.FAULT_LAB,
+                provider_config_ref="unknown-provider",
+            )
+        }
+    )
+
+    with pytest.raises(TargetConfigError, match="unknown provider_config_ref"):
+        _resolver().build_tool_execution_dependencies(unknown, object())
+    with pytest.raises(TargetConfigError, match="does not match"):
+        ProviderConfigRegistry(
+            [
+                ProviderConfig(
+                    provider_config_ref="fault-lab-local", adapter_type=AdapterType.OPENSEARCH
+                )
+            ]
+        ).require("fault-lab-local", AdapterType.FAULT_LAB)
+
+    with pytest.raises(ValueError):
+        ProviderConfig.model_validate(
+            {"provider_config_ref": "unknown-adapter", "adapter_type": "not-registered"}
+        )
+
+
+def test_formal_v2_runtime_does_not_read_the_legacy_global_provider_switch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    class _TargetSettings:
+        provider_configs = [
+            ProviderConfig(
+                provider_config_ref="fault-lab-local", adapter_type=AdapterType.FAULT_LAB
+            )
+        ]
+
+        @property
+        def runtime_evidence_provider(self) -> str:
+            raise AssertionError("formal V2 runtime must not read the global provider switch")
+
+    target = _target(logs=AdapterType.FAULT_LAB, metrics=AdapterType.FAULT_LAB)
+    monkeypatch.setattr(console_module, "settings", _TargetSettings())
     monkeypatch.setattr(
-        console_module, "settings", SimpleNamespace(runtime_evidence_provider="otel_demo")
+        adapter_runtime_module.FaultLabLogsAdapter, "from_settings", lambda _: object()
     )
     monkeypatch.setattr(
-        console_module.OpenSearchLogsAdapter,
-        "from_settings",
-        lambda: (_ for _ in ()).throw(AdapterError("missing_opensearch_configuration", "missing")),
-    )
-    monkeypatch.setattr(
-        console_module.PrometheusMetricsAdapter,
-        "from_settings",
-        lambda: (_ for _ in ()).throw(AssertionError("must fail before metrics adapter")),
+        adapter_runtime_module.FaultLabMetricsAdapter, "from_settings", lambda _: object()
     )
 
-    with pytest.raises(AdapterError, match="missing"):
-        console_module.PostgresWorkflowRuntime._tool_execution_dependencies(object())
-
-
-def test_otel_composition_fails_early_when_prometheus_configuration_is_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        console_module, "settings", SimpleNamespace(runtime_evidence_provider="otel_demo")
-    )
-    monkeypatch.setattr(console_module.OpenSearchLogsAdapter, "from_settings", lambda: object())
-    monkeypatch.setattr(
-        console_module.PrometheusMetricsAdapter,
-        "from_settings",
-        lambda: (_ for _ in ()).throw(AdapterError("missing_prometheus_configuration", "missing")),
+    dependencies = console_module.PostgresWorkflowRuntime._tool_execution_dependencies(
+        object(), target
     )
 
-    with pytest.raises(AdapterError, match="missing"):
-        console_module.PostgresWorkflowRuntime._tool_execution_dependencies(object())
+    assert dependencies.available_tools == frozenset(
+        {ToolName.SEARCH_KNOWLEDGE, ToolName.QUERY_LOGS, ToolName.QUERY_METRICS}
+    )
+
+
+def test_provider_references_do_not_enter_agent_state_or_tool_arguments() -> None:
+    state = _state()
+    state["pending_tool_call"] = PendingToolCall(
+        investigation_goal="inspect logs",
+        tool_name=ToolName.QUERY_LOGS,
+        tool_arguments={
+            "service": "checkout",
+            "environment": "local",
+            "time_range_start": "2026-08-30T00:00:00+00:00",
+            "time_range_end": "2026-08-30T00:05:00+00:00",
+        },
+        reason="runtime evidence",
+    )
+
+    payload = agent_state_to_checkpoint_payload(state)
+
+    assert "fault-lab-local" not in str(payload)
+    assert "provider_config_ref" not in state["pending_tool_call"].tool_arguments
 
 
 def test_otel_capabilities_constrain_planner_contract_and_reject_unavailable_plan() -> None:

@@ -174,8 +174,16 @@ def api_client(
                 slug=target.slug,
                 environment=target.environment,
                 services=[TargetServiceConfig(name=service.name)],
-                logs=CapabilityConfig(enabled=True, adapter_type=AdapterType.FAULT_LAB),
-                metrics=CapabilityConfig(enabled=True, adapter_type=AdapterType.FAULT_LAB),
+                logs=CapabilityConfig(
+                    enabled=True,
+                    adapter_type=AdapterType.FAULT_LAB,
+                    provider_config_ref="fault-lab-local",
+                ),
+                metrics=CapabilityConfig(
+                    enabled=True,
+                    adapter_type=AdapterType.FAULT_LAB,
+                    provider_config_ref="fault-lab-local",
+                ),
             )
         ]
     )

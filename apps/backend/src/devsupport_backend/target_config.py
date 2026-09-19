@@ -55,6 +55,8 @@ class CapabilityConfig(BaseModel):
     def validate_enabled_adapter(self) -> "CapabilityConfig":
         if self.enabled and self.adapter_type is AdapterType.UNAVAILABLE:
             raise ValueError("an enabled capability requires a registered adapter_type")
+        if self.enabled and self.provider_config_ref is None:
+            raise ValueError("an enabled capability requires provider_config_ref")
         if not self.enabled and self.adapter_type is not AdapterType.UNAVAILABLE:
             raise ValueError("a disabled capability must use adapter_type=unavailable")
         if self.provider_config_ref and "://" in self.provider_config_ref:
@@ -75,6 +77,23 @@ class TargetServiceConfig(BaseModel):
         normalized = value.strip()
         if not normalized:
             raise ValueError("service name must not be blank")
+        return normalized
+
+
+class ProviderConfig(BaseModel):
+    """A non-secret backend reference to one pre-registered adapter configuration."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    provider_config_ref: str = Field(min_length=1, max_length=100)
+    adapter_type: AdapterType
+
+    @field_validator("provider_config_ref")
+    @classmethod
+    def require_opaque_reference(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or "://" in normalized:
+            raise ValueError("provider_config_ref must be an opaque deployment reference")
         return normalized
 
 
@@ -175,3 +194,28 @@ class TargetConfigRegistry:
         if not capability_config.enabled:
             raise TargetConfigError(f"{capability.value} capability is unavailable")
         return capability_config
+
+
+class ProviderConfigRegistry:
+    """Allow only configured provider references; credentials remain outside target data."""
+
+    def __init__(self, providers: tuple[ProviderConfig, ...] | list[ProviderConfig]):
+        self._providers: dict[str, ProviderConfig] = {}
+        for provider in providers:
+            if provider.provider_config_ref in self._providers:
+                raise TargetConfigError("provider_config_ref values must be unique")
+            self._providers[provider.provider_config_ref] = provider
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> "ProviderConfigRegistry":
+        return cls(settings.provider_configs)
+
+    def require(self, provider_config_ref: str, adapter_type: AdapterType) -> ProviderConfig:
+        provider = self._providers.get(provider_config_ref)
+        if provider is None:
+            raise TargetConfigError("unknown provider_config_ref")
+        if provider.adapter_type is not adapter_type:
+            raise TargetConfigError(
+                "provider_config_ref adapter type does not match target capability"
+            )
+        return provider

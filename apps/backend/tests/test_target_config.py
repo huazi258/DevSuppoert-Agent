@@ -89,7 +89,11 @@ def test_capability_configuration_rejects_unregistered_adapter_combinations() ->
         InvestigationTargetConfig.model_validate(
             {
                 **target.model_dump(mode="json"),
-                "logs": {"enabled": True, "adapter_type": "prometheus"},
+                "logs": {
+                    "enabled": True,
+                    "adapter_type": "prometheus",
+                    "provider_config_ref": "orders-observability",
+                },
             }
         )
 

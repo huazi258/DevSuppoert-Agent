@@ -1004,10 +1004,6 @@ def test_postgres_runtime_reads_persisted_failed_task_metadata_without_external_
         unexpected_provider,
     )
     monkeypatch.setattr(workflow_console_module, "RAGService", unexpected_provider)
-    monkeypatch.setattr(workflow_console_module, "FaultLabLogsAdapter", unexpected_provider)
-    monkeypatch.setattr(workflow_console_module, "FaultLabMetricsAdapter", unexpected_provider)
-    monkeypatch.setattr(workflow_console_module, "FaultLabTracesAdapter", unexpected_provider)
-    monkeypatch.setattr(workflow_console_module, "FaultLabDeploymentAdapter", unexpected_provider)
 
     def fail_planning(_: AgentState) -> AgentState:
         raise RuntimeError("controlled persisted planning failure")
@@ -1054,10 +1050,6 @@ def test_postgres_runtime_ignores_legacy_controlled_action_execution_failure(
         unexpected_provider,
     )
     monkeypatch.setattr(workflow_console_module, "RAGService", unexpected_provider)
-    monkeypatch.setattr(workflow_console_module, "FaultLabLogsAdapter", unexpected_provider)
-    monkeypatch.setattr(workflow_console_module, "FaultLabMetricsAdapter", unexpected_provider)
-    monkeypatch.setattr(workflow_console_module, "FaultLabTracesAdapter", unexpected_provider)
-    monkeypatch.setattr(workflow_console_module, "FaultLabDeploymentAdapter", unexpected_provider)
 
     def fail_controlled_execution(_: AgentState) -> AgentState:
         raise RuntimeError("controlled action execution failure")

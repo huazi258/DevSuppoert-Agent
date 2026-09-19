@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from devsupport_backend.action_execution import ActionExecutionParameters
+from devsupport_backend.adapter_runtime import TargetAdapterResolver
 from devsupport_backend.agent.budget import DEFAULT_INVESTIGATION_BUDGET, InvestigationBudget
 from devsupport_backend.agent.evidence_evaluator import LLMEvidenceEvaluator
 from devsupport_backend.agent.llm import OpenAICompatibleLLMClient
@@ -37,7 +38,13 @@ from devsupport_backend.investigation_lifecycle import (
 )
 from devsupport_backend.investigation_status import InvestigationStatus
 from devsupport_backend.investigation_timeline import project_investigation_timeline
-from devsupport_backend.models import Action, Approval, Incident, InvestigationRound
+from devsupport_backend.models import (
+    Action,
+    Approval,
+    Incident,
+    InvestigationRound,
+    InvestigationTarget,
+)
 from devsupport_backend.rag.embeddings import OpenAICompatibleEmbeddingClient
 from devsupport_backend.rag.retrieval import RAGService
 from devsupport_backend.schemas.workflows import (
@@ -64,14 +71,12 @@ from devsupport_backend.schemas.workflows import (
     WorkflowToolHistoryResponse,
     WorkflowVerificationResponse,
 )
-from devsupport_backend.tools.deployments import FaultLabDeploymentAdapter
-from devsupport_backend.tools.logs import FaultLabLogsAdapter
-from devsupport_backend.tools.metrics import FaultLabMetricsAdapter
-from devsupport_backend.tools.opensearch_logs import OpenSearchLogsAdapter
-from devsupport_backend.tools.prometheus_metrics import PrometheusMetricsAdapter
-from devsupport_backend.tools.registry import ToolName
+from devsupport_backend.target_config import (
+    InvestigationTargetConfig,
+    TargetConfigError,
+    TargetConfigRegistry,
+)
 from devsupport_backend.tools.schemas import CitationOutput
-from devsupport_backend.tools.traces import FaultLabTracesAdapter
 
 
 class WorkflowConsoleError(RuntimeError):
@@ -190,8 +195,9 @@ class PostgresWorkflowRuntime:
         round_record = current_round(self._session, incident.id)
         if round_record.status is not InvestigationStatus.INVESTIGATING:
             raise WorkflowConflictError("Current InvestigationRound has not been accepted")
+        target_config = self._target_config_for(incident)
         with open_postgres_checkpointer() as checkpointer:
-            return WorkflowService(self._production_graph(checkpointer)).start(
+            return WorkflowService(self._production_graph(checkpointer, target_config)).start(
                 incident,
                 thread_id=round_record.thread_id,
                 round_id=round_record.id,
@@ -199,8 +205,18 @@ class PostgresWorkflowRuntime:
 
     def retry_failed_task(self, thread_id: str) -> AgentState:
         """Expose the generic continuation primitive for a later policy-owned caller."""
+        round_record = self._session.scalar(
+            select(InvestigationRound).where(InvestigationRound.thread_id == thread_id)
+        )
+        if round_record is None:
+            raise WorkflowConflictError("InvestigationRound not found for workflow thread")
+        incident = self._session.get(Incident, round_record.incident_id)
+        if incident is None:
+            raise WorkflowConflictError("InvestigationRound Incident is missing")
         with open_postgres_checkpointer() as checkpointer:
-            service = WorkflowService(self._production_graph(checkpointer))
+            service = WorkflowService(
+                self._production_graph(checkpointer, self._target_config_for(incident))
+            )
             return service.retry_failed_task(thread_id)
 
     def record_retry_attempt(self, thread_id: str) -> None:
@@ -224,11 +240,15 @@ class PostgresWorkflowRuntime:
         graph.add_edge(_V2_PERSISTED_WORKFLOW_NODE_NAMES[-1], END)
         return graph.compile(checkpointer=checkpointer)
 
-    def _production_graph(self, checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
+    def _production_graph(
+        self,
+        checkpointer: BaseCheckpointSaver,
+        target_config: InvestigationTargetConfig,
+    ) -> CompiledStateGraph:
         llm_client = OpenAICompatibleLLMClient.from_settings(settings)
         embedding_client = OpenAICompatibleEmbeddingClient.from_settings(settings)
         rag_service = RAGService(self._session, embedding_client)
-        tool_execution = self._tool_execution_dependencies(rag_service)
+        tool_execution = self._tool_execution_dependencies(rag_service, target_config)
         dependencies = V2InvestigationWorkflowDependencies(
             rag_service=rag_service,
             llm_client=llm_client,
@@ -242,30 +262,35 @@ class PostgresWorkflowRuntime:
         )
 
     @staticmethod
-    def _tool_execution_dependencies(rag_service: RAGService) -> ToolExecutionDependencies:
-        """Select the complete read-only evidence bundle before a graph starts."""
-        if settings.runtime_evidence_provider == "otel_demo":
-            return ToolExecutionDependencies(
-                rag_service=rag_service,
-                logs_adapter=OpenSearchLogsAdapter.from_settings(),
-                metrics_adapter=PrometheusMetricsAdapter.from_settings(),
-                traces_adapter=None,
-                deployment_adapter=None,
-                available_tools=frozenset(
-                    {
-                        ToolName.SEARCH_KNOWLEDGE,
-                        ToolName.QUERY_LOGS,
-                        ToolName.QUERY_METRICS,
-                    }
-                ),
-            )
-        return ToolExecutionDependencies(
-            rag_service=rag_service,
-            logs_adapter=FaultLabLogsAdapter.from_settings(),
-            metrics_adapter=FaultLabMetricsAdapter.from_settings(),
-            traces_adapter=FaultLabTracesAdapter.from_settings(),
-            deployment_adapter=FaultLabDeploymentAdapter.from_settings(),
+    def _tool_execution_dependencies(
+        rag_service: RAGService, target_config: InvestigationTargetConfig
+    ) -> ToolExecutionDependencies:
+        """Resolve this Incident target's fixed, read-only Adapter capability matrix."""
+        return TargetAdapterResolver.from_settings(settings).build_tool_execution_dependencies(
+            target_config, rag_service
         )
+
+    def _target_config_for(self, incident: Incident) -> InvestigationTargetConfig:
+        target = self._session.get(InvestigationTarget, incident.target_id)
+        if target is None:
+            raise WorkflowConflictError("Incident InvestigationTarget is missing")
+        try:
+            target_config = TargetConfigRegistry.from_settings(settings).get(
+                target_id=target.id, slug=target.slug
+            )
+            if (
+                target_config.environment != target.environment
+                or incident.environment != target.environment
+            ):
+                raise TargetConfigError(
+                    "Incident environment is outside InvestigationTarget configuration"
+                )
+            TargetConfigRegistry.from_settings(settings).require_service(
+                incident.service, target_id=target.id
+            )
+        except TargetConfigError as error:
+            raise WorkflowConflictError("Incident target configuration is unavailable") from error
+        return target_config
 
 
 class WorkflowConsoleService:

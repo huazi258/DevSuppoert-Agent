@@ -153,7 +153,7 @@ def test_postgres_runtime_composes_only_v2_investigation_dependencies(
     monkeypatch.setattr(
         PostgresWorkflowRuntime,
         "_tool_execution_dependencies",
-        staticmethod(lambda _: SimpleNamespace(available_tools=V2_READ_ONLY_TOOL_NAMES)),
+        staticmethod(lambda *_: SimpleNamespace(available_tools=V2_READ_ONLY_TOOL_NAMES)),
     )
 
     def capture_dependencies(
@@ -166,7 +166,7 @@ def test_postgres_runtime_composes_only_v2_investigation_dependencies(
         workflow_console_module, "build_v2_production_investigation_graph", capture_dependencies
     )
 
-    result = PostgresWorkflowRuntime(database_session)._production_graph(object())
+    result = PostgresWorkflowRuntime(database_session)._production_graph(object(), object())
 
     assert result is sentinel
     assert isinstance(captured["dependencies"], V2InvestigationWorkflowDependencies)

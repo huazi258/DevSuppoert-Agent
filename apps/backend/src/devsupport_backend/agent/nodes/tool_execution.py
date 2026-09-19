@@ -80,6 +80,10 @@ class ToolExecutionDependencies:
     def __post_init__(self) -> None:
         if not self.available_tools.issubset(READ_ONLY_INVESTIGATION_TOOLS):
             raise ValueError("V2 ToolExecutionDependencies only accepts read-only tools")
+        if ToolName.QUERY_LOGS in self.available_tools and self.logs_adapter is None:
+            raise ValueError("query_logs requires a configured logs adapter")
+        if ToolName.QUERY_METRICS in self.available_tools and self.metrics_adapter is None:
+            raise ValueError("query_metrics requires a configured metrics adapter")
 
 
 def tool_execution_node(state: AgentState, dependencies: ToolExecutionDependencies) -> AgentState:
@@ -167,8 +171,12 @@ def _dispatch(
     if tool_name is ToolName.SEARCH_KNOWLEDGE:
         return search_knowledge(cast(SearchKnowledgeInput, tool_input), dependencies.rag_service)
     if tool_name is ToolName.QUERY_LOGS:
+        if dependencies.logs_adapter is None:
+            raise ToolExecutionError("logs adapter is unavailable for this composition")
         return query_logs(cast(QueryLogsInput, tool_input), dependencies.logs_adapter)
     if tool_name is ToolName.QUERY_METRICS:
+        if dependencies.metrics_adapter is None:
+            raise ToolExecutionError("metrics adapter is unavailable for this composition")
         return query_metrics(cast(QueryMetricsInput, tool_input), dependencies.metrics_adapter)
     if tool_name is ToolName.QUERY_TRACES:
         if dependencies.traces_adapter is None:
