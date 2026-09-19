@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from devsupport_backend.models import KnowledgeChunk, KnowledgeDocument
@@ -28,6 +28,19 @@ class RetrievalFilters:
     service: str | None = None
     environment: str | None = None
     document_type: str | None = None
+
+
+@dataclass(frozen=True)
+class KnowledgeScope:
+    """Mandatory ownership boundary for formal V2 knowledge retrieval."""
+
+    target_id: UUID
+    service_id: UUID
+    environment: str
+
+    def __post_init__(self) -> None:
+        if not self.environment.strip():
+            raise ValueError("knowledge scope environment must not be blank")
 
 
 @dataclass(frozen=True)
@@ -116,6 +129,32 @@ class RAGService:
         )
         return self._fuse(vector_candidates, keyword_candidates, top_k)
 
+    def search_scoped(
+        self,
+        query: str,
+        *,
+        scope: KnowledgeScope,
+        document_type: str | None = None,
+        top_k: int = 5,
+    ) -> list[RetrievalResult]:
+        """Run formal V2 retrieval with scope predicates before either ranking path."""
+        normalized_query = query.strip()
+        if not normalized_query:
+            raise RetrievalError("query must not be blank")
+        if top_k < 1:
+            raise RetrievalError("top_k must be at least one")
+
+        candidate_limit = top_k * self._candidate_multiplier
+        dimensions = self._corpus_dimensions_for_scope(scope, document_type)
+        query_embedding = self._query_embedding(normalized_query, dimensions)
+        vector_candidates = self._vector_candidates_for_scope(
+            query_embedding, scope, document_type, candidate_limit
+        )
+        keyword_candidates = self._keyword_candidates_for_scope(
+            normalized_query, scope, document_type, candidate_limit
+        )
+        return self._fuse(vector_candidates, keyword_candidates, top_k)
+
     def _corpus_dimensions(self, filters: RetrievalFilters) -> set[int]:
         statement = (
             select(KnowledgeChunk.embedding)
@@ -147,6 +186,25 @@ class RAGService:
                 f"query={len(query_vector)}, corpus={corpus_dimension}"
             )
         return query_vector
+
+    def _corpus_dimensions_for_scope(
+        self, scope: KnowledgeScope, document_type: str | None
+    ) -> set[int]:
+        statement = (
+            select(KnowledgeChunk.embedding)
+            .join(KnowledgeDocument)
+            .where(
+                KnowledgeChunk.embedding.is_not(None),
+                *self._scope_filter_clauses(scope, document_type),
+            )
+        )
+        dimensions = {len(vector) for vector in self._session.scalars(statement)}
+        if len(dimensions) > 1:
+            raise RetrievalError(
+                "scoped knowledge corpus contains mixed embedding dimensions: "
+                f"{sorted(dimensions)}"
+            )
+        return dimensions
 
     def _vector_candidates(
         self,
@@ -192,6 +250,55 @@ class RAGService:
             for chunk, document, score in self._session.execute(statement)
         ]
 
+    def _vector_candidates_for_scope(
+        self,
+        query_embedding: list[float] | None,
+        scope: KnowledgeScope,
+        document_type: str | None,
+        candidate_limit: int,
+    ) -> list[tuple[KnowledgeChunk, KnowledgeDocument, float]]:
+        if query_embedding is None:
+            return []
+        distance = KnowledgeChunk.embedding.cosine_distance(query_embedding)
+        statement = (
+            select(KnowledgeChunk, KnowledgeDocument, (1 - distance).label("vector_score"))
+            .join(KnowledgeDocument)
+            .where(
+                KnowledgeChunk.embedding.is_not(None),
+                *self._scope_filter_clauses(scope, document_type),
+            )
+            .order_by(distance, KnowledgeChunk.id)
+            .limit(candidate_limit)
+        )
+        return [
+            (chunk, document, float(vector_score))
+            for chunk, document, vector_score in self._session.execute(statement)
+        ]
+
+    def _keyword_candidates_for_scope(
+        self,
+        query: str,
+        scope: KnowledgeScope,
+        document_type: str | None,
+        candidate_limit: int,
+    ) -> list[tuple[KnowledgeChunk, KnowledgeDocument, float]]:
+        tsquery = func.plainto_tsquery("english", query)
+        keyword_score = func.ts_rank_cd(KnowledgeChunk.text_search_vector, tsquery)
+        statement = (
+            select(KnowledgeChunk, KnowledgeDocument, keyword_score.label("keyword_score"))
+            .join(KnowledgeDocument)
+            .where(
+                KnowledgeChunk.text_search_vector.op("@@")(tsquery),
+                *self._scope_filter_clauses(scope, document_type),
+            )
+            .order_by(keyword_score.desc(), KnowledgeChunk.id)
+            .limit(candidate_limit)
+        )
+        return [
+            (chunk, document, float(score))
+            for chunk, document, score in self._session.execute(statement)
+        ]
+
     @staticmethod
     def _filter_clauses(filters: RetrievalFilters) -> list[object]:
         clauses: list[object] = []
@@ -201,6 +308,26 @@ class RAGService:
             clauses.append(KnowledgeDocument.environment.in_(environments))
         if filters.document_type:
             clauses.append(KnowledgeDocument.document_type == filters.document_type)
+        return clauses
+
+    @staticmethod
+    def _scope_filter_clauses(
+        scope: KnowledgeScope, document_type: str | None
+    ) -> list[object]:
+        clauses: list[object] = [
+            KnowledgeDocument.target_id == scope.target_id,
+            KnowledgeDocument.status == "enabled",
+            KnowledgeDocument.environment.in_(allowed_environments(scope.environment)),
+            or_(
+                KnowledgeDocument.scope == "shared",
+                and_(
+                    KnowledgeDocument.scope == "service",
+                    KnowledgeDocument.service_id == scope.service_id,
+                ),
+            ),
+        ]
+        if document_type:
+            clauses.append(KnowledgeDocument.document_type == document_type)
         return clauses
 
     @staticmethod

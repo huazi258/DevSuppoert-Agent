@@ -35,6 +35,9 @@ from devsupport_backend.models import Incident
 from devsupport_backend.tools.registry import ToolName, tool_registry
 from devsupport_backend.tools.schemas import ToolError, ToolStatus
 
+TEST_TARGET_ID = uuid4()
+TEST_SERVICE_ID = uuid4()
+
 
 class FakeLLMClient:
     """Fake provider capturing the exact Planner context without network access."""
@@ -57,6 +60,8 @@ def build_planning_state() -> tuple[AgentState, EvidenceContext, HypothesisConte
     started_at = datetime(2026, 8, 8, 10, 0, tzinfo=UTC)
     incident = Incident(
         id=uuid4(),
+        target_id=TEST_TARGET_ID,
+        service_id=TEST_SERVICE_ID,
         service="catalog-service",
         environment="staging",
         description="The catalog endpoint returns errors after a recent change.",
@@ -307,8 +312,13 @@ def test_planner_context_contains_current_investigation_facts() -> None:
     state, evidence, hypothesis = build_planning_state()
     client = FakeLLMClient(
         plan_response(
-            tool_name="search_knowledge",
-            arguments={"query": "catalog request errors", "service": "catalog-service"},
+        tool_name="search_knowledge",
+        arguments={
+            "query": "catalog request errors",
+            "target_id": str(TEST_TARGET_ID),
+            "service_id": str(TEST_SERVICE_ID),
+            "environment": "staging",
+        },
         )
     )
 
@@ -360,7 +370,12 @@ def test_planner_can_choose_different_tools_from_different_valid_outputs() -> No
     metrics_hypothesis.summary = "A runtime signal needs validation."
     knowledge_plan = plan_response(
         tool_name="search_knowledge",
-        arguments={"query": "catalog error runbook", "service": "catalog-service"},
+        arguments={
+            "query": "catalog error runbook",
+            "target_id": str(TEST_TARGET_ID),
+            "service_id": str(TEST_SERVICE_ID),
+            "environment": "staging",
+        },
     )
     metrics_plan = plan_response(
         tool_name="query_metrics",

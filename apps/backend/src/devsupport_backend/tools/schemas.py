@@ -74,11 +74,12 @@ class ToolOutput(BaseModel):
 
 
 class SearchKnowledgeInput(ToolInput):
-    """Structured query and optional metadata filters for knowledge retrieval."""
+    """Structured V2 knowledge query with mandatory Incident ownership scope."""
 
     query: str = Field(min_length=1, max_length=2_000)
-    service: str | None = Field(default=None, min_length=1, max_length=100)
-    environment: str | None = Field(default=None, min_length=1, max_length=50)
+    target_id: UUID
+    service_id: UUID
+    environment: str = Field(min_length=1, max_length=50)
     document_type: str | None = Field(default=None, min_length=1, max_length=100)
     top_k: int = Field(default=5, ge=1, le=20)
 

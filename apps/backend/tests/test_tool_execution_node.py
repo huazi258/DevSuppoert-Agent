@@ -38,12 +38,17 @@ from devsupport_backend.tools.schemas import (
     ToolStatus,
 )
 
+TEST_TARGET_ID = uuid4()
+TEST_SERVICE_ID = uuid4()
+
 
 def build_execution_state(tool_name: ToolName, arguments: dict[str, object]) -> AgentState:
     """Create a planning-approved pending call without contacting external services."""
     started_at = datetime(2026, 8, 8, 10, 0, tzinfo=UTC)
     incident = Incident(
         id=uuid4(),
+        target_id=TEST_TARGET_ID,
+        service_id=TEST_SERVICE_ID,
         service="order-service",
         environment="local",
         description="The order endpoint has elevated errors.",
@@ -173,7 +178,12 @@ def _runtime_provenance() -> RuntimeEvidenceProvenance:
 def tool_arguments(tool_name: ToolName) -> dict[str, object]:
     """Return a valid argument object for each read-only Tool input schema."""
     if tool_name is ToolName.SEARCH_KNOWLEDGE:
-        return {"query": "order endpoint errors", "service": "order-service"}
+        return {
+            "query": "order endpoint errors",
+            "target_id": str(TEST_TARGET_ID),
+            "service_id": str(TEST_SERVICE_ID),
+            "environment": "local",
+        }
     if tool_name is ToolName.QUERY_LOGS:
         return {
             "service": "order-service",

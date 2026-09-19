@@ -73,7 +73,13 @@ def test_all_tool_input_and_output_models_validate() -> None:
     now = datetime.now(UTC)
     unavailable = ToolError(code="not_implemented", message="Adapter is not implemented yet")
     inputs = (
-        SearchKnowledgeInput(query="payment timeout", top_k=3),
+        SearchKnowledgeInput(
+            query="payment timeout",
+            target_id=uuid4(),
+            service_id=uuid4(),
+            environment="local",
+            top_k=3,
+        ),
         QueryLogsInput(
             service="order-service",
             environment="local",
@@ -123,7 +129,15 @@ def test_tool_models_reject_invalid_and_arbitrary_parameters() -> None:
     now = datetime.now(UTC)
 
     with pytest.raises(ValidationError):
-        SearchKnowledgeInput(query="   ", top_k=0)
+        SearchKnowledgeInput(
+            query="   ",
+            target_id=uuid4(),
+            service_id=uuid4(),
+            environment="local",
+            top_k=0,
+        )
+    with pytest.raises(ValidationError, match="target_id"):
+        SearchKnowledgeInput(query="scope is required", environment="local")
     with pytest.raises(ValidationError, match="time_range_start"):
         QueryLogsInput(
             service="order-service",
@@ -180,7 +194,8 @@ def test_search_knowledge_tool_uses_rag_service_and_preserves_scores_and_citatio
     output = search_knowledge(
         SearchKnowledgeInput(
             query="configuration",
-            service="order-service",
+            target_id=document.target_id,
+            service_id=document.service_id,
             environment="local",
             document_type="runbook",
             top_k=3,
@@ -234,7 +249,15 @@ def test_search_knowledge_tool_returns_structured_failure(database_session: Sess
     database_session.commit()
     rag_service = RAGService(database_session, FixedEmbeddingClient([1.0, 0.0, 0.0]))
 
-    output = search_knowledge(SearchKnowledgeInput(query="dimension"), rag_service)
+    output = search_knowledge(
+        SearchKnowledgeInput(
+            query="dimension",
+            target_id=document.target_id,
+            service_id=document.service_id,
+            environment="local",
+        ),
+        rag_service,
+    )
 
     assert output.status is ToolStatus.FAILURE
     assert output.error is not None

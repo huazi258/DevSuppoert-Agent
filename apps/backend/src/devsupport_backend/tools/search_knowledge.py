@@ -2,7 +2,7 @@
 
 from time import perf_counter
 
-from devsupport_backend.rag.retrieval import RAGService, RetrievalError, RetrievalFilters
+from devsupport_backend.rag.retrieval import KnowledgeScope, RAGService, RetrievalError
 from devsupport_backend.tools.schemas import (
     CitationOutput,
     SearchKnowledgeInput,
@@ -20,13 +20,14 @@ def search_knowledge(
     """Execute the registered knowledge tool without duplicating retrieval logic."""
     started_at = perf_counter()
     try:
-        results = rag_service.search(
+        results = rag_service.search_scoped(
             tool_input.query,
-            filters=RetrievalFilters(
-                service=tool_input.service,
+            scope=KnowledgeScope(
+                target_id=tool_input.target_id,
+                service_id=tool_input.service_id,
                 environment=tool_input.environment,
-                document_type=tool_input.document_type,
             ),
+            document_type=tool_input.document_type,
             top_k=tool_input.top_k,
         )
     except RetrievalError as error:

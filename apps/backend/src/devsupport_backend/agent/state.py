@@ -146,6 +146,8 @@ class IncidentStateSource(Protocol):
     """Minimum Incident projection accepted by the runtime state factory."""
 
     id: UUID
+    target_id: UUID | None
+    service_id: UUID | None
     service: str
     environment: str
     description: str
@@ -163,6 +165,8 @@ class IncidentContext(StateModel):
     """Normalized incident facts carried between workflow nodes."""
 
     id: UUID
+    target_id: UUID | None = None
+    service_id: UUID | None = None
     service: str = Field(min_length=1, max_length=100)
     environment: str = Field(min_length=1, max_length=50)
     description: str = Field(min_length=1, max_length=10_000)
@@ -409,6 +413,8 @@ def create_initial_agent_state(
     return {
         "incident": IncidentContext(
             id=incident.id,
+            target_id=getattr(incident, "target_id", None),
+            service_id=getattr(incident, "service_id", None),
             service=incident.service,
             environment=incident.environment,
             description=incident.description,

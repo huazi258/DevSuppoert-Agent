@@ -102,6 +102,7 @@ def tool_execution_node(state: AgentState, dependencies: ToolExecutionDependenci
     validated_input = _validate_pending_arguments(
         pending_tool_call.tool_name,
         pending_tool_call.tool_arguments,
+        state,
     )
     tool_output = _dispatch(pending_tool_call.tool_name, validated_input, dependencies)
     tool_history_entry = ToolHistoryEntry(
@@ -155,13 +156,33 @@ def _capability_unavailable_state(
     }
 
 
-def _validate_pending_arguments(tool_name: ToolName, arguments: dict[str, object]) -> BaseModel:
+def _validate_pending_arguments(
+    tool_name: ToolName, arguments: dict[str, object], state: AgentState
+) -> BaseModel:
     """Revalidate persisted planner arguments against the registered input contract."""
     definition = v2_tool_registry.get(tool_name)
     try:
-        return definition.input_model.model_validate(arguments)
+        validated_input = definition.input_model.model_validate(arguments)
     except ValidationError as error:
         raise ToolExecutionError(f"pending tool arguments are invalid: {error}") from error
+    if tool_name is ToolName.SEARCH_KNOWLEDGE:
+        _require_incident_knowledge_scope(state, validated_input)
+    return validated_input
+
+
+def _require_incident_knowledge_scope(
+    state: AgentState, arguments: SearchKnowledgeInput
+) -> None:
+    """Keep persisted knowledge calls bound to the current Incident's scope."""
+    incident = state["incident"]
+    if incident.target_id is None or incident.service_id is None:
+        raise ToolExecutionError("active Incident is missing its required knowledge scope")
+    if (
+        arguments.target_id != incident.target_id
+        or arguments.service_id != incident.service_id
+        or arguments.environment != incident.environment
+    ):
+        raise ToolExecutionError("pending knowledge scope does not match the active Incident")
 
 
 def _dispatch(

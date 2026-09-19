@@ -25,6 +25,7 @@ from devsupport_backend.tools.schemas import (
     QueryLogsInput,
     QueryMetricsInput,
     QueryTracesInput,
+    SearchKnowledgeInput,
     ToolStatus,
 )
 
@@ -79,7 +80,7 @@ def investigation_planner_node(
         raise PlanningError(f"planner provider failed: {error}") from error
 
     plan = _parse_plan(raw_output)
-    pending_tool_call = _validate_plan(plan, available_tools)
+    pending_tool_call = _validate_plan(plan, state, available_tools)
     if has_successful_equivalent_tool_call(state, pending_tool_call):
         return {
             **state,
@@ -219,7 +220,9 @@ def _parse_plan(raw_output: str) -> PlannerOutput:
 
 
 def _validate_plan(
-    plan: PlannerOutput, available_tools: frozenset[ToolName]
+    plan: PlannerOutput,
+    state: AgentState,
+    available_tools: frozenset[ToolName],
 ) -> PendingToolCall:
     """Restrict the plan to read-only V0 Tools and their Pydantic input schemas."""
     if plan.tool_name not in READ_ONLY_INVESTIGATION_TOOLS:
@@ -232,6 +235,8 @@ def _validate_plan(
         validated_arguments = definition.input_model.model_validate(plan.tool_arguments)
     except ValidationError as error:
         raise PlanningError(f"planner tool arguments are invalid: {error}") from error
+    if plan.tool_name is ToolName.SEARCH_KNOWLEDGE:
+        _require_incident_knowledge_scope(state, validated_arguments)
 
     return PendingToolCall(
         investigation_goal=plan.investigation_goal,
@@ -239,6 +244,21 @@ def _validate_plan(
         tool_arguments=validated_arguments.model_dump(mode="json"),
         reason=plan.reason,
     )
+
+
+def _require_incident_knowledge_scope(
+    state: AgentState, arguments: SearchKnowledgeInput
+) -> None:
+    """Reject a planner attempt to search outside the active Incident's scope."""
+    incident = state["incident"]
+    if incident.target_id is None or incident.service_id is None:
+        raise PlanningError("active Incident is missing its required knowledge scope")
+    if (
+        arguments.target_id != incident.target_id
+        or arguments.service_id != incident.service_id
+        or arguments.environment != incident.environment
+    ):
+        raise PlanningError("planner knowledge scope does not match the active Incident")
 
 
 def _build_prompt_context(

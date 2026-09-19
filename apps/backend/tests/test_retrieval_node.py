@@ -29,6 +29,8 @@ def build_ready_state() -> dict[str, object]:
     started_at = datetime(2026, 8, 8, 10, 0, tzinfo=UTC)
     incident = Incident(
         id=uuid4(),
+        target_id=uuid4(),
+        service_id=uuid4(),
         service="order-service",
         environment="local",
         description="POST /orders returns 500 after deployment",
@@ -85,7 +87,8 @@ def test_successful_retrieval_adds_cited_evidence_and_advances_stage(monkeypatch
     assert captured_inputs == [
         SearchKnowledgeInput(
             query="POST /orders returns 500 after deployment HTTP 500 POST /orders returns 500",
-            service="order-service",
+            target_id=state["incident"].target_id,
+            service_id=state["incident"].service_id,
             environment="local",
         )
     ]

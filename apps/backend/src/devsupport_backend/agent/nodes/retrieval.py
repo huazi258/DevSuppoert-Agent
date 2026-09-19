@@ -35,7 +35,8 @@ def retrieval_node(
 
     tool_input = SearchKnowledgeInput(
         query=_build_query(state),
-        service=state["incident"].service,
+        target_id=state["incident"].target_id,
+        service_id=state["incident"].service_id,
         environment=state["incident"].environment,
     )
     tool_output = search_knowledge(tool_input, rag_service)
