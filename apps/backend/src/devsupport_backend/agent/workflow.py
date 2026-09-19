@@ -800,7 +800,7 @@ def _v2_investigation_node(
     def bounded(state: AgentState) -> AgentState:
         try:
             updated = wrapped(state)
-            if state.get("retry_pending", False) and node_name == state["current_stage"].value:
+            if _v2_retry_succeeded(state, updated, node_name):
                 return {**updated, "retry_count": 0, "retry_pending": False}
             return updated
         except Exception as error:
@@ -835,6 +835,15 @@ def _v2_investigation_node(
             }
 
     return bounded
+
+
+def _v2_retry_succeeded(state: AgentState, updated: AgentState, node_name: str) -> bool:
+    """Reset a retry chain only after its logical node actually makes safe progress."""
+    if not state.get("retry_pending", False) or node_name != state["current_stage"].value:
+        return False
+    if node_name == "tool_execution":
+        return updated["current_stage"] is AgentStage.HYPOTHESIS_UPDATE
+    return True
 
 
 def _v2_retry_exhausted_state(

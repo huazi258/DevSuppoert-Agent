@@ -265,6 +265,7 @@ def _tool_failure_state(
     if decision.exhausted:
         return {
             **base_state,
+            "retry_pending": False,
             "workflow_failure_category": FailureCategory.TOOL_FAILURE,
             "workflow_failure_retryable": False,
             "workflow_failure_safe_message": "调查工具重试次数已耗尽。",

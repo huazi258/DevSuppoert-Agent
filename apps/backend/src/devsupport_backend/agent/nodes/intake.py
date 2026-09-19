@@ -39,6 +39,8 @@ def intake_node(state: AgentState) -> AgentState:
 
     normalized_incident = IncidentContext(
         id=incident.id,
+        target_id=incident.target_id,
+        service_id=incident.service_id,
         service=service,
         environment=environment,
         description=description,
