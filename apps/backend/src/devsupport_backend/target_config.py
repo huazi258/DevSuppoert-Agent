@@ -81,19 +81,22 @@ class TargetServiceConfig(BaseModel):
 
 
 class ProviderConfig(BaseModel):
-    """A non-secret backend reference to one pre-registered adapter configuration."""
+    """A non-secret reference from target config to backend provider settings."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     provider_config_ref: str = Field(min_length=1, max_length=100)
     adapter_type: AdapterType
+    backend_config_key: str = Field(min_length=1, max_length=100)
 
-    @field_validator("provider_config_ref")
+    @field_validator("provider_config_ref", "backend_config_key")
     @classmethod
     def require_opaque_reference(cls, value: str) -> str:
         normalized = value.strip()
         if not normalized or "://" in normalized:
-            raise ValueError("provider_config_ref must be an opaque deployment reference")
+            raise ValueError(
+                "provider configuration references must be opaque deployment references"
+            )
         return normalized
 
 

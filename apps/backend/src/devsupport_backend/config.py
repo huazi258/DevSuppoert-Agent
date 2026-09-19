@@ -2,10 +2,60 @@
 
 from typing import Literal
 
-from pydantic import AliasChoices, Field, SecretStr, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from devsupport_backend.target_config import InvestigationTargetConfig, ProviderConfig
+from devsupport_backend.target_config import (
+    AdapterType,
+    InvestigationTargetConfig,
+    ProviderConfig,
+)
+
+
+class ProviderBackendConfig(BaseModel):
+    """Backend-only settings for one registered provider instance.
+
+    ``ProviderConfig`` selects this object by opaque key.  Endpoint and credential
+    values deliberately live only in application deployment settings, never in a
+    target capability configuration or runtime tool input.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    backend_config_key: str = Field(min_length=1, max_length=100)
+    adapter_type: AdapterType
+    endpoint: str | None = Field(default=None, min_length=1, max_length=2_000)
+    order_service_url: str | None = Field(default=None, min_length=1, max_length=2_000)
+    payment_service_url: str | None = Field(default=None, min_length=1, max_length=2_000)
+    credential: SecretStr | None = None
+
+    @field_validator("backend_config_key")
+    @classmethod
+    def require_opaque_backend_key(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or "://" in normalized:
+            raise ValueError("backend_config_key must be an opaque deployment reference")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_adapter_settings(self) -> "ProviderBackendConfig":
+        if self.adapter_type in {AdapterType.OPENSEARCH, AdapterType.PROMETHEUS}:
+            if self.endpoint is None:
+                raise ValueError(f"{self.adapter_type.value} requires endpoint")
+        elif self.adapter_type is AdapterType.FAULT_LAB:
+            if self.order_service_url is None or self.payment_service_url is None:
+                raise ValueError("fault_lab requires order_service_url and payment_service_url")
+        else:
+            raise ValueError("backend settings require a registered adapter type")
+        return self
 
 
 class Settings(BaseSettings):
@@ -75,6 +125,12 @@ class Settings(BaseSettings):
     provider_configs: list[ProviderConfig] = Field(
         default_factory=list,
         validation_alias=AliasChoices("PROVIDER_CONFIGS", "DEVSUPPORT_PROVIDER_CONFIGS"),
+    )
+    provider_backend_configs: list[ProviderBackendConfig] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices(
+            "PROVIDER_BACKEND_CONFIGS", "DEVSUPPORT_PROVIDER_BACKEND_CONFIGS"
+        ),
     )
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="DEVSUPPORT_")

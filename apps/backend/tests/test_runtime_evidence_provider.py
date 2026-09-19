@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
@@ -9,7 +10,7 @@ import pytest
 import devsupport_backend.adapter_runtime as adapter_runtime_module
 import devsupport_backend.agent.nodes.tool_execution as execution_module
 import devsupport_backend.workflow_console as console_module
-from devsupport_backend.adapter_runtime import TargetAdapterResolver
+from devsupport_backend.adapter_runtime import ProviderBackendConfigRegistry, TargetAdapterResolver
 from devsupport_backend.agent.nodes.planner import (
     PlanningError,
     deterministic_initial_evidence_plan,
@@ -25,7 +26,8 @@ from devsupport_backend.agent.state import (
     agent_state_to_checkpoint_payload,
     create_initial_agent_state,
 )
-from devsupport_backend.config import Settings
+from devsupport_backend.config import ProviderBackendConfig, Settings
+from devsupport_backend.main import app
 from devsupport_backend.models import Incident
 from devsupport_backend.target_config import (
     AdapterType,
@@ -128,17 +130,42 @@ def _resolver() -> TargetAdapterResolver:
         ProviderConfigRegistry(
             [
                 ProviderConfig(
-                    provider_config_ref="fault-lab-local", adapter_type=AdapterType.FAULT_LAB
+                    provider_config_ref="fault-lab-local",
+                    adapter_type=AdapterType.FAULT_LAB,
+                    backend_config_key="fault-lab-local-settings",
                 ),
                 ProviderConfig(
-                    provider_config_ref="otel-logs", adapter_type=AdapterType.OPENSEARCH
+                    provider_config_ref="otel-logs",
+                    adapter_type=AdapterType.OPENSEARCH,
+                    backend_config_key="otel-logs-settings",
                 ),
                 ProviderConfig(
-                    provider_config_ref="otel-metrics", adapter_type=AdapterType.PROMETHEUS
+                    provider_config_ref="otel-metrics",
+                    adapter_type=AdapterType.PROMETHEUS,
+                    backend_config_key="otel-metrics-settings",
                 ),
             ]
         ),
-        SimpleNamespace(),  # type: ignore[arg-type]
+        ProviderBackendConfigRegistry(
+            [
+                ProviderBackendConfig(
+                    backend_config_key="fault-lab-local-settings",
+                    adapter_type=AdapterType.FAULT_LAB,
+                    order_service_url="http://fault-lab-orders.test",
+                    payment_service_url="http://fault-lab-payments.test",
+                ),
+                ProviderBackendConfig(
+                    backend_config_key="otel-logs-settings",
+                    adapter_type=AdapterType.OPENSEARCH,
+                    endpoint="http://otel-opensearch.test",
+                ),
+                ProviderBackendConfig(
+                    backend_config_key="otel-metrics-settings",
+                    adapter_type=AdapterType.PROMETHEUS,
+                    endpoint="http://otel-prometheus.test",
+                ),
+            ]
+        ),
     )
 
 
@@ -148,27 +175,134 @@ def test_target_adapter_resolver_uses_each_targets_logs_and_metrics_adapters(
     target_a = _target(logs=AdapterType.FAULT_LAB, metrics=AdapterType.FAULT_LAB)
     target_b = _target(logs=AdapterType.OPENSEARCH, metrics=AdapterType.PROMETHEUS)
     monkeypatch.setattr(
-        adapter_runtime_module.FaultLabLogsAdapter, "from_settings", lambda _: "a-logs"
+        adapter_runtime_module.FaultLabLogsAdapter, "__init__", lambda *_args, **_kwargs: None
     )
     monkeypatch.setattr(
-        adapter_runtime_module.FaultLabMetricsAdapter, "from_settings", lambda _: "a-metrics"
+        adapter_runtime_module.FaultLabMetricsAdapter, "__init__", lambda *_args, **_kwargs: None
     )
     monkeypatch.setattr(
-        adapter_runtime_module.OpenSearchLogsAdapter, "from_settings", lambda _: "b-logs"
+        adapter_runtime_module.OpenSearchLogsAdapter, "__init__", lambda *_args, **_kwargs: None
     )
     monkeypatch.setattr(
-        adapter_runtime_module.PrometheusMetricsAdapter, "from_settings", lambda _: "b-metrics"
+        adapter_runtime_module.PrometheusMetricsAdapter, "__init__", lambda *_args, **_kwargs: None
     )
 
     dependencies_a = _resolver().build_tool_execution_dependencies(target_a, object())
     dependencies_b = _resolver().build_tool_execution_dependencies(target_b, object())
 
-    assert dependencies_a.logs_adapter == "a-logs"
-    assert dependencies_a.metrics_adapter == "a-metrics"
-    assert dependencies_b.logs_adapter == "b-logs"
-    assert dependencies_b.metrics_adapter == "b-metrics"
+    assert isinstance(dependencies_a.logs_adapter, adapter_runtime_module.FaultLabLogsAdapter)
+    assert isinstance(
+        dependencies_a.metrics_adapter, adapter_runtime_module.FaultLabMetricsAdapter
+    )
+    assert isinstance(dependencies_b.logs_adapter, adapter_runtime_module.OpenSearchLogsAdapter)
+    assert isinstance(
+        dependencies_b.metrics_adapter, adapter_runtime_module.PrometheusMetricsAdapter
+    )
     assert dependencies_a.logs_adapter != dependencies_b.logs_adapter
     assert dependencies_a.metrics_adapter != dependencies_b.metrics_adapter
+
+
+def test_same_adapter_type_uses_the_provider_backend_selected_by_each_target() -> None:
+    target_a = _target(logs=AdapterType.OPENSEARCH, metrics=AdapterType.PROMETHEUS)
+    target_b = _target(logs=AdapterType.OPENSEARCH, metrics=AdapterType.PROMETHEUS)
+    target_a = target_a.model_copy(
+        update={
+            "logs": CapabilityConfig(
+                enabled=True,
+                adapter_type=AdapterType.OPENSEARCH,
+                provider_config_ref="prod-opensearch",
+            ),
+            "metrics": CapabilityConfig(
+                enabled=True,
+                adapter_type=AdapterType.PROMETHEUS,
+                provider_config_ref="prod-prometheus",
+            ),
+        }
+    )
+    target_b = target_b.model_copy(
+        update={
+            "logs": CapabilityConfig(
+                enabled=True,
+                adapter_type=AdapterType.OPENSEARCH,
+                provider_config_ref="staging-opensearch",
+            ),
+            "metrics": CapabilityConfig(
+                enabled=True,
+                adapter_type=AdapterType.PROMETHEUS,
+                provider_config_ref="staging-prometheus",
+            ),
+        }
+    )
+    resolver = TargetAdapterResolver(
+        ProviderConfigRegistry(
+            [
+                ProviderConfig(
+                    provider_config_ref="prod-opensearch",
+                    adapter_type=AdapterType.OPENSEARCH,
+                    backend_config_key="prod-opensearch-settings",
+                ),
+                ProviderConfig(
+                    provider_config_ref="staging-opensearch",
+                    adapter_type=AdapterType.OPENSEARCH,
+                    backend_config_key="staging-opensearch-settings",
+                ),
+                ProviderConfig(
+                    provider_config_ref="prod-prometheus",
+                    adapter_type=AdapterType.PROMETHEUS,
+                    backend_config_key="prod-prometheus-settings",
+                ),
+                ProviderConfig(
+                    provider_config_ref="staging-prometheus",
+                    adapter_type=AdapterType.PROMETHEUS,
+                    backend_config_key="staging-prometheus-settings",
+                ),
+            ]
+        ),
+        ProviderBackendConfigRegistry(
+            [
+                ProviderBackendConfig(
+                    backend_config_key="prod-opensearch-settings",
+                    adapter_type=AdapterType.OPENSEARCH,
+                    endpoint="https://opensearch.prod.internal",
+                ),
+                ProviderBackendConfig(
+                    backend_config_key="staging-opensearch-settings",
+                    adapter_type=AdapterType.OPENSEARCH,
+                    endpoint="https://opensearch.staging.internal",
+                ),
+                ProviderBackendConfig(
+                    backend_config_key="prod-prometheus-settings",
+                    adapter_type=AdapterType.PROMETHEUS,
+                    endpoint="https://prometheus.prod.internal",
+                ),
+                ProviderBackendConfig(
+                    backend_config_key="staging-prometheus-settings",
+                    adapter_type=AdapterType.PROMETHEUS,
+                    endpoint="https://prometheus.staging.internal",
+                ),
+            ]
+        ),
+    )
+
+    dependencies_a = resolver.build_tool_execution_dependencies(target_a, object())
+    dependencies_b = resolver.build_tool_execution_dependencies(target_b, object())
+
+    assert isinstance(dependencies_a.logs_adapter, adapter_runtime_module.OpenSearchLogsAdapter)
+    assert isinstance(dependencies_b.logs_adapter, adapter_runtime_module.OpenSearchLogsAdapter)
+    assert isinstance(
+        dependencies_a.metrics_adapter, adapter_runtime_module.PrometheusMetricsAdapter
+    )
+    assert isinstance(
+        dependencies_b.metrics_adapter, adapter_runtime_module.PrometheusMetricsAdapter
+    )
+    assert dependencies_a.logs_adapter._opensearch_url == "https://opensearch.prod.internal"
+    assert dependencies_b.logs_adapter._opensearch_url == "https://opensearch.staging.internal"
+    assert dependencies_a.metrics_adapter._prometheus_url == "https://prometheus.prod.internal"
+    assert dependencies_b.metrics_adapter._prometheus_url == "https://prometheus.staging.internal"
+    dependencies_a.logs_adapter._http_client.close()
+    dependencies_b.logs_adapter._http_client.close()
+    dependencies_a.metrics_adapter._http_client.close()
+    dependencies_b.metrics_adapter._http_client.close()
 
 
 def test_disabled_target_capabilities_are_not_constructed_or_exposed(
@@ -176,15 +310,17 @@ def test_disabled_target_capabilities_are_not_constructed_or_exposed(
 ) -> None:
     target = _target(logs=AdapterType.FAULT_LAB, metrics=AdapterType.FAULT_LAB)
     monkeypatch.setattr(
-        adapter_runtime_module.FaultLabLogsAdapter, "from_settings", lambda _: object()
+        adapter_runtime_module.FaultLabLogsAdapter, "__init__", lambda *_args, **_kwargs: None
     )
     monkeypatch.setattr(
-        adapter_runtime_module.FaultLabMetricsAdapter, "from_settings", lambda _: object()
+        adapter_runtime_module.FaultLabMetricsAdapter, "__init__", lambda *_args, **_kwargs: None
     )
     monkeypatch.setattr(
         adapter_runtime_module.FaultLabTracesAdapter,
-        "from_settings",
-        lambda _: (_ for _ in ()).throw(AssertionError("disabled adapter must not construct")),
+        "__init__",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("disabled adapter must not construct")
+        ),
     )
 
     dependencies = _resolver().build_tool_execution_dependencies(target, object())
@@ -213,15 +349,85 @@ def test_unknown_provider_reference_and_mismatched_adapter_fail_closed() -> None
         ProviderConfigRegistry(
             [
                 ProviderConfig(
-                    provider_config_ref="fault-lab-local", adapter_type=AdapterType.OPENSEARCH
+                    provider_config_ref="fault-lab-local",
+                    adapter_type=AdapterType.OPENSEARCH,
+                    backend_config_key="opensearch-settings",
                 )
             ]
         ).require("fault-lab-local", AdapterType.FAULT_LAB)
 
     with pytest.raises(ValueError):
         ProviderConfig.model_validate(
-            {"provider_config_ref": "unknown-adapter", "adapter_type": "not-registered"}
+            {
+                "provider_config_ref": "unknown-adapter",
+                "adapter_type": "not-registered",
+                "backend_config_key": "unknown-adapter-settings",
+            }
         )
+
+
+def test_missing_or_mismatched_backend_provider_configuration_fails_closed() -> None:
+    target = _target(logs=AdapterType.OPENSEARCH, metrics=AdapterType.PROMETHEUS)
+    missing_backend = TargetAdapterResolver(
+        ProviderConfigRegistry(
+            [
+                ProviderConfig(
+                    provider_config_ref="otel-logs",
+                    adapter_type=AdapterType.OPENSEARCH,
+                    backend_config_key="missing-opensearch-settings",
+                ),
+                ProviderConfig(
+                    provider_config_ref="otel-metrics",
+                    adapter_type=AdapterType.PROMETHEUS,
+                    backend_config_key="prometheus-settings",
+                ),
+            ]
+        ),
+        ProviderBackendConfigRegistry(
+            [
+                ProviderBackendConfig(
+                    backend_config_key="prometheus-settings",
+                    adapter_type=AdapterType.PROMETHEUS,
+                    endpoint="https://prometheus.internal",
+                )
+            ]
+        ),
+    )
+    with pytest.raises(TargetConfigError, match="unknown backend provider configuration"):
+        missing_backend.build_tool_execution_dependencies(target, object())
+
+    mismatched_backend = TargetAdapterResolver(
+        ProviderConfigRegistry(
+            [
+                ProviderConfig(
+                    provider_config_ref="otel-logs",
+                    adapter_type=AdapterType.OPENSEARCH,
+                    backend_config_key="shared-settings",
+                ),
+                ProviderConfig(
+                    provider_config_ref="otel-metrics",
+                    adapter_type=AdapterType.PROMETHEUS,
+                    backend_config_key="prometheus-settings",
+                ),
+            ]
+        ),
+        ProviderBackendConfigRegistry(
+            [
+                ProviderBackendConfig(
+                    backend_config_key="shared-settings",
+                    adapter_type=AdapterType.PROMETHEUS,
+                    endpoint="https://prometheus.other.internal",
+                ),
+                ProviderBackendConfig(
+                    backend_config_key="prometheus-settings",
+                    adapter_type=AdapterType.PROMETHEUS,
+                    endpoint="https://prometheus.internal",
+                ),
+            ]
+        ),
+    )
+    with pytest.raises(TargetConfigError, match="does not match provider reference"):
+        mismatched_backend.build_tool_execution_dependencies(target, object())
 
 
 def test_formal_v2_runtime_does_not_read_the_legacy_global_provider_switch(
@@ -230,7 +436,17 @@ def test_formal_v2_runtime_does_not_read_the_legacy_global_provider_switch(
     class _TargetSettings:
         provider_configs = [
             ProviderConfig(
-                provider_config_ref="fault-lab-local", adapter_type=AdapterType.FAULT_LAB
+                provider_config_ref="fault-lab-local",
+                adapter_type=AdapterType.FAULT_LAB,
+                backend_config_key="fault-lab-local-settings",
+            )
+        ]
+        provider_backend_configs = [
+            ProviderBackendConfig(
+                backend_config_key="fault-lab-local-settings",
+                adapter_type=AdapterType.FAULT_LAB,
+                order_service_url="http://fault-lab-orders.test",
+                payment_service_url="http://fault-lab-payments.test",
             )
         ]
 
@@ -241,10 +457,10 @@ def test_formal_v2_runtime_does_not_read_the_legacy_global_provider_switch(
     target = _target(logs=AdapterType.FAULT_LAB, metrics=AdapterType.FAULT_LAB)
     monkeypatch.setattr(console_module, "settings", _TargetSettings())
     monkeypatch.setattr(
-        adapter_runtime_module.FaultLabLogsAdapter, "from_settings", lambda _: object()
+        adapter_runtime_module.FaultLabLogsAdapter, "__init__", lambda *_args, **_kwargs: None
     )
     monkeypatch.setattr(
-        adapter_runtime_module.FaultLabMetricsAdapter, "from_settings", lambda _: object()
+        adapter_runtime_module.FaultLabMetricsAdapter, "__init__", lambda *_args, **_kwargs: None
     )
 
     dependencies = console_module.PostgresWorkflowRuntime._tool_execution_dependencies(
@@ -257,6 +473,13 @@ def test_formal_v2_runtime_does_not_read_the_legacy_global_provider_switch(
 
 
 def test_provider_references_do_not_enter_agent_state_or_tool_arguments() -> None:
+    provider_secret = "deployment-only-provider-secret"
+    backend_config = ProviderBackendConfig(
+        backend_config_key="opensearch-secret-settings",
+        adapter_type=AdapterType.OPENSEARCH,
+        endpoint="https://opensearch.internal",
+        credential=provider_secret,
+    )
     state = _state()
     state["pending_tool_call"] = PendingToolCall(
         investigation_goal="inspect logs",
@@ -273,6 +496,12 @@ def test_provider_references_do_not_enter_agent_state_or_tool_arguments() -> Non
     payload = agent_state_to_checkpoint_payload(state)
 
     assert "fault-lab-local" not in str(payload)
+    assert provider_secret not in str(payload)
+    assert provider_secret not in str(state)
+    assert provider_secret not in str(state["pending_tool_call"].tool_arguments)
+    assert provider_secret not in str(backend_config)
+    assert provider_secret not in json.dumps(app.openapi())
+    assert "ProviderBackendConfig" not in app.openapi()["components"]["schemas"]
     assert "provider_config_ref" not in state["pending_tool_call"].tool_arguments
 
 

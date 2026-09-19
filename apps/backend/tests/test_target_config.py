@@ -11,6 +11,7 @@ from devsupport_backend.target_config import (
     AdapterType,
     CapabilityConfig,
     InvestigationTargetConfig,
+    ProviderConfig,
     TargetCapability,
     TargetConfigError,
     TargetConfigRegistry,
@@ -110,6 +111,21 @@ def test_deployment_target_config_rejects_provider_secrets_and_urls() -> None:
             enabled=True,
             adapter_type=AdapterType.OPENSEARCH,
             provider_config_ref="https://provider.example",
+        )
+    with pytest.raises(ValidationError, match="opaque deployment reference"):
+        ProviderConfig(
+            provider_config_ref="orders-observability",
+            adapter_type=AdapterType.OPENSEARCH,
+            backend_config_key="https://provider.example",
+        )
+    with pytest.raises(ValidationError):
+        ProviderConfig.model_validate(
+            {
+                "provider_config_ref": "orders-observability",
+                "adapter_type": "opensearch",
+                "backend_config_key": "orders-opensearch-settings",
+                "endpoint": "https://provider.example",
+            }
         )
 
 
