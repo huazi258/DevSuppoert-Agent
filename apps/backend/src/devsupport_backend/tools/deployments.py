@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from devsupport_backend.config import Settings, settings
-from devsupport_backend.tools.adapter_contracts import AdapterError, DeploymentQueryResult
+from devsupport_backend.tools.adapter_contracts import (
+    AdapterError,
+    AdapterProvenance,
+    DeploymentQueryResult,
+)
 from devsupport_backend.tools.schemas import GetDeploymentHistoryInput, RollbackDeploymentInput
 
 SUPPORTED_ENVIRONMENT = "local"
@@ -95,10 +99,27 @@ class FaultLabDeploymentAdapter:
             response = self._http_client.get(endpoint)
             response.raise_for_status()
             deployment = FaultLabDeploymentResponse.model_validate(response.json())
-        except httpx.HTTPError as error:
+        except httpx.TimeoutException as error:
+            raise DeploymentAdapterError(
+                "timeout",
+                "Runtime evidence provider timed out.",
+                retryable=True,
+            ) from error
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == 429 or error.response.status_code >= 500:
+                raise DeploymentAdapterError(
+                    "fault_lab_unavailable",
+                    "Runtime evidence provider is unavailable.",
+                    retryable=True,
+                ) from error
+            raise DeploymentAdapterError(
+                "fault_lab_query_error",
+                "Runtime evidence request was rejected.",
+            ) from error
+        except httpx.TransportError as error:
             raise DeploymentAdapterError(
                 "fault_lab_unavailable",
-                f"Fault Lab deployment endpoint request failed: {type(error).__name__}",
+                "Runtime evidence provider is unavailable.",
                 retryable=True,
             ) from error
         except (ValidationError, ValueError) as error:
@@ -117,6 +138,7 @@ class FaultLabDeploymentAdapter:
             current_version=deployment.current_version,
             previous_version=deployment.previous_version,
             deployed_at=deployment.deployed_at,
+            provenance=AdapterProvenance(source="fault_lab", observed_at=datetime.now(UTC)),
         )
 
 

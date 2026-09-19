@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from devsupport_backend.config import Settings, settings
-from devsupport_backend.tools.adapter_contracts import AdapterError, LogEvent, LogQueryResult
+from devsupport_backend.tools.adapter_contracts import (
+    MAX_NORMALIZED_LOG_EVENTS,
+    MAX_NORMALIZED_TEXT_CHARS,
+    AdapterError,
+    AdapterProvenance,
+    LogEvent,
+    LogQueryResult,
+)
 from devsupport_backend.tools.schemas import QueryLogsInput
 
 SUPPORTED_ENVIRONMENT = "local"
@@ -104,10 +111,27 @@ class FaultLabLogsAdapter:
             )
             response.raise_for_status()
             payload = FaultLabLogsResponse.model_validate(response.json())
-        except httpx.HTTPError as error:
+        except httpx.TimeoutException as error:
+            raise LogsAdapterError(
+                "timeout",
+                "Runtime evidence provider timed out.",
+                retryable=True,
+            ) from error
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == 429 or error.response.status_code >= 500:
+                raise LogsAdapterError(
+                    "fault_lab_unavailable",
+                    "Runtime evidence provider is unavailable.",
+                    retryable=True,
+                ) from error
+            raise LogsAdapterError(
+                "fault_lab_query_error",
+                "Runtime evidence request was rejected.",
+            ) from error
+        except httpx.TransportError as error:
             raise LogsAdapterError(
                 "fault_lab_unavailable",
-                f"Fault Lab log endpoint request failed: {type(error).__name__}",
+                "Runtime evidence provider is unavailable.",
                 retryable=True,
             ) from error
         except (ValidationError, ValueError) as error:
@@ -127,14 +151,19 @@ class FaultLabLogsAdapter:
                     timestamp=event.timestamp,
                     service=event.service,
                     level=event.level,
-                    message=event.message,
-                    request_id=event.request_id,
-                    trace_id=event.trace_id,
-                    error_type=event.error_type,
+                    message=event.message[:MAX_NORMALIZED_TEXT_CHARS],
+                    request_id=_short_text(event.request_id),
+                    trace_id=_short_text(event.trace_id),
+                    error_type=_short_text(event.error_type),
                     status_code=event.status_code,
                     duration_ms=event.duration_ms,
-                    downstream_service=event.downstream_service,
+                    downstream_service=_short_text(event.downstream_service, limit=100),
                 )
-                for event in payload.events
+                for event in payload.events[: min(tool_input.limit, MAX_NORMALIZED_LOG_EVENTS)]
             ),
+            provenance=AdapterProvenance(source="fault_lab", observed_at=datetime.now(UTC)),
         )
+
+
+def _short_text(value: str | None, *, limit: int = 256) -> str | None:
+    return value[:limit] if value else None

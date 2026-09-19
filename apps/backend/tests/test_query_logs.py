@@ -100,7 +100,7 @@ def test_query_logs_rejects_unknown_service_and_returns_empty_results() -> None:
 
     assert failed.status is ToolStatus.FAILURE
     assert failed.error is not None
-    assert failed.error.code == "unsupported_service"
+    assert failed.error.code == "invalid_request"
 
 
 def test_query_logs_returns_empty_result_without_failure() -> None:

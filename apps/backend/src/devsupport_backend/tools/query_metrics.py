@@ -2,11 +2,16 @@
 
 from time import perf_counter
 
-from devsupport_backend.tools.adapter_contracts import AdapterError, MetricsAdapter
+from devsupport_backend.tools.adapter_contracts import (
+    AdapterError,
+    MetricsAdapter,
+    normalize_adapter_error,
+)
 from devsupport_backend.tools.schemas import (
     MetricSnapshot,
     QueryMetricsInput,
     QueryMetricsOutput,
+    RuntimeEvidenceProvenance,
     ToolError,
     ToolStatus,
 )
@@ -21,15 +26,22 @@ def query_metrics(
     try:
         result = metrics_adapter.query(tool_input)
     except AdapterError as error:
+        normalized_error = normalize_adapter_error(error)
         return QueryMetricsOutput(
             status=ToolStatus.FAILURE,
-            error=ToolError(code=error.code, message=str(error), retryable=error.retryable),
+            error=ToolError(**normalized_error.__dict__),
             duration_ms=_duration_ms(started_at),
         )
 
     return QueryMetricsOutput(
         status=ToolStatus.SUCCESS,
         duration_ms=_duration_ms(started_at),
+        provenance=RuntimeEvidenceProvenance(
+            source=result.provenance.source,
+            service=tool_input.service,
+            environment=tool_input.environment,
+            observed_at=result.provenance.observed_at,
+        ),
         metrics=MetricSnapshot(
             service=result.service,
             environment=tool_input.environment,

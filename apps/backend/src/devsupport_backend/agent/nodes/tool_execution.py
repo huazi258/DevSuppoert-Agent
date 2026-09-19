@@ -218,6 +218,7 @@ def _runtime_evidence(tool_name: ToolName, output: ToolOutput) -> EvidenceContex
             source=tool_name.value,
             summary=f"Log query matched {logs_output.match_count} event(s).",
             data={
+                "provenance": _provenance_data(logs_output),
                 "match_count": logs_output.match_count,
                 "first_seen": _serialize_time(logs_output.first_seen),
                 "last_seen": _serialize_time(logs_output.last_seen),
@@ -236,6 +237,7 @@ def _runtime_evidence(tool_name: ToolName, output: ToolOutput) -> EvidenceContex
             source=tool_name.value,
             summary="Metric snapshot returned current request, error, latency, and health facts.",
             data={
+                "provenance": _provenance_data(metrics_output),
                 "metrics": (
                     metrics_output.metrics.model_dump(mode="json")
                     if metrics_output.metrics
@@ -267,7 +269,11 @@ def _runtime_evidence(tool_name: ToolName, output: ToolOutput) -> EvidenceContex
             evidence_type="trace_query_result",
             source=tool_name.value,
             summary=f"Trace query returned {len(traces_output.traces)} trace summary record(s).",
-            data={"trace_count": len(traces_output.traces), "traces": traces},
+            data={
+                "provenance": _provenance_data(traces_output),
+                "trace_count": len(traces_output.traces),
+                "traces": traces,
+            },
         )
     if tool_name is ToolName.GET_DEPLOYMENT_HISTORY:
         deployments_output = cast(GetDeploymentHistoryOutput, output)
@@ -276,6 +282,7 @@ def _runtime_evidence(tool_name: ToolName, output: ToolOutput) -> EvidenceContex
             source=tool_name.value,
             summary=f"Deployment query returned {len(deployments_output.deployments)} record(s).",
             data={
+                "provenance": _provenance_data(deployments_output),
                 "deployments": [
                     item.model_dump(mode="json")
                     for item in deployments_output.deployments[:MAX_DEPLOYMENT_RECORDS]
@@ -288,6 +295,11 @@ def _runtime_evidence(tool_name: ToolName, output: ToolOutput) -> EvidenceContex
 def _serialize_time(value: object) -> str | None:
     """Return only JSON-safe time facts from an optional runtime Tool response."""
     return value.isoformat() if hasattr(value, "isoformat") else None
+
+
+def _provenance_data(output: ToolOutput) -> dict[str, object] | None:
+    """Retain safe provider identity and scope without exposing backend configuration."""
+    return output.provenance.model_dump(mode="json") if output.provenance else None
 
 
 def _compact_trace_span(span: TraceSpan | None) -> dict[str, object] | None:

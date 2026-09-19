@@ -62,10 +62,10 @@ def test_query_metrics_combines_fixed_metrics_and_health_endpoints() -> None:
 @pytest.mark.parametrize(
     ("tool_input", "error_code"),
     [
-        (QueryMetricsInput(service="unknown-service", environment="local"), "unsupported_service"),
+        (QueryMetricsInput(service="unknown-service", environment="local"), "invalid_request"),
         (
             QueryMetricsInput(service="order-service", environment="staging"),
-            "unsupported_environment",
+            "invalid_request",
         ),
     ],
 )
@@ -95,6 +95,6 @@ def test_query_metrics_returns_structured_failure_when_fault_lab_is_unavailable(
 
     assert output.status is ToolStatus.FAILURE
     assert output.error is not None
-    assert output.error.code == "fault_lab_unavailable"
+    assert output.error.code == "provider_unavailable"
     assert output.error.retryable
     assert output.metrics is None

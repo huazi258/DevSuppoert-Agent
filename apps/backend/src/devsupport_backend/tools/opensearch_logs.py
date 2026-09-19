@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from devsupport_backend.config import Settings, settings
-from devsupport_backend.tools.adapter_contracts import AdapterError, LogEvent, LogQueryResult
+from devsupport_backend.tools.adapter_contracts import (
+    MAX_NORMALIZED_LOG_EVENTS,
+    AdapterError,
+    AdapterProvenance,
+    LogEvent,
+    LogQueryResult,
+)
 from devsupport_backend.tools.schemas import QueryLogsInput
 
 INDEX_PATTERN = "otel-logs-*"
@@ -140,7 +146,13 @@ class OpenSearchLogsAdapter:
                 "opensearch_query_error",
                 "OpenSearch rejected the logs query.",
             ) from error
-        except (httpx.TimeoutException, httpx.TransportError) as error:
+        except httpx.TimeoutException as error:
+            raise OpenSearchLogsAdapterError(
+                "timeout",
+                "Runtime evidence provider timed out.",
+                retryable=True,
+            ) from error
+        except httpx.TransportError as error:
             raise OpenSearchLogsAdapterError(
                 "opensearch_unavailable",
                 "OpenSearch logs provider is unavailable.",
@@ -155,7 +167,10 @@ class OpenSearchLogsAdapter:
         events = tuple(_to_log_event(hit.source, tool_input.service) for hit in payload.hits.hits)
         return LogQueryResult(
             match_count=_total_match_count(payload.hits.total),
-            events=tuple(sorted(events, key=lambda event: event.timestamp)),
+            events=tuple(sorted(events, key=lambda event: event.timestamp))[
+                : min(tool_input.limit, MAX_NORMALIZED_LOG_EVENTS)
+            ],
+            provenance=AdapterProvenance(source="opensearch", observed_at=datetime.now(UTC)),
         )
 
 

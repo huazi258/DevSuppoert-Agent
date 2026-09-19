@@ -31,6 +31,7 @@ from devsupport_backend.tools.schemas import (
     QueryLogsOutput,
     QueryMetricsOutput,
     QueryTracesOutput,
+    RuntimeEvidenceProvenance,
     SearchKnowledgeOutput,
     SearchKnowledgeResult,
     ToolError,
@@ -113,11 +114,17 @@ def successful_output(tool_name: ToolName):
             ],
         )
     if tool_name is ToolName.QUERY_LOGS:
-        return QueryLogsOutput(status=ToolStatus.SUCCESS, duration_ms=2.0, match_count=3)
+        return QueryLogsOutput(
+            status=ToolStatus.SUCCESS,
+            duration_ms=2.0,
+            provenance=_runtime_provenance(),
+            match_count=3,
+        )
     if tool_name is ToolName.QUERY_METRICS:
         return QueryMetricsOutput(
             status=ToolStatus.SUCCESS,
             duration_ms=2.5,
+            provenance=_runtime_provenance(),
             metrics=MetricSnapshot(
                 service="order-service",
                 environment="local",
@@ -131,11 +138,17 @@ def successful_output(tool_name: ToolName):
             ),
         )
     if tool_name is ToolName.QUERY_TRACES:
-        return QueryTracesOutput(status=ToolStatus.SUCCESS, duration_ms=3.0, traces=[])
+        return QueryTracesOutput(
+            status=ToolStatus.SUCCESS,
+            duration_ms=3.0,
+            provenance=_runtime_provenance(),
+            traces=[],
+        )
     if tool_name is ToolName.GET_DEPLOYMENT_HISTORY:
         return GetDeploymentHistoryOutput(
             status=ToolStatus.SUCCESS,
             duration_ms=1.0,
+            provenance=_runtime_provenance(),
             deployments=[
                 DeploymentRecord(
                     service="order-service",
@@ -146,6 +159,15 @@ def successful_output(tool_name: ToolName):
             ],
         )
     raise AssertionError(f"unexpected ToolName in test: {tool_name}")
+
+
+def _runtime_provenance() -> RuntimeEvidenceProvenance:
+    return RuntimeEvidenceProvenance(
+        source="test_adapter",
+        service="order-service",
+        environment="local",
+        observed_at=datetime(2026, 8, 8, 10, 0, tzinfo=UTC),
+    )
 
 
 def tool_arguments(tool_name: ToolName) -> dict[str, object]:

@@ -212,7 +212,7 @@ def test_trace_summary_filters_by_anchor_service_and_applies_limit() -> None:
                 time_range_start=datetime.now(UTC),
                 time_range_end=datetime.now(UTC),
             ),
-            "unsupported_service",
+            "invalid_request",
         ),
         (
             QueryTracesInput(
@@ -221,7 +221,7 @@ def test_trace_summary_filters_by_anchor_service_and_applies_limit() -> None:
                 time_range_start=datetime.now(UTC),
                 time_range_end=datetime.now(UTC),
             ),
-            "unsupported_environment",
+            "invalid_request",
         ),
     ],
 )
@@ -259,5 +259,5 @@ def test_query_traces_returns_structured_failure_when_fault_lab_is_unavailable()
 
     assert output.status is ToolStatus.FAILURE
     assert output.error is not None
-    assert output.error.code == "fault_lab_unavailable"
+    assert output.error.code == "provider_unavailable"
     assert output.error.retryable

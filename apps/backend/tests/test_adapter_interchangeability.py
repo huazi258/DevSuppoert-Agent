@@ -267,7 +267,7 @@ def test_second_provider_adapter_errors_use_the_existing_tool_failure_contract()
         assert output.status is ToolStatus.FAILURE
         assert output.error is not None
         assert output.error.code == "provider_unavailable"
-        assert output.error.message == "second provider unavailable"
+        assert output.error.message == "The runtime evidence provider is unavailable."
         assert output.error.retryable
 
 

@@ -289,7 +289,9 @@ def test_prometheus_adapter_maps_transport_errors_as_retryable(error: Exception)
         adapter.query(_input())
     client.close()
 
-    assert raised.value.code == "prometheus_unavailable"
+    assert raised.value.code == (
+        "timeout" if isinstance(error, httpx.TimeoutException) else "prometheus_unavailable"
+    )
     assert raised.value.retryable
 
 

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
 from devsupport_backend.tools.schemas import (
@@ -12,6 +12,23 @@ from devsupport_backend.tools.schemas import (
     QueryMetricsInput,
     QueryTracesInput,
 )
+
+MAX_NORMALIZED_LOG_EVENTS = 100
+MAX_NORMALIZED_TRACE_SPANS = 100
+MAX_NORMALIZED_TEXT_CHARS = 2_000
+
+
+@dataclass(frozen=True)
+class AdapterProvenance:
+    """Safe provider identity and observation time retained by normalized results."""
+
+    source: str
+    observed_at: datetime
+
+
+def unknown_adapter_provenance() -> AdapterProvenance:
+    """Keep compatibility adapters explicit when they have not declared a provider source."""
+    return AdapterProvenance(source="unknown", observed_at=datetime.now(UTC))
 
 
 class AdapterError(RuntimeError):
@@ -22,6 +39,53 @@ class AdapterError(RuntimeError):
         self.code = code
         self.message = message
         self.retryable = retryable
+
+
+@dataclass(frozen=True)
+class NormalizedAdapterError:
+    """Provider-neutral failure information safe to expose through a Tool result."""
+
+    code: str
+    message: str
+    retryable: bool
+
+
+def normalize_adapter_error(error: AdapterError) -> NormalizedAdapterError:
+    """Hide provider implementation details behind the finite Tool error taxonomy."""
+    if error.code == "capability_unavailable":
+        return NormalizedAdapterError(
+            code="capability_unavailable",
+            message="The requested investigation capability is not enabled.",
+            retryable=False,
+        )
+    if error.code == "timeout":
+        return NormalizedAdapterError(
+            code="timeout",
+            message="The runtime evidence provider timed out.",
+            retryable=True,
+        )
+    if error.code.startswith("invalid_") and error.code.endswith("response"):
+        return NormalizedAdapterError(
+            code="invalid_provider_response",
+            message="The runtime evidence provider returned an invalid response.",
+            retryable=False,
+        )
+    if error.code in {
+        "unsupported_service",
+        "unsupported_environment",
+        "service_mismatch",
+        "service_metrics_not_found",
+    } or error.code.endswith("query_error"):
+        return NormalizedAdapterError(
+            code="invalid_request",
+            message="The runtime evidence request is not supported by this provider.",
+            retryable=False,
+        )
+    return NormalizedAdapterError(
+        code="provider_unavailable",
+        message="The runtime evidence provider is unavailable.",
+        retryable=error.retryable or error.code.endswith("unavailable"),
+    )
 
 
 @dataclass(frozen=True)
@@ -46,6 +110,7 @@ class LogQueryResult:
 
     match_count: int
     events: tuple[LogEvent, ...]
+    provenance: AdapterProvenance = field(default_factory=unknown_adapter_provenance)
 
 
 @dataclass(frozen=True)
@@ -59,6 +124,7 @@ class MetricsQueryResult:
     error_count: int
     last_request_duration_ms: float | None
     average_request_duration_ms: float | None
+    provenance: AdapterProvenance = field(default_factory=unknown_adapter_provenance)
 
     @property
     def error_rate(self) -> float:
@@ -89,6 +155,7 @@ class TraceQueryResult:
     """A bounded set of normalized span facts."""
 
     spans: tuple[TraceSpanRecord, ...]
+    provenance: AdapterProvenance = field(default_factory=unknown_adapter_provenance)
 
 
 @dataclass(frozen=True)
@@ -99,6 +166,7 @@ class DeploymentQueryResult:
     current_version: str
     previous_version: str | None
     deployed_at: datetime | None
+    provenance: AdapterProvenance = field(default_factory=unknown_adapter_provenance)
 
 
 @runtime_checkable

@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from devsupport_backend.config import Settings, settings
-from devsupport_backend.tools.adapter_contracts import AdapterError, MetricsQueryResult
+from devsupport_backend.tools.adapter_contracts import (
+    AdapterError,
+    AdapterProvenance,
+    MetricsQueryResult,
+)
 from devsupport_backend.tools.schemas import QueryMetricsInput
 
 SUPPORTED_ENVIRONMENT = "local"
@@ -87,10 +92,27 @@ class FaultLabMetricsAdapter:
             health_response.raise_for_status()
             metrics = FaultLabMetricsResponse.model_validate(metrics_response.json())
             health = FaultLabHealthResponse.model_validate(health_response.json())
-        except httpx.HTTPError as error:
+        except httpx.TimeoutException as error:
+            raise MetricsAdapterError(
+                "timeout",
+                "Runtime evidence provider timed out.",
+                retryable=True,
+            ) from error
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == 429 or error.response.status_code >= 500:
+                raise MetricsAdapterError(
+                    "fault_lab_unavailable",
+                    "Runtime evidence provider is unavailable.",
+                    retryable=True,
+                ) from error
+            raise MetricsAdapterError(
+                "fault_lab_query_error",
+                "Runtime evidence request was rejected.",
+            ) from error
+        except httpx.TransportError as error:
             raise MetricsAdapterError(
                 "fault_lab_unavailable",
-                f"Fault Lab metrics endpoint request failed: {type(error).__name__}",
+                "Runtime evidence provider is unavailable.",
                 retryable=True,
             ) from error
         except (ValidationError, ValueError) as error:
@@ -111,4 +133,5 @@ class FaultLabMetricsAdapter:
             error_count=metrics.error_count,
             last_request_duration_ms=metrics.last_request_duration_ms,
             average_request_duration_ms=metrics.average_request_duration_ms,
+            provenance=AdapterProvenance(source="fault_lab", observed_at=datetime.now(UTC)),
         )

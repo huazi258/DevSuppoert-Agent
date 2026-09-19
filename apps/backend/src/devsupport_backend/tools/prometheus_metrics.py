@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import math
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from devsupport_backend.config import Settings, settings
-from devsupport_backend.tools.adapter_contracts import AdapterError, MetricsQueryResult
+from devsupport_backend.tools.adapter_contracts import (
+    AdapterError,
+    AdapterProvenance,
+    MetricsQueryResult,
+)
 from devsupport_backend.tools.schemas import QueryMetricsInput
 
 CALLS_METRIC = "traces_span_metrics_calls_total"
@@ -120,6 +125,7 @@ class PrometheusMetricsAdapter:
             error_count=error_count,
             last_request_duration_ms=None,
             average_request_duration_ms=average_duration_ms,
+            provenance=AdapterProvenance(source="prometheus", observed_at=datetime.now(UTC)),
         )
 
     def _query_value(self, promql: str, requested_service: str) -> float | None:
@@ -142,7 +148,13 @@ class PrometheusMetricsAdapter:
                 "prometheus_query_error",
                 "Prometheus rejected the metrics query.",
             ) from error
-        except (httpx.TimeoutException, httpx.TransportError) as error:
+        except httpx.TimeoutException as error:
+            raise PrometheusMetricsAdapterError(
+                "timeout",
+                "Runtime evidence provider timed out.",
+                retryable=True,
+            ) from error
+        except httpx.TransportError as error:
             raise PrometheusMetricsAdapterError(
                 "prometheus_unavailable",
                 "Prometheus metrics provider is unavailable.",

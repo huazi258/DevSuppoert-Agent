@@ -43,6 +43,7 @@ from devsupport_backend.tools.registry import ToolName
 from devsupport_backend.tools.schemas import (
     MetricSnapshot,
     QueryMetricsOutput,
+    RuntimeEvidenceProvenance,
     ToolError,
     ToolStatus,
 )
@@ -301,6 +302,12 @@ def _successful_metrics_output() -> QueryMetricsOutput:
     return QueryMetricsOutput(
         status=ToolStatus.SUCCESS,
         duration_ms=2.0,
+        provenance=RuntimeEvidenceProvenance(
+            source="test_adapter",
+            service="catalog-service",
+            environment="staging",
+            observed_at=datetime(2026, 8, 8, 10, 0, tzinfo=UTC),
+        ),
         metrics=MetricSnapshot(
             service="catalog-service",
             environment="staging",

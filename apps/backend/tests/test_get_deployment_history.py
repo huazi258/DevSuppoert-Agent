@@ -58,11 +58,11 @@ def test_get_deployment_history_returns_only_real_current_and_previous_facts() -
     [
         (
             GetDeploymentHistoryInput(service="unknown-service", environment="local"),
-            "unsupported_service",
+            "invalid_request",
         ),
         (
             GetDeploymentHistoryInput(service="order-service", environment="staging"),
-            "unsupported_environment",
+            "invalid_request",
         ),
     ],
 )
@@ -100,7 +100,7 @@ def test_get_deployment_history_rejects_service_mismatch() -> None:
 
     assert output.status is ToolStatus.FAILURE
     assert output.error is not None
-    assert output.error.code == "service_mismatch"
+    assert output.error.code == "invalid_request"
 
 
 def test_get_deployment_history_returns_structured_failure_when_fault_lab_is_unavailable() -> None:
@@ -114,5 +114,5 @@ def test_get_deployment_history_returns_structured_failure_when_fault_lab_is_una
 
     assert output.status is ToolStatus.FAILURE
     assert output.error is not None
-    assert output.error.code == "fault_lab_unavailable"
+    assert output.error.code == "provider_unavailable"
     assert output.error.retryable

@@ -4,10 +4,17 @@ from collections import defaultdict
 from collections.abc import Sequence
 from time import perf_counter
 
-from devsupport_backend.tools.adapter_contracts import AdapterError, TracesAdapter, TraceSpanRecord
+from devsupport_backend.tools.adapter_contracts import (
+    MAX_NORMALIZED_TRACE_SPANS,
+    AdapterError,
+    TracesAdapter,
+    TraceSpanRecord,
+    normalize_adapter_error,
+)
 from devsupport_backend.tools.schemas import (
     QueryTracesInput,
     QueryTracesOutput,
+    RuntimeEvidenceProvenance,
     ToolError,
     ToolStatus,
     TraceError,
@@ -25,15 +32,24 @@ def query_traces(
     try:
         result = traces_adapter.query(tool_input)
     except AdapterError as error:
+        normalized_error = normalize_adapter_error(error)
         return QueryTracesOutput(
             status=ToolStatus.FAILURE,
-            error=ToolError(code=error.code, message=str(error), retryable=error.retryable),
+            error=ToolError(**normalized_error.__dict__),
             duration_ms=_duration_ms(started_at),
         )
 
     return QueryTracesOutput(
         status=ToolStatus.SUCCESS,
         duration_ms=_duration_ms(started_at),
+        provenance=RuntimeEvidenceProvenance(
+            source=result.provenance.source,
+            service=tool_input.service,
+            environment=tool_input.environment,
+            observed_at=result.provenance.observed_at,
+            time_range_start=tool_input.time_range_start,
+            time_range_end=tool_input.time_range_end,
+        ),
         traces=_summarize_traces(
             result.spans,
             anchor_service=tool_input.service,
@@ -61,7 +77,7 @@ def _summarize_traces(
         spans = sorted(
             (_to_trace_span(record) for record in records_for_trace),
             key=lambda span: (span.start_time, span.span_id),
-        )
+        )[:MAX_NORMALIZED_TRACE_SPANS]
         errors = [
             TraceError(
                 service=span.service,
@@ -71,7 +87,7 @@ def _summarize_traces(
             )
             for span in spans
             if span.error is not None
-        ]
+        ][:MAX_NORMALIZED_TRACE_SPANS]
         start_time = min(span.start_time for span in spans)
         end_time = max(span.end_time for span in spans)
         slowest_span = max(spans, key=lambda span: (span.duration_ms, span.span_id))
@@ -91,15 +107,15 @@ def _summarize_traces(
 def _to_trace_span(record: TraceSpanRecord) -> TraceSpan:
     """Convert the adapter contract without dropping timing or relationship facts."""
     return TraceSpan(
-        span_id=record.span_id,
-        parent_span_id=record.parent_span_id,
-        service=record.service,
-        operation=record.operation,
+        span_id=record.span_id[:256],
+        parent_span_id=record.parent_span_id[:256] if record.parent_span_id else None,
+        service=record.service[:100],
+        operation=record.operation[:500],
         start_time=record.start_time,
         end_time=record.end_time,
         duration_ms=record.duration_ms,
-        status=record.status,
-        error=record.error,
+        status=record.status[:50],
+        error=record.error[:1_000] if record.error else None,
     )
 
 

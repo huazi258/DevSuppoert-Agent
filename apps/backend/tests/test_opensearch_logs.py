@@ -232,7 +232,7 @@ def test_opensearch_adapter_maps_timeout_as_retryable() -> None:
         adapter.query(_input())
     client.close()
 
-    assert raised.value.code == "opensearch_unavailable"
+    assert raised.value.code == "timeout"
     assert raised.value.retryable
 
 

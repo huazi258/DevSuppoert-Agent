@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 
 import httpx
@@ -10,7 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from devsupport_backend.config import Settings, settings
 from devsupport_backend.tools.adapter_contracts import (
+    MAX_NORMALIZED_TRACE_SPANS,
     AdapterError,
+    AdapterProvenance,
     TraceQueryResult,
     TraceSpanRecord,
 )
@@ -104,10 +106,27 @@ class FaultLabTracesAdapter:
                 )
                 response.raise_for_status()
                 payload = FaultLabTracesResponse.model_validate(response.json())
-            except httpx.HTTPError as error:
+            except httpx.TimeoutException as error:
+                raise TracesAdapterError(
+                    "timeout",
+                    "Runtime evidence provider timed out.",
+                    retryable=True,
+                ) from error
+            except httpx.HTTPStatusError as error:
+                if error.response.status_code == 429 or error.response.status_code >= 500:
+                    raise TracesAdapterError(
+                        "fault_lab_unavailable",
+                        "Runtime evidence provider is unavailable.",
+                        retryable=True,
+                    ) from error
+                raise TracesAdapterError(
+                    "fault_lab_query_error",
+                    "Runtime evidence request was rejected.",
+                ) from error
+            except httpx.TransportError as error:
                 raise TracesAdapterError(
                     "fault_lab_unavailable",
-                    f"Fault Lab trace endpoint request failed: {type(error).__name__}",
+                    "Runtime evidence provider is unavailable.",
                     retryable=True,
                 ) from error
             except (ValidationError, ValueError) as error:
@@ -136,6 +155,7 @@ class FaultLabTracesAdapter:
                     status=span.status,
                     error=span.error,
                 )
-                for span in spans
-            )
+                for span in spans[:MAX_NORMALIZED_TRACE_SPANS]
+            ),
+            provenance=AdapterProvenance(source="fault_lab", observed_at=datetime.now(UTC)),
         )

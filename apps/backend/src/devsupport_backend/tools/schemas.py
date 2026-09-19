@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ToolStatus(StrEnum):
@@ -33,6 +33,26 @@ class ToolError(BaseModel):
     retryable: bool = False
 
 
+class RuntimeEvidenceProvenance(BaseModel):
+    """Safe origin and scope retained with a normalized runtime Tool result."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(min_length=1, max_length=100)
+    service: str = Field(min_length=1, max_length=100)
+    environment: str = Field(min_length=1, max_length=50)
+    observed_at: datetime
+    time_range_start: datetime | None = None
+    time_range_end: datetime | None = None
+
+    @field_validator("source")
+    @classmethod
+    def reject_provider_addresses(cls, value: str) -> str:
+        if "://" in value:
+            raise ValueError("runtime evidence source must not contain a provider address")
+        return value
+
+
 class ToolOutput(BaseModel):
     """Common strict outcome and timing boundary for all tool outputs."""
 
@@ -41,6 +61,7 @@ class ToolOutput(BaseModel):
     status: ToolStatus
     error: ToolError | None = None
     duration_ms: float | None = Field(default=None, ge=0)
+    provenance: RuntimeEvidenceProvenance | None = None
 
     @model_validator(mode="after")
     def validate_outcome(self) -> "ToolOutput":
@@ -129,7 +150,7 @@ class ErrorPattern(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    pattern: str = Field(min_length=1)
+    pattern: str = Field(min_length=1, max_length=2_000)
     count: int = Field(ge=1)
 
 
@@ -140,14 +161,14 @@ class LogSample(BaseModel):
 
     timestamp: datetime
     service: str = Field(min_length=1)
-    level: str = Field(min_length=1)
-    message: str = Field(min_length=1)
-    request_id: str | None = None
-    trace_id: str | None = None
-    error_type: str | None = None
+    level: str = Field(min_length=1, max_length=20)
+    message: str = Field(min_length=1, max_length=2_000)
+    request_id: str | None = Field(default=None, max_length=256)
+    trace_id: str | None = Field(default=None, max_length=256)
+    error_type: str | None = Field(default=None, max_length=256)
     status_code: int | None = None
     duration_ms: float | None = Field(default=None, ge=0)
-    downstream_service: str | None = None
+    downstream_service: str | None = Field(default=None, max_length=100)
 
 
 class QueryLogsOutput(ToolOutput):
@@ -156,9 +177,15 @@ class QueryLogsOutput(ToolOutput):
     match_count: int = Field(default=0, ge=0)
     first_seen: datetime | None = None
     last_seen: datetime | None = None
-    error_patterns: list[ErrorPattern] = Field(default_factory=list)
-    samples: list[LogSample] = Field(default_factory=list)
-    trace_ids: list[str] = Field(default_factory=list)
+    error_patterns: list[ErrorPattern] = Field(default_factory=list, max_length=100)
+    samples: list[LogSample] = Field(default_factory=list, max_length=100)
+    trace_ids: list[str] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_runtime_provenance(self) -> "QueryLogsOutput":
+        if self.status is ToolStatus.SUCCESS and self.provenance is None:
+            raise ValueError("successful runtime output must include provenance")
+        return self
 
 
 class QueryMetricsInput(ToolInput):
@@ -175,7 +202,7 @@ class MetricSnapshot(BaseModel):
 
     service: str = Field(min_length=1)
     environment: str = Field(min_length=1)
-    health_status: str = Field(min_length=1)
+    health_status: str = Field(min_length=1, max_length=100)
     request_count: int = Field(ge=0)
     success_count: int = Field(ge=0)
     error_count: int = Field(ge=0)
@@ -192,8 +219,11 @@ class QueryMetricsOutput(ToolOutput):
     @model_validator(mode="after")
     def validate_metrics_outcome(self) -> "QueryMetricsOutput":
         """Require a snapshot only when the whitelisted query succeeded."""
-        if self.status is ToolStatus.SUCCESS and self.metrics is None:
-            raise ValueError("successful metrics output must include metrics")
+        if self.status is ToolStatus.SUCCESS:
+            if self.metrics is None:
+                raise ValueError("successful metrics output must include metrics")
+            if self.provenance is None:
+                raise ValueError("successful runtime output must include provenance")
         if self.status is not ToolStatus.SUCCESS and self.metrics is not None:
             raise ValueError("unsuccessful metrics output must not include metrics")
         return self
@@ -211,15 +241,15 @@ class TraceSpan(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    span_id: str = Field(min_length=1)
-    parent_span_id: str | None = None
-    service: str = Field(min_length=1)
-    operation: str = Field(min_length=1)
+    span_id: str = Field(min_length=1, max_length=256)
+    parent_span_id: str | None = Field(default=None, max_length=256)
+    service: str = Field(min_length=1, max_length=100)
+    operation: str = Field(min_length=1, max_length=500)
     start_time: datetime
     end_time: datetime
     duration_ms: float = Field(ge=0)
-    status: str = Field(min_length=1)
-    error: str | None = None
+    status: str = Field(min_length=1, max_length=50)
+    error: str | None = Field(default=None, max_length=1_000)
 
 
 class TraceError(BaseModel):
@@ -227,10 +257,10 @@ class TraceError(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    service: str = Field(min_length=1)
-    span_id: str = Field(min_length=1)
-    operation: str = Field(min_length=1)
-    message: str = Field(min_length=1)
+    service: str = Field(min_length=1, max_length=100)
+    span_id: str = Field(min_length=1, max_length=256)
+    operation: str = Field(min_length=1, max_length=500)
+    message: str = Field(min_length=1, max_length=1_000)
 
 
 class TraceSummary(BaseModel):
@@ -238,18 +268,24 @@ class TraceSummary(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    trace_id: str = Field(min_length=1)
+    trace_id: str = Field(min_length=1, max_length=256)
     duration_ms: float = Field(ge=0)
-    status: str = Field(min_length=1)
-    spans: list[TraceSpan] = Field(default_factory=list)
-    errors: list[TraceError] = Field(default_factory=list)
+    status: str = Field(min_length=1, max_length=50)
+    spans: list[TraceSpan] = Field(default_factory=list, max_length=100)
+    errors: list[TraceError] = Field(default_factory=list, max_length=100)
     slowest_span: TraceSpan | None = None
 
 
 class QueryTracesOutput(ToolOutput):
     """Structured outcome for reconstructing bounded Fault Lab traces."""
 
-    traces: list[TraceSummary] = Field(default_factory=list)
+    traces: list[TraceSummary] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_runtime_provenance(self) -> "QueryTracesOutput":
+        if self.status is ToolStatus.SUCCESS and self.provenance is None:
+            raise ValueError("successful runtime output must include provenance")
+        return self
 
 
 class GetDeploymentHistoryInput(ToolInput):
@@ -274,7 +310,13 @@ class DeploymentRecord(BaseModel):
 class GetDeploymentHistoryOutput(ToolOutput):
     """A single real deployment snapshot; Fault Lab has no longer history to return."""
 
-    deployments: list[DeploymentRecord] = Field(default_factory=list)
+    deployments: list[DeploymentRecord] = Field(default_factory=list, max_length=1)
+
+    @model_validator(mode="after")
+    def validate_runtime_provenance(self) -> "GetDeploymentHistoryOutput":
+        if self.status is ToolStatus.SUCCESS and self.provenance is None:
+            raise ValueError("successful runtime output must include provenance")
+        return self
 
 
 class RollbackDeploymentInput(ToolInput):
