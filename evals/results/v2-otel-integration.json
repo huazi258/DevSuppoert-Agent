@@ -1,10 +1,26 @@
 {
   "integration": {
-    "upstream": {
-      "release": "3.0.0",
-      "commit": "1755859a9de82c2e5e225be68abc401a5ebf2b4f"
+    "scenario": {
+      "expected_upstream": {
+        "release": "3.0.0",
+        "commit": "1755859a9de82c2e5e225be68abc401a5ebf2b4f"
+      },
+      "observed_upstream": {
+        "release": "3.0.0",
+        "commit": "1755859a9de82c2e5e225be68abc401a5ebf2b4f",
+        "identity_verified": true
+      },
+      "fault": {
+        "fault_name": "paymentFailure",
+        "enabled": true,
+        "restored": true,
+        "checkout_attempts": 5,
+        "checkout_http_status_counts": {
+          "500": 5
+        },
+        "non_2xx_observed": true
+      }
     },
-    "scenario_id": "otel_payment_failure",
     "target": {
       "slug": "otel-demo-v2-integration",
       "service": "checkout",

@@ -80,9 +80,30 @@ class V2ModelProviderStatus(StrEnum):
     BLOCKED = "blocked"
 
 
-class V2OtelUpstream(_Model):
+class V2OtelExpectedUpstream(_Model):
     release: str = PINNED_OTEL_RELEASE
     commit: str = PINNED_OTEL_COMMIT
+
+
+class V2OtelObservedUpstream(_Model):
+    release: str | None = None
+    commit: str | None = None
+    identity_verified: bool | None = None
+
+
+class V2OtelFaultScenario(_Model):
+    fault_name: str | None = None
+    enabled: bool | None = None
+    restored: bool | None = None
+    checkout_attempts: int | None = Field(default=None, ge=0)
+    checkout_http_status_counts: dict[str, int] | None = None
+    non_2xx_observed: bool | None = None
+
+
+class V2OtelScenarioFacts(_Model):
+    expected_upstream: V2OtelExpectedUpstream = Field(default_factory=V2OtelExpectedUpstream)
+    observed_upstream: V2OtelObservedUpstream = Field(default_factory=V2OtelObservedUpstream)
+    fault: V2OtelFaultScenario = Field(default_factory=V2OtelFaultScenario)
 
 
 class V2OtelTargetIdentity(_Model):
@@ -105,8 +126,7 @@ class V2ProviderPayloadSafety(_Model):
 
 
 class V2OtelIntegrationFacts(_Model):
-    upstream: V2OtelUpstream
-    scenario_id: str = Field(min_length=1, max_length=100)
+    scenario: V2OtelScenarioFacts
     target: V2OtelTargetIdentity
     available_tools: list[str]
     logs_adapter: V2AdapterAcceptance
@@ -130,7 +150,7 @@ class V2OtelIntegrationAssessment(_Model):
 
 def assess_v2_otel_integration(facts: V2OtelIntegrationFacts) -> V2OtelIntegrationAssessment:
     """Assess only V2 adapter, persistence, and safety facts; never V1 remediation."""
-    blockers = [*facts.blockers]
+    blockers = [*facts.blockers, *_missing_scenario_facts(facts.scenario)]
     if facts.external_model_provider_status is V2ModelProviderStatus.BLOCKED:
         blockers.append("external_model_provider_blocked")
     if any(
@@ -144,8 +164,24 @@ def assess_v2_otel_integration(facts: V2OtelIntegrationFacts) -> V2OtelIntegrati
         )
 
     failed_checks: list[str] = []
-    if facts.upstream != V2OtelUpstream():
+    if facts.scenario.observed_upstream.identity_verified is not True:
         failed_checks.append("upstream_identity")
+    if facts.scenario.observed_upstream.release != facts.scenario.expected_upstream.release:
+        failed_checks.append("upstream_release")
+    if facts.scenario.observed_upstream.commit != facts.scenario.expected_upstream.commit:
+        failed_checks.append("upstream_commit")
+    if facts.scenario.fault.fault_name != "paymentFailure":
+        failed_checks.append("fault_name")
+    if facts.scenario.fault.enabled is not True:
+        failed_checks.append("fault_enabled")
+    if facts.scenario.fault.restored is not True:
+        failed_checks.append("fault_restored")
+    if (facts.scenario.fault.checkout_attempts or 0) < 1:
+        failed_checks.append("checkout_attempts")
+    if not _checkout_status_counts_match_attempts(facts.scenario):
+        failed_checks.append("checkout_status_counts")
+    if not facts.scenario.fault.non_2xx_observed or not _has_non_2xx(facts.scenario):
+        failed_checks.append("non_2xx_observed")
     if (
         facts.target.service != INTEGRATION_SERVICE
         or facts.target.environment != INTEGRATION_ENVIRONMENT
@@ -197,7 +233,7 @@ def run_v2_otel_integration(
     *,
     opensearch_url: str,
     prometheus_url: str,
-    scenario_id: str = "otel_payment_failure",
+    scenario: V2OtelScenarioFacts,
 ) -> V2OtelIntegrationFacts:
     """Exercise the configured V2 resolver against real OTel Logs and Metrics endpoints."""
     target_record, service_record = _ensure_target_and_service(session)
@@ -253,8 +289,7 @@ def run_v2_otel_integration(
         raw_provider_payload_exposed=_contains_raw_payload_marker(terminalized),
     )
     return V2OtelIntegrationFacts(
-        upstream=V2OtelUpstream(),
-        scenario_id=scenario_id,
+        scenario=scenario,
         target=V2OtelTargetIdentity(),
         available_tools=sorted(tool.value for tool in dependencies.available_tools),
         logs_adapter=logs,
@@ -443,6 +478,32 @@ def _adapter_acceptance(state: AgentState, tool_name: ToolName) -> V2AdapterAcce
     )
 
 
+def _missing_scenario_facts(scenario: V2OtelScenarioFacts) -> list[str]:
+    observed = scenario.observed_upstream
+    fault = scenario.fault
+    missing = []
+    if observed.release is None or observed.commit is None or observed.identity_verified is None:
+        missing.append("scenario_upstream_identity_unavailable")
+    if fault.fault_name is None or fault.enabled is None or fault.restored is None:
+        missing.append("scenario_fault_state_unavailable")
+    if fault.checkout_attempts is None or fault.checkout_http_status_counts is None:
+        missing.append("scenario_checkout_observation_unavailable")
+    if fault.non_2xx_observed is None:
+        missing.append("scenario_non_2xx_observation_unavailable")
+    return missing
+
+
+def _has_non_2xx(scenario: V2OtelScenarioFacts) -> bool:
+    counts = scenario.fault.checkout_http_status_counts or {}
+    return any(not status.startswith("2") and count > 0 for status, count in counts.items())
+
+
+def _checkout_status_counts_match_attempts(scenario: V2OtelScenarioFacts) -> bool:
+    attempts = scenario.fault.checkout_attempts
+    counts = scenario.fault.checkout_http_status_counts
+    return attempts is not None and counts is not None and sum(counts.values()) == attempts
+
+
 def _side_effect_tool_count() -> int:
     return sum(
         any(term in definition.name.value for term in SIDE_EFFECT_TERMS)
@@ -477,10 +538,10 @@ def main() -> None:
     args = parser.parse_args()
     opensearch_url = os.environ.get("DEVSUPPORT_OTEL_DEMO_OPENSEARCH_URL")
     prometheus_url = os.environ.get("DEVSUPPORT_OTEL_DEMO_PROMETHEUS_URL")
+    scenario = _scenario_from_environment()
     if not opensearch_url or not prometheus_url:
         facts = V2OtelIntegrationFacts(
-            upstream=V2OtelUpstream(),
-            scenario_id="otel_payment_failure",
+            scenario=scenario,
             target=V2OtelTargetIdentity(),
             available_tools=[],
             logs_adapter=V2AdapterAcceptance(status="blocked", normalized_evidence_count=0),
@@ -495,13 +556,72 @@ def main() -> None:
     else:
         with SessionLocal() as session:
             facts = run_v2_otel_integration(
-                session, opensearch_url=opensearch_url, prometheus_url=prometheus_url
+                session,
+                opensearch_url=opensearch_url,
+                prometheus_url=prometheus_url,
+                scenario=scenario,
             )
     assessment = assess_v2_otel_integration(facts)
     write_v2_otel_integration_artifact(args.output, facts, assessment)
     print(json.dumps(assessment.model_dump(mode="json"), ensure_ascii=False))
     if assessment.status is not V2IntegrationStatus.PASS:
         raise SystemExit(1)
+
+
+def _scenario_from_environment() -> V2OtelScenarioFacts:
+    return V2OtelScenarioFacts(
+        observed_upstream=V2OtelObservedUpstream(
+            release=os.environ.get("DEVSUPPORT_OTEL_UPSTREAM_RELEASE"),
+            commit=os.environ.get("DEVSUPPORT_OTEL_UPSTREAM_COMMIT"),
+            identity_verified=_environment_bool("DEVSUPPORT_OTEL_UPSTREAM_IDENTITY_VERIFIED"),
+        ),
+        fault=V2OtelFaultScenario(
+            fault_name=os.environ.get("DEVSUPPORT_OTEL_FAULT_NAME"),
+            enabled=_environment_bool("DEVSUPPORT_OTEL_FAULT_ENABLED"),
+            restored=_environment_bool("DEVSUPPORT_OTEL_FAULT_RESTORED"),
+            checkout_attempts=_environment_int("DEVSUPPORT_OTEL_CHECKOUT_ATTEMPTS"),
+            checkout_http_status_counts=_environment_status_counts(),
+            non_2xx_observed=_environment_bool("DEVSUPPORT_OTEL_NON_2XX_OBSERVED"),
+        ),
+    )
+
+
+def _environment_bool(name: str) -> bool | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    if value.lower() == "true":
+        return True
+    if value.lower() == "false":
+        return False
+    return None
+
+
+def _environment_int(name: str) -> int | None:
+    value = os.environ.get(name)
+    try:
+        return int(value) if value is not None else None
+    except ValueError:
+        return None
+
+
+def _environment_status_counts() -> dict[str, int] | None:
+    raw_counts = os.environ.get("DEVSUPPORT_OTEL_CHECKOUT_HTTP_STATUS_COUNTS")
+    try:
+        decoded = json.loads(raw_counts) if raw_counts else None
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    if any(
+        not isinstance(status, str)
+        or not isinstance(count, int)
+        or isinstance(count, bool)
+        or count < 0
+        for status, count in decoded.items()
+    ):
+        return None
+    return decoded
 
 
 if __name__ == "__main__":

@@ -9,9 +9,11 @@ from devsupport_backend.evals.v2_otel_integration import (
     V2AdapterAcceptance,
     V2IntegrationStatus,
     V2ModelProviderStatus,
+    V2OtelFaultScenario,
     V2OtelIntegrationFacts,
+    V2OtelObservedUpstream,
+    V2OtelScenarioFacts,
     V2OtelTargetIdentity,
-    V2OtelUpstream,
     V2ProviderPayloadSafety,
     assess_v2_otel_integration,
     write_v2_otel_integration_artifact,
@@ -21,8 +23,21 @@ from devsupport_backend.investigation_status import InvestigationStatus
 
 def _facts() -> V2OtelIntegrationFacts:
     return V2OtelIntegrationFacts(
-        upstream=V2OtelUpstream(),
-        scenario_id="otel_payment_failure",
+        scenario=V2OtelScenarioFacts(
+            observed_upstream=V2OtelObservedUpstream(
+                release="3.0.0",
+                commit="1755859a9de82c2e5e225be68abc401a5ebf2b4f",
+                identity_verified=True,
+            ),
+            fault=V2OtelFaultScenario(
+                fault_name="paymentFailure",
+                enabled=True,
+                restored=True,
+                checkout_attempts=5,
+                checkout_http_status_counts={"500": 5},
+                non_2xx_observed=True,
+            ),
+        ),
         target=V2OtelTargetIdentity(),
         available_tools=["query_logs", "query_metrics", "search_knowledge"],
         logs_adapter=V2AdapterAcceptance(
@@ -65,6 +80,36 @@ def test_v2_otel_integration_blocks_provider_connectivity_without_claiming_succe
     assert assessment.blockers == ["runtime_adapter_unavailable"]
 
 
+def test_v2_otel_integration_blocks_when_live_scenario_facts_are_unavailable() -> None:
+    facts = _facts()
+    facts.scenario.fault.restored = None
+
+    assessment = assess_v2_otel_integration(facts)
+
+    assert assessment.status is V2IntegrationStatus.BLOCKED
+    assert assessment.blockers == ["scenario_fault_state_unavailable"]
+
+
+def test_v2_otel_integration_rejects_a_verified_but_wrong_upstream_identity() -> None:
+    facts = _facts()
+    facts.scenario.observed_upstream.commit = "different-commit"
+
+    assessment = assess_v2_otel_integration(facts)
+
+    assert assessment.status is V2IntegrationStatus.FAIL
+    assert assessment.failed_checks == ["upstream_commit"]
+
+
+def test_v2_otel_integration_rejects_incomplete_checkout_status_observation() -> None:
+    facts = _facts()
+    facts.scenario.fault.checkout_http_status_counts = {"500": 4}
+
+    assessment = assess_v2_otel_integration(facts)
+
+    assert assessment.status is V2IntegrationStatus.FAIL
+    assert assessment.failed_checks == ["checkout_status_counts"]
+
+
 def test_v2_otel_integration_separates_external_model_blockers_from_adapter_status() -> None:
     facts = _facts()
     facts.external_model_provider_status = V2ModelProviderStatus.BLOCKED
@@ -101,6 +146,11 @@ def test_v2_otel_artifact_excludes_sensitive_values_and_tool_arguments(tmp_path)
     artifact = json.loads(payload)
 
     assert artifact["assessment"]["status"] == "PASS"
+    assert artifact["integration"]["scenario"]["expected_upstream"]["release"] == "3.0.0"
+    assert artifact["integration"]["scenario"]["observed_upstream"]["identity_verified"] is True
+    assert artifact["integration"]["scenario"]["fault"]["checkout_http_status_counts"] == {
+        "500": 5
+    }
     assert "http://" not in payload
     assert '"credential":' not in payload
     assert '"raw_payload":' not in payload
