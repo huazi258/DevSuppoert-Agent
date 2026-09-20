@@ -1,0 +1,49 @@
+{
+  "integration": {
+    "upstream": {
+      "release": "3.0.0",
+      "commit": "1755859a9de82c2e5e225be68abc401a5ebf2b4f"
+    },
+    "scenario_id": "otel_payment_failure",
+    "target": {
+      "slug": "otel-demo-v2-integration",
+      "service": "checkout",
+      "environment": "local"
+    },
+    "available_tools": [
+      "query_logs",
+      "query_metrics",
+      "search_knowledge"
+    ],
+    "logs_adapter": {
+      "status": "success",
+      "normalized_evidence_count": 1,
+      "normalized_source": "opensearch",
+      "safe_error_code": null
+    },
+    "metrics_adapter": {
+      "status": "success",
+      "normalized_evidence_count": 1,
+      "normalized_source": "prometheus",
+      "safe_error_code": null
+    },
+    "normalized_runtime_evidence_count": 2,
+    "final_status": "INCONCLUSIVE",
+    "terminal_reason": "investigation_inconclusive",
+    "report_persisted": true,
+    "concluded_grounding_verified": null,
+    "side_effect_tool_count": 0,
+    "provider_payload_safety": {
+      "provider_endpoint_exposed": false,
+      "credential_exposed": false,
+      "raw_provider_payload_exposed": false
+    },
+    "external_model_provider_status": "not_invoked",
+    "blockers": []
+  },
+  "assessment": {
+    "status": "PASS",
+    "failed_checks": [],
+    "blockers": []
+  }
+}
