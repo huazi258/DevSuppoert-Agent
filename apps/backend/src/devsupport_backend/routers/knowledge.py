@@ -125,7 +125,7 @@ async def upload_knowledge_document(
     except EmbeddingError:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="知识文档暂时无法完成索引，请稍后重试。",
+            detail="知识文档暂时无法完成索引，请检查 Embedding 服务配置和网络连通性后重试。",
         ) from None
     except Exception:
         session.rollback()

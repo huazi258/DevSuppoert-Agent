@@ -290,7 +290,9 @@ def test_parse_and_embedding_failures_leave_no_document_or_chunk(
         files={"file": _markdown_file()},
     )
     assert failed_embedding.status_code == 503
-    assert failed_embedding.json() == {"detail": "知识文档暂时无法完成索引，请稍后重试。"}
+    assert failed_embedding.json() == {
+        "detail": "知识文档暂时无法完成索引，请检查 Embedding 服务配置和网络连通性后重试。"
+    }
     assert list(
         database_session.scalars(
             select(KnowledgeDocument).where(KnowledgeDocument.target_id == target.id)

@@ -142,3 +142,23 @@ def test_settings_loads_target_configs_from_deployment_environment(
 
     registry = TargetConfigRegistry.from_settings(settings)
     assert registry.get(slug=target.slug) == target
+
+
+def test_target_configuration_accepts_non_secret_display_metadata() -> None:
+    target = InvestigationTargetConfig.model_validate(
+        {
+            **_target_config().model_dump(mode="json"),
+            "display_name": "订单系统本地环境",
+            "description": "用于浏览器验收。",
+            "services": [
+                {
+                    "name": "order-service",
+                    "display_name": "订单服务",
+                    "description": "处理订单请求。",
+                }
+            ],
+        }
+    )
+
+    assert target.display_name == "订单系统本地环境"
+    assert target.services[0].display_name == "订单服务"

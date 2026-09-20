@@ -27,7 +27,7 @@ services:
         required: false
     environment:
       DEVSUPPORT_DATABASE_URL: ${DEVSUPPORT_DATABASE_URL:?Set DEVSUPPORT_DATABASE_URL in .env}
-    command: ["sh", "-c", "alembic upgrade head && exec uvicorn devsupport_backend.main:app --host 0.0.0.0 --port 8000"]
+    command: ["sh", "-c", "alembic upgrade head && python -m devsupport_backend.bootstrap && exec uvicorn devsupport_backend.main:app --host 0.0.0.0 --port 8000"]
     ports:
       - "${DEVSUPPORT_BACKEND_BIND_ADDRESS:-127.0.0.1}:${DEVSUPPORT_BACKEND_PORT:-8002}:8000"
     networks:

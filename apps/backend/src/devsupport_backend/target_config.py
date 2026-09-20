@@ -70,6 +70,8 @@ class TargetServiceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     name: str = Field(min_length=1, max_length=100)
+    display_name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2_000)
 
     @field_validator("name")
     @classmethod
@@ -78,6 +80,14 @@ class TargetServiceConfig(BaseModel):
         if not normalized:
             raise ValueError("service name must not be blank")
         return normalized
+
+    @field_validator("display_name", "description")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
 
 
 class ProviderConfig(BaseModel):
@@ -107,6 +117,8 @@ class InvestigationTargetConfig(BaseModel):
 
     target_id: UUID
     slug: str = Field(min_length=1, max_length=100)
+    display_name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2_000)
     environment: str = Field(min_length=1, max_length=50)
     services: tuple[TargetServiceConfig, ...] = Field(min_length=1)
     logs: CapabilityConfig
@@ -121,6 +133,14 @@ class InvestigationTargetConfig(BaseModel):
         if not normalized:
             raise ValueError("target identity fields must not be blank")
         return normalized
+
+    @field_validator("display_name", "description")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
 
     @model_validator(mode="after")
     def validate_capability_adapter_types(self) -> "InvestigationTargetConfig":

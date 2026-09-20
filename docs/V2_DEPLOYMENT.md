@@ -55,7 +55,7 @@ Copy-Item .env.example .env
 示意（替换 UUID、服务名、地址和凭据；不得提交真实值）：
 
 ```text
-DEVSUPPORT_INVESTIGATION_TARGET_CONFIGS=[{"target_id":"00000000-0000-0000-0000-000000000001","slug":"orders-prod","environment":"production","services":[{"name":"orders-api"}],"logs":{"enabled":true,"adapter_type":"opensearch","provider_config_ref":"orders-logs"},"metrics":{"enabled":true,"adapter_type":"prometheus","provider_config_ref":"orders-metrics"}}]
+DEVSUPPORT_INVESTIGATION_TARGET_CONFIGS=[{"target_id":"00000000-0000-0000-0000-000000000001","slug":"orders-prod","display_name":"订单系统生产环境","description":"订单系统的受控生产调查目标。","environment":"production","services":[{"name":"orders-api","display_name":"订单 API"}],"logs":{"enabled":true,"adapter_type":"opensearch","provider_config_ref":"orders-logs"},"metrics":{"enabled":true,"adapter_type":"prometheus","provider_config_ref":"orders-metrics"}}]
 DEVSUPPORT_PROVIDER_CONFIGS=[{"provider_config_ref":"orders-logs","adapter_type":"opensearch","backend_config_key":"orders-logs-backend"},{"provider_config_ref":"orders-metrics","adapter_type":"prometheus","backend_config_key":"orders-metrics-backend"}]
 DEVSUPPORT_PROVIDER_BACKEND_CONFIGS=[{"backend_config_key":"orders-logs-backend","adapter_type":"opensearch","endpoint":"https://logs.internal.example","credential":"replace-me"},{"backend_config_key":"orders-metrics-backend","adapter_type":"prometheus","endpoint":"https://metrics.internal.example","credential":"replace-me"}]
 ```
@@ -71,14 +71,17 @@ docker compose up -d --build
 docker compose ps
 ```
 
-Backend 等待 PostgreSQL `healthy` 后执行 `alembic upgrade head`，再启动 API；Web 等待 Backend `healthy` 后启动。也可以在维护窗口显式执行 migration：
+Backend 等待 PostgreSQL `healthy` 后执行 `alembic upgrade head`，随后运行幂等的 V2 bootstrap，再启动 API。bootstrap 仅将 `DEVSUPPORT_INVESTIGATION_TARGET_CONFIGS` 中的非 Secret Target / Service 标识和显示元数据写入数据库；不会创建 Incident、Round、Evidence、Report、知识文档或 Provider 凭据。每次启动可安全重跑，已存在的匹配 Target / Service 不会重复创建。
+
+因此，`docker compose down -v` 后只需确认 `.env` 仍保留正确的部署配置，再重新启动 Compose；不要用手工 SQL 恢复可选择的 Target / Service。也可以在维护窗口显式执行 migration 和 bootstrap：
 
 ```powershell
 docker compose up -d postgres
 docker compose run --rm --no-deps backend alembic upgrade head
+docker compose run --rm --no-deps backend python -m devsupport_backend.bootstrap
 ```
 
-首次访问 `http://127.0.0.1:3000`。只有配置并持久化的 Investigation Target 才会出现在创建 Incident 的目标列表中。未配置 LLM/Embedding/Provider 时，健康检查仍可通过，但不要期待调查能够完成；不得因外部 Provider 不可用而声称调查成功。
+首次访问 `http://127.0.0.1:3000`。只有配置并持久化的 Investigation Target 才会出现在创建 Incident 的目标列表中。未配置 LLM/Embedding/Provider 时，健康检查仍可通过，但不要期待调查能够完成；不得因外部 Provider 不可用而声称调查成功。bootstrap 不会伪造 Embedding、LLM 或运行数据：Markdown 上传需要可访问的 Embedding Provider，完整调查还需要相应的只读 Provider 和 LLM 配置。
 
 ## 健康检查、日志和日常操作
 

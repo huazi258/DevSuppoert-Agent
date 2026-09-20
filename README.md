@@ -26,6 +26,6 @@ docker compose up -d --build
 docker compose ps
 ```
 
-默认仅监听 localhost：打开 `http://127.0.0.1:3000`。Compose 启动 Backend 前会执行 Alembic migration；更完整的配置、健康检查、备份恢复和可信内网部署说明见 [运行手册](docs/V2_DEPLOYMENT.md)。
+默认仅监听 localhost：打开 `http://127.0.0.1:3000`。Compose 启动 Backend 前会执行 Alembic migration，并幂等同步部署配置中的 Investigation Target / Service；更完整的配置、健康检查、备份恢复和可信内网部署说明见 [运行手册](docs/V2_DEPLOYMENT.md)。
 
 > 无登录的 V2 实例只能部署在 localhost、可信内网或 VPN 后，不允许直接暴露公网。
