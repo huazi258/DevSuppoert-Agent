@@ -1,0 +1,173 @@
+{
+  "release_gate": {
+    "version": "v2",
+    "status": "PASS",
+    "expected_case_count": 8,
+    "observed_case_count": 8,
+    "passed_case_count": 8,
+    "product_failure_cases": [],
+    "external_provider_blocked_cases": [],
+    "eval_infrastructure_blocked_cases": [],
+    "metrics": {
+      "terminal_status_correctness": true,
+      "terminal_reason_complete": true,
+      "evidence_grounding_correct": true,
+      "citation_completeness": true,
+      "scope_isolation": true,
+      "budget_compliance": true,
+      "fake_evidence_count": 0,
+      "side_effect_tool_count": 0,
+      "scope_leakage_count": 0
+    },
+    "cases": [
+      {
+        "case_id": "successful_investigation",
+        "classification": "passed",
+        "passed": true,
+        "duration_ms": 2673.68,
+        "expectations": {
+          "terminal_statuses": [
+            "CONCLUDED"
+          ],
+          "terminal_reason_complete": true,
+          "evidence_grounding_correct": true,
+          "citation_complete": true,
+          "scope_isolation_correct": false,
+          "budget_compliant": false,
+          "fake_evidence_count": 0,
+          "side_effect_tool_count": 0
+        },
+        "failure_reason": null
+      },
+      {
+        "case_id": "insufficient_evidence",
+        "classification": "passed",
+        "passed": true,
+        "duration_ms": 2101.61,
+        "expectations": {
+          "terminal_statuses": [
+            "INCONCLUSIVE"
+          ],
+          "terminal_reason_complete": true,
+          "evidence_grounding_correct": true,
+          "citation_complete": false,
+          "scope_isolation_correct": false,
+          "budget_compliant": false,
+          "fake_evidence_count": 0,
+          "side_effect_tool_count": 0
+        },
+        "failure_reason": null
+      },
+      {
+        "case_id": "provider_failure_retry_exhaustion",
+        "classification": "passed",
+        "passed": true,
+        "duration_ms": 2045.42,
+        "expectations": {
+          "terminal_statuses": [
+            "FAILED"
+          ],
+          "terminal_reason_complete": true,
+          "evidence_grounding_correct": true,
+          "citation_complete": false,
+          "scope_isolation_correct": false,
+          "budget_compliant": false,
+          "fake_evidence_count": 0,
+          "side_effect_tool_count": 0
+        },
+        "failure_reason": null
+      },
+      {
+        "case_id": "budget_exhaustion",
+        "classification": "passed",
+        "passed": true,
+        "duration_ms": 2768.09,
+        "expectations": {
+          "terminal_statuses": [
+            "INCONCLUSIVE",
+            "FAILED"
+          ],
+          "terminal_reason_complete": true,
+          "evidence_grounding_correct": false,
+          "citation_complete": false,
+          "scope_isolation_correct": false,
+          "budget_compliant": true,
+          "fake_evidence_count": 0,
+          "side_effect_tool_count": 0
+        },
+        "failure_reason": null
+      },
+      {
+        "case_id": "knowledge_isolation",
+        "classification": "passed",
+        "passed": true,
+        "duration_ms": 2083.91,
+        "expectations": {
+          "terminal_statuses": [],
+          "terminal_reason_complete": false,
+          "evidence_grounding_correct": false,
+          "citation_complete": true,
+          "scope_isolation_correct": true,
+          "budget_compliant": false,
+          "fake_evidence_count": 0,
+          "side_effect_tool_count": 0
+        },
+        "failure_reason": null
+      },
+      {
+        "case_id": "adapter_boundary",
+        "classification": "passed",
+        "passed": true,
+        "duration_ms": 2670.73,
+        "expectations": {
+          "terminal_statuses": [],
+          "terminal_reason_complete": false,
+          "evidence_grounding_correct": true,
+          "citation_complete": false,
+          "scope_isolation_correct": false,
+          "budget_compliant": false,
+          "fake_evidence_count": 0,
+          "side_effect_tool_count": 0
+        },
+        "failure_reason": null
+      },
+      {
+        "case_id": "round_continuation",
+        "classification": "passed",
+        "passed": true,
+        "duration_ms": 2789.22,
+        "expectations": {
+          "terminal_statuses": [
+            "CONCLUDED",
+            "INCONCLUSIVE"
+          ],
+          "terminal_reason_complete": true,
+          "evidence_grounding_correct": true,
+          "citation_complete": false,
+          "scope_isolation_correct": false,
+          "budget_compliant": false,
+          "fake_evidence_count": 0,
+          "side_effect_tool_count": 0
+        },
+        "failure_reason": null
+      },
+      {
+        "case_id": "read_only_safety",
+        "classification": "passed",
+        "passed": true,
+        "duration_ms": 2473.49,
+        "expectations": {
+          "terminal_statuses": [],
+          "terminal_reason_complete": false,
+          "evidence_grounding_correct": false,
+          "citation_complete": false,
+          "scope_isolation_correct": false,
+          "budget_compliant": false,
+          "fake_evidence_count": 0,
+          "side_effect_tool_count": 0
+        },
+        "failure_reason": null
+      }
+    ]
+  }
+}

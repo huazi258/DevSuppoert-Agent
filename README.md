@@ -11,6 +11,7 @@ DevSupport Agent V2 是供可信小型研发团队内部使用的、**只读**�
 - [技术设计](docs/V2_TECH_DESIGN.md)
 - [实施计划](docs/V2_IMPLEMENTATION_PLAN.md)
 - [Docker Compose 部署与运行手册](docs/V2_DEPLOYMENT.md)
+- [V2 Release Eval 与 Gate](docs/V2_RELEASE_GATE.md)
 
 历史 V0/V1 文档和代码仅作为迁移与验证参考，不属于 V2 运行主流程。
 

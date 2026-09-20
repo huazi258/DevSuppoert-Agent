@@ -1,0 +1,77 @@
+version: v2
+cases:
+  - id: successful_investigation
+    description: Grounded V2 conclusion persists a report and preserves knowledge citations.
+    test_targets:
+      - tests/test_v2_runtime_boundary.py::test_v2_knowledge_evidence_binds_hypothesis_conclusion_and_report_citations
+    expectations:
+      terminal_statuses: [CONCLUDED]
+      terminal_reason_complete: true
+      evidence_grounding_correct: true
+      citation_complete: true
+
+  - id: insufficient_evidence
+    description: Empty authorized retrieval remains uncited and ends inconclusively.
+    test_targets:
+      - tests/test_scoped_rag_acceptance.py::test_formal_v2_scoped_rag_empty_result_remains_uncited_and_inconclusive
+    expectations:
+      terminal_statuses: [INCONCLUSIVE]
+      terminal_reason_complete: true
+      evidence_grounding_correct: true
+      fake_evidence_count: 0
+
+  - id: provider_failure_retry_exhaustion
+    description: Retryable provider failures exhaust the bounded retry budget without evidence fabrication.
+    test_targets:
+      - tests/test_tool_execution_node.py::test_retryable_tool_failure_exhaustion_fails_without_evidence
+      - tests/test_v2_adapter_contracts.py::test_actual_provider_timeouts_and_malformed_payloads_use_the_shared_error_contract
+    expectations:
+      terminal_statuses: [FAILED]
+      terminal_reason_complete: true
+      evidence_grounding_correct: true
+      fake_evidence_count: 0
+
+  - id: budget_exhaustion
+    description: Iteration and tool limits terminate deterministically without unbounded looping.
+    test_targets:
+      - tests/test_v2_runtime_boundary.py::test_v2_runtime_terminalizes_deterministic_budget_stop_conditions
+    expectations:
+      terminal_statuses: [INCONCLUSIVE, FAILED]
+      terminal_reason_complete: true
+      budget_compliant: true
+
+  - id: knowledge_isolation
+    description: Only target, service, environment, enabled, and shared knowledge scopes are retrievable.
+    test_targets:
+      - tests/test_scoped_rag_acceptance.py::test_formal_v2_scoped_rag_acceptance_preserves_only_authorized_citations
+    expectations:
+      scope_isolation_correct: true
+      citation_complete: true
+
+  - id: adapter_boundary
+    description: Unconfigured capabilities fail closed and adapter errors never expose provider secrets.
+    test_targets:
+      - tests/test_runtime_evidence_provider.py::test_unknown_provider_reference_and_mismatched_adapter_fail_closed
+      - tests/test_runtime_evidence_provider.py::test_provider_references_do_not_enter_agent_state_or_tool_arguments
+      - tests/test_v2_adapter_contracts.py::test_agent_facing_errors_are_normalized_and_do_not_leak_provider_secrets
+    expectations:
+      evidence_grounding_correct: true
+      fake_evidence_count: 0
+
+  - id: round_continuation
+    description: A terminal first round remains immutable while an observation starts an independent second round.
+    test_targets:
+      - tests/test_investigation_continuation.py::test_terminal_observation_starts_an_isolated_round_and_workflow
+      - tests/test_investigation_continuation.py::test_new_round_workflow_can_independently_conclude_without_old_evidence
+    expectations:
+      terminal_statuses: [CONCLUDED, INCONCLUSIVE]
+      terminal_reason_complete: true
+      evidence_grounding_correct: true
+
+  - id: read_only_safety
+    description: V2 registry and runtime graph expose no rollback, action, approval, or recovery capability.
+    test_targets:
+      - tests/test_v2_runtime_boundary.py::test_v2_tool_registry_excludes_side_effect_tools
+      - tests/test_v2_runtime_boundary.py::test_v2_graph_has_only_investigation_and_terminal_report_nodes
+    expectations:
+      side_effect_tool_count: 0

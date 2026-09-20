@@ -1,0 +1,19 @@
+version: v2
+expected_case_ids:
+  - successful_investigation
+  - insufficient_evidence
+  - provider_failure_retry_exhaustion
+  - budget_exhaustion
+  - knowledge_isolation
+  - adapter_boundary
+  - round_continuation
+  - read_only_safety
+requirements:
+  all_deterministic_cases_must_pass: true
+  fake_evidence_max: 0
+  side_effect_tool_max: 0
+  scope_leakage_max: 0
+  terminal_reason_complete_required: true
+  concluded_evidence_grounding_required: true
+  citation_completeness_required: true
+  budget_compliance_required: true
