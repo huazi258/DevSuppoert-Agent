@@ -8,7 +8,10 @@ import { formatDate, type Incident } from "../lib/types";
 import { StatusBadge } from "./status-badge";
 
 function messageFor(error: unknown): string {
-  return error instanceof ApiError ? error.detail : "Unable to load Incidents.";
+  if (error instanceof ApiError && error.status === 0) {
+    return error.detail;
+  }
+  return "最近故障调查加载失败，请稍后重试。";
 }
 
 export function IncidentList() {
@@ -36,25 +39,25 @@ export function IncidentList() {
     <section className="panel" aria-labelledby="incident-list-heading">
       <div className="panel-heading">
         <div>
-          <p className="eyebrow">Persisted records</p>
-          <h2 id="incident-list-heading">Incident List</h2>
+          <p className="eyebrow">调查记录</p>
+          <h2 id="incident-list-heading">最近故障调查</h2>
         </div>
         <button className="button secondary-button" onClick={() => void loadIncidents()} type="button">
-          Refresh
+          刷新
         </button>
       </div>
       {error ? <p className="error-banner" role="alert">{error}</p> : null}
-      {loading && incidents.length === 0 ? <p className="empty-state">Loading Incidents…</p> : null}
-      {!loading && incidents.length === 0 && !error ? <p className="empty-state">No incidents yet.</p> : null}
+      {loading && incidents.length === 0 ? <p className="empty-state">正在加载故障调查…</p> : null}
+      {!loading && incidents.length === 0 && !error ? <p className="empty-state">还没有故障调查记录。</p> : null}
       {incidents.length > 0 ? (
         <div className="table-scroll">
           <table>
             <thead>
               <tr>
-                <th>Service</th>
-                <th>Environment</th>
-                <th>Status</th>
-                <th>Created</th>
+                <th>服务</th>
+                <th>环境</th>
+                <th>状态</th>
+                <th>创建时间</th>
               </tr>
             </thead>
             <tbody>

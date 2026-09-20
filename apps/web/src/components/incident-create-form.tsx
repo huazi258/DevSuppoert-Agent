@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 
-import { ApiError, createIncident } from "../lib/api";
+import { ApiError, createIncident, listInvestigationTargets } from "../lib/api";
+import type { InvestigationTargetOption } from "../lib/types";
 
 function localDateTimeValue(date: Date): string {
   const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
@@ -11,18 +12,35 @@ function localDateTimeValue(date: Date): string {
 }
 
 function messageFor(error: unknown): string {
-  return error instanceof ApiError ? error.detail : "Unable to create the Incident.";
+  if (error instanceof ApiError && error.status === 0) {
+    return error.detail;
+  }
+  return "创建故障调查失败，请检查填写内容后重试。";
 }
+
+const capabilityLabels: Record<string, string> = {
+  logs: "日志",
+  metrics: "指标",
+  traces: "链路",
+  deployment_facts: "部署事实",
+};
 
 export function IncidentCreateForm() {
   const router = useRouter();
-  const [service, setService] = useState("order-service");
-  const [environment, setEnvironment] = useState("local");
+  const [targets, setTargets] = useState<InvestigationTargetOption[]>([]);
+  const [targetId, setTargetId] = useState("");
+  const [serviceId, setServiceId] = useState("");
   const [timeRangeStart, setTimeRangeStart] = useState("");
   const [timeRangeEnd, setTimeRangeEnd] = useState("");
   const [description, setDescription] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [targetsLoading, setTargetsLoading] = useState(true);
   const [pending, setPending] = useState(false);
+
+  const selectedTarget = useMemo(
+    () => targets.find((target) => target.id === targetId) ?? null,
+    [targetId, targets],
+  );
 
   useEffect(() => {
     const end = new Date();
@@ -31,15 +49,50 @@ export function IncidentCreateForm() {
     setTimeRangeEnd(localDateTimeValue(end));
   }, []);
 
+  useEffect(() => {
+    async function loadTargets() {
+      setTargetsLoading(true);
+      try {
+        setTargets(await listInvestigationTargets());
+        setError(null);
+      } catch (loadError: unknown) {
+        setTargets([]);
+        setError(
+          loadError instanceof ApiError && loadError.status === 0
+            ? loadError.detail
+            : "调查目标加载失败，请稍后重试。",
+        );
+      } finally {
+        setTargetsLoading(false);
+      }
+    }
+
+    void loadTargets();
+  }, []);
+
+  function onTargetChange(nextTargetId: string) {
+    setTargetId(nextTargetId);
+    setServiceId("");
+    setError(null);
+  }
+
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const normalizedDescription = description.trim();
-    if (!service || !environment || !timeRangeStart || !timeRangeEnd || !normalizedDescription) {
-      setError("Complete all Incident fields before submitting.");
+    if (!targetId) {
+      setError("请选择调查目标。");
+      return;
+    }
+    if (!serviceId) {
+      setError("请选择受影响服务。");
+      return;
+    }
+    if (!timeRangeStart || !timeRangeEnd || !normalizedDescription) {
+      setError("请完整填写时间范围和观察到的现象。");
       return;
     }
     if (new Date(timeRangeEnd) < new Date(timeRangeStart)) {
-      setError("End time must be after or equal to start time.");
+      setError("结束时间不得早于开始时间。");
       return;
     }
 
@@ -47,8 +100,8 @@ export function IncidentCreateForm() {
     setError(null);
     try {
       const incident = await createIncident({
-        service,
-        environment,
+        target_id: targetId,
+        service_id: serviceId,
         description: normalizedDescription,
         time_range_start: new Date(timeRangeStart).toISOString(),
         time_range_end: new Date(timeRangeEnd).toISOString(),
@@ -61,31 +114,66 @@ export function IncidentCreateForm() {
     }
   }
 
+  const serviceUnavailable = selectedTarget !== null && selectedTarget.services.length === 0;
+
   return (
     <section className="panel" aria-labelledby="create-incident-heading">
       <div className="panel-heading">
         <div>
-          <p className="eyebrow">New incident</p>
-          <h2 id="create-incident-heading">Create Incident</h2>
+          <p className="eyebrow">新的调查</p>
+          <h2 id="create-incident-heading">创建故障调查</h2>
         </div>
       </div>
       <form className="incident-form" onSubmit={onSubmit}>
-        <label>
-          Service
-          <select value={service} onChange={(event) => setService(event.target.value)}>
-            <option value="order-service">order-service</option>
-            <option value="payment-service">payment-service</option>
+        <label className="full-width">
+          调查目标
+          <select
+            disabled={targetsLoading || pending}
+            onChange={(event) => onTargetChange(event.target.value)}
+            value={targetId}
+          >
+            <option value="">{targetsLoading ? "正在加载调查目标…" : "请选择调查目标"}</option>
+            {targets.map((target) => (
+              <option key={target.id} value={target.id}>
+                {target.display_name}（{target.environment}）
+              </option>
+            ))}
           </select>
         </label>
-        <label>
-          Environment
-          <select value={environment} onChange={(event) => setEnvironment(event.target.value)}>
-            <option value="local">local</option>
-            <option value="production">production</option>
+        {selectedTarget ? (
+          <p className="subtle-status full-width">
+            环境：{selectedTarget.environment}
+            {selectedTarget.capabilities.length > 0
+              ? `；可用能力：${selectedTarget.capabilities
+                  .map((capability) => capabilityLabels[capability] ?? capability)
+                  .join("、")}`
+              : ""}
+          </p>
+        ) : null}
+        <label className="full-width">
+          受影响服务
+          <select
+            disabled={!selectedTarget || serviceUnavailable || pending}
+            onChange={(event) => setServiceId(event.target.value)}
+            value={serviceId}
+          >
+            <option value="">
+              {!selectedTarget
+                ? "请先选择调查目标"
+                : serviceUnavailable
+                  ? "该调查目标没有可用服务"
+                  : "请选择受影响服务"}
+            </option>
+            {selectedTarget?.services.map((service) => (
+              <option key={service.id} value={service.id}>
+                {service.display_name}（{service.name}）
+              </option>
+            ))}
           </select>
         </label>
+        {serviceUnavailable ? <p className="error-banner full-width">该调查目标没有可用服务。</p> : null}
         <label>
-          Start time
+          开始时间
           <input
             required
             type="datetime-local"
@@ -94,7 +182,7 @@ export function IncidentCreateForm() {
           />
         </label>
         <label>
-          End time
+          结束时间
           <input
             required
             type="datetime-local"
@@ -103,18 +191,22 @@ export function IncidentCreateForm() {
           />
         </label>
         <label className="full-width">
-          Description
+          观察到的现象
           <textarea
             required
             rows={4}
             value={description}
             onChange={(event) => setDescription(event.target.value)}
-            placeholder="Describe the observed service behavior."
+            placeholder="请描述实际观察到的服务行为、报错或影响。"
           />
         </label>
-        {error ? <p className="error-banner" role="alert">{error}</p> : null}
-        <button className="button primary-button" disabled={pending} type="submit">
-          {pending ? "Creating…" : "Create Incident"}
+        {error ? <p className="error-banner full-width" role="alert">{error}</p> : null}
+        <button
+          className="button primary-button full-width"
+          disabled={pending || targetsLoading || !targetId || !serviceId || serviceUnavailable}
+          type="submit"
+        >
+          {pending ? "正在创建…" : "创建新的故障调查"}
         </button>
       </form>
     </section>

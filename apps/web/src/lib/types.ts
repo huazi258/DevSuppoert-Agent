@@ -1,18 +1,32 @@
 export type IncidentStatus =
   | "OPEN"
   | "INVESTIGATING"
-  | "WAITING_APPROVAL"
-  | "REMEDIATING"
-  | "VERIFYING"
-  | "RESOLVED"
-  | "NEEDS_MANUAL_ACTION";
+  | "CONCLUDED"
+  | "INCONCLUSIVE"
+  | "FAILED";
+
+export interface InvestigationServiceOption {
+  id: string;
+  name: string;
+  display_name: string;
+}
+
+export interface InvestigationTargetOption {
+  id: string;
+  display_name: string;
+  environment: string;
+  capabilities: string[];
+  services: InvestigationServiceOption[];
+}
 
 export interface Incident {
   id: string;
+  target_id: string;
+  service_id: string;
   service: string;
   environment: string;
   description: string;
-  status: string;
+  status: IncidentStatus;
   time_range_start: string;
   time_range_end: string;
   thread_id: string;
@@ -21,8 +35,8 @@ export interface Incident {
 }
 
 export interface CreateIncidentInput {
-  service: string;
-  environment: string;
+  target_id: string;
+  service_id: string;
   description: string;
   time_range_start: string;
   time_range_end: string;

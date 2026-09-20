@@ -3,6 +3,7 @@ import type {
   CreateIncidentInput,
   FinalReport,
   Incident,
+  InvestigationTargetOption,
   WorkflowResponse,
   WorkflowProgressResponse,
   WorkflowStartResponse,
@@ -51,18 +52,22 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       headers,
     });
   } catch {
-    throw new ApiError(0, "Unable to reach the DevSupport API.");
+    throw new ApiError(0, "无法连接到 DevSupport 服务。");
   }
 
   const payload: unknown = response.status === 204 ? undefined : await response.json().catch(() => undefined);
   if (!response.ok) {
-    throw new ApiError(response.status, errorDetail(payload, `Request failed (${response.status}).`));
+    throw new ApiError(response.status, errorDetail(payload, `请求失败（${response.status}）。`));
   }
   return payload as T;
 }
 
 export function listIncidents(): Promise<Incident[]> {
   return request<Incident[]>("/incidents");
+}
+
+export function listInvestigationTargets(): Promise<InvestigationTargetOption[]> {
+  return request<InvestigationTargetOption[]>("/incidents/investigation-targets");
 }
 
 export function createIncident(input: CreateIncidentInput): Promise<Incident> {

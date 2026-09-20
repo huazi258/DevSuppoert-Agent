@@ -42,6 +42,24 @@ class IncidentCreate(BaseModel):
         return self
 
 
+class InvestigationServiceOptionResponse(BaseModel):
+    """Safe service projection used by the Incident creation form."""
+
+    id: UUID
+    name: str
+    display_name: str
+
+
+class InvestigationTargetOptionResponse(BaseModel):
+    """Safe deployment-owned target projection used by the Incident creation form."""
+
+    id: UUID
+    display_name: str
+    environment: str
+    capabilities: list[str]
+    services: list[InvestigationServiceOptionResponse]
+
+
 class IncidentResponse(BaseModel):
     """Public representation of a persisted incident."""
 

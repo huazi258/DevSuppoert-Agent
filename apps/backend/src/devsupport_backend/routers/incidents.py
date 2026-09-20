@@ -32,6 +32,8 @@ from devsupport_backend.schemas.incidents import (
     IncidentCreate,
     IncidentResponse,
     InvestigationContinuationResponse,
+    InvestigationServiceOptionResponse,
+    InvestigationTargetOptionResponse,
     ObservationResponse,
     ReportResponse,
     SupplementalObservationCreate,
@@ -42,7 +44,11 @@ from devsupport_backend.schemas.workflows import (
     WorkflowStartResponse,
     WorkflowTimelineResponse,
 )
-from devsupport_backend.target_config import TargetConfigError, TargetConfigRegistry
+from devsupport_backend.target_config import (
+    TargetCapability,
+    TargetConfigError,
+    TargetConfigRegistry,
+)
 from devsupport_backend.workflow_console import (
     PostgresWorkflowRuntime,
     WorkflowConflictError,
@@ -104,6 +110,56 @@ def execute_accepted_start(incident_id: UUID) -> None:
             extra={"incident_id": str(incident_id)},
         )
         raise
+
+
+@router.get("/investigation-targets", response_model=list[InvestigationTargetOptionResponse])
+def list_investigation_targets(
+    session: SessionDependency,
+    target_configs: TargetConfigRegistryDependency,
+) -> list[InvestigationTargetOptionResponse]:
+    """List only enabled, deployment-configured Target and Service selection metadata."""
+    targets = session.scalars(
+        select(InvestigationTarget)
+        .where(InvestigationTarget.enabled.is_(True))
+        .order_by(InvestigationTarget.name)
+    )
+    options: list[InvestigationTargetOptionResponse] = []
+    for target in targets:
+        try:
+            target_config = target_configs.get(target_id=target.id, slug=target.slug)
+        except TargetConfigError:
+            # A database record without deployment configuration must not be selectable.
+            continue
+        if target_config.environment != target.environment:
+            continue
+        services = session.scalars(
+            select(Service)
+            .where(Service.target_id == target.id, Service.enabled.is_(True))
+            .order_by(Service.display_name)
+        )
+        enabled_services = [
+            InvestigationServiceOptionResponse(
+                id=service.id,
+                name=service.name,
+                display_name=service.display_name,
+            )
+            for service in services
+            if any(configured.name == service.name for configured in target_config.services)
+        ]
+        options.append(
+            InvestigationTargetOptionResponse(
+                id=target.id,
+                display_name=target.name,
+                environment=target.environment,
+                capabilities=[
+                    capability.value
+                    for capability in TargetCapability
+                    if target_config.capability(capability).enabled
+                ],
+                services=enabled_services,
+            )
+        )
+    return options
 
 
 @router.post("", response_model=IncidentResponse, status_code=status.HTTP_201_CREATED)

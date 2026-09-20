@@ -253,7 +253,7 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
   const canRetryInvestigation = retryEligibilityKnown && !mutationPending;
   const canApprove =
     error === null &&
-    incident.status === "WAITING_APPROVAL" &&
+    String(incident.status) === "WAITING_APPROVAL" &&
     workflow?.current_stage === "waiting_approval" &&
     workflow.policy_outcome?.decision === "APPROVAL_REQUIRED" &&
     workflow.action !== null &&

@@ -266,6 +266,128 @@ def test_create_incident_persists_open_record(
     )
 
 
+def test_investigation_target_options_expose_only_safe_whitelisted_choices(
+    api_client: TestClient,
+    database_session: Session,
+    configured_target: tuple[InvestigationTarget, Service],
+) -> None:
+    target, configured_service = configured_target
+    database_session.add_all(
+        [
+            Service(
+                target_id=target.id,
+                name="not-whitelisted",
+                display_name="Not whitelisted",
+                enabled=True,
+            ),
+            Service(
+                target_id=target.id,
+                name="disabled-service",
+                display_name="Disabled service",
+                enabled=False,
+            ),
+            InvestigationTarget(
+                name="Unconfigured target",
+                slug=f"unconfigured-{uuid4()}",
+                environment="production",
+                enabled=True,
+            ),
+        ]
+    )
+    database_session.commit()
+
+    response = api_client.get("/incidents/investigation-targets")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "id": str(target.id),
+            "display_name": target.name,
+            "environment": target.environment,
+            "capabilities": ["logs", "metrics"],
+            "services": [
+                {
+                    "id": str(configured_service.id),
+                    "name": configured_service.name,
+                    "display_name": configured_service.display_name,
+                }
+            ],
+        }
+    ]
+    response_text = response.text.lower()
+    for forbidden in ("secret", "provider", "endpoint", "backend_config_key"):
+        assert forbidden not in response_text
+
+
+def test_investigation_target_options_keep_services_scoped_to_each_target(
+    api_client: TestClient,
+    database_session: Session,
+    configured_target: tuple[InvestigationTarget, Service],
+) -> None:
+    first_target, first_service = configured_target
+    second_target = InvestigationTarget(
+        name="Second target",
+        slug=f"second-target-{uuid4()}",
+        environment="staging",
+        enabled=True,
+    )
+    second_service = Service(
+        name="catalog-service",
+        display_name="Catalog service",
+        enabled=True,
+    )
+    second_target.services.append(second_service)
+    database_session.add(second_target)
+    database_session.commit()
+    app.dependency_overrides[get_target_config_registry] = lambda: TargetConfigRegistry(
+        [
+            InvestigationTargetConfig(
+                target_id=first_target.id,
+                slug=first_target.slug,
+                environment=first_target.environment,
+                services=[TargetServiceConfig(name=first_service.name)],
+                logs=CapabilityConfig(
+                    enabled=True,
+                    adapter_type=AdapterType.FAULT_LAB,
+                    provider_config_ref="first-target-observability",
+                ),
+                metrics=CapabilityConfig(
+                    enabled=True,
+                    adapter_type=AdapterType.FAULT_LAB,
+                    provider_config_ref="first-target-observability",
+                ),
+            ),
+            InvestigationTargetConfig(
+                target_id=second_target.id,
+                slug=second_target.slug,
+                environment=second_target.environment,
+                services=[TargetServiceConfig(name=second_service.name)],
+                logs=CapabilityConfig(
+                    enabled=True,
+                    adapter_type=AdapterType.FAULT_LAB,
+                    provider_config_ref="second-target-observability",
+                ),
+                metrics=CapabilityConfig(
+                    enabled=True,
+                    adapter_type=AdapterType.FAULT_LAB,
+                    provider_config_ref="second-target-observability",
+                ),
+            ),
+        ]
+    )
+
+    response = api_client.get("/incidents/investigation-targets")
+
+    assert response.status_code == 200
+    options_by_id = {option["id"]: option for option in response.json()}
+    assert [service["id"] for service in options_by_id[str(first_target.id)]["services"]] == [
+        str(first_service.id)
+    ]
+    assert [service["id"] for service in options_by_id[str(second_target.id)]["services"]] == [
+        str(second_service.id)
+    ]
+
+
 def test_get_incident_returns_persisted_record(
     api_client: TestClient, incident_payload: dict[str, str]
 ) -> None:
