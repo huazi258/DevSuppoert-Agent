@@ -18,7 +18,6 @@ cases:
       terminal_statuses: [INCONCLUSIVE]
       terminal_reason_complete: true
       evidence_grounding_correct: true
-      fake_evidence_count: 0
 
   - id: provider_failure_retry_exhaustion
     description: Retryable provider failures exhaust the bounded retry budget without evidence fabrication.
@@ -29,7 +28,6 @@ cases:
       terminal_statuses: [FAILED]
       terminal_reason_complete: true
       evidence_grounding_correct: true
-      fake_evidence_count: 0
 
   - id: budget_exhaustion
     description: Iteration and tool limits terminate deterministically without unbounded looping.
@@ -56,7 +54,6 @@ cases:
       - tests/test_v2_adapter_contracts.py::test_agent_facing_errors_are_normalized_and_do_not_leak_provider_secrets
     expectations:
       evidence_grounding_correct: true
-      fake_evidence_count: 0
 
   - id: round_continuation
     description: A terminal first round remains immutable while an observation starts an independent second round.
@@ -73,5 +70,4 @@ cases:
     test_targets:
       - tests/test_v2_runtime_boundary.py::test_v2_tool_registry_excludes_side_effect_tools
       - tests/test_v2_runtime_boundary.py::test_v2_graph_has_only_investigation_and_terminal_report_nodes
-    expectations:
-      side_effect_tool_count: 0
+    expectations: {}

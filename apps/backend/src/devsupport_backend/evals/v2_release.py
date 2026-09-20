@@ -35,6 +35,12 @@ REQUIRED_CASE_IDS = frozenset(
         "read_only_safety",
     }
 )
+RELEASE_FACT_MARKER = "V2_RELEASE_FACT="
+REQUIRED_VERIFIED_METRICS_BY_CASE = {
+    "provider_failure_retry_exhaustion": frozenset({"fake_evidence_count"}),
+    "knowledge_isolation": frozenset({"scope_leakage_count"}),
+    "read_only_safety": frozenset({"side_effect_tool_count"}),
+}
 
 
 class V2ReleaseStatus(StrEnum):
@@ -63,8 +69,6 @@ class V2CaseExpectations(_Model):
     citation_complete: bool = False
     scope_isolation_correct: bool = False
     budget_compliant: bool = False
-    fake_evidence_count: int = Field(default=0, ge=0)
-    side_effect_tool_count: int = Field(default=0, ge=0)
 
 
 class V2ReleaseCase(_Model):
@@ -131,7 +135,24 @@ class V2ReleaseCaseResult(_Model):
     passed: bool
     duration_ms: float = Field(ge=0)
     expectations: V2CaseExpectations
+    verified_metrics: "V2VerifiedMetrics" = Field(default_factory=lambda: V2VerifiedMetrics())
     failure_reason: str | None = None
+
+
+class V2VerifiedMetrics(_Model):
+    """Facts emitted by deterministic test contracts from their runtime observations."""
+
+    fake_evidence_count: int | None = Field(default=None, ge=0)
+    side_effect_tool_count: int | None = Field(default=None, ge=0)
+    scope_leakage_count: int | None = Field(default=None, ge=0)
+
+
+class V2VerifiedCount(_Model):
+    """A gate threshold paired with an observed test-contract fact."""
+
+    expected_max: int = Field(ge=0)
+    observed: int | None = Field(default=None, ge=0)
+    available: bool
 
 
 class V2ReleaseMetrics(_Model):
@@ -141,9 +162,9 @@ class V2ReleaseMetrics(_Model):
     citation_completeness: bool
     scope_isolation: bool
     budget_compliance: bool
-    fake_evidence_count: int | None = Field(default=None, ge=0)
-    side_effect_tool_count: int | None = Field(default=None, ge=0)
-    scope_leakage_count: int | None = Field(default=None, ge=0)
+    fake_evidence: V2VerifiedCount
+    side_effect_tools: V2VerifiedCount
+    scope_leakage: V2VerifiedCount
 
 
 class V2ReleaseGateAssessment(_Model):
@@ -180,7 +201,7 @@ def run_v2_release_suite(
         started = perf_counter()
         try:
             completed = subprocess.run(
-                [sys.executable, "-m", "pytest", "-q", *case.test_targets],
+                [sys.executable, "-m", "pytest", "-q", "-s", *case.test_targets],
                 cwd=cwd,
                 check=False,
                 capture_output=True,
@@ -200,7 +221,11 @@ def run_v2_release_suite(
             )
             continue
 
-        if completed.returncode == 0:
+        verified_metrics, fact_error = _parse_verified_metrics(case.id, completed.stdout)
+        if completed.returncode == 0 and fact_error is not None:
+            classification = V2CaseClassification.EVAL_INFRASTRUCTURE_BLOCKED
+            failure_reason = fact_error
+        elif completed.returncode == 0:
             classification = V2CaseClassification.PASSED
             failure_reason = None
         elif _is_infrastructure_failure(completed):
@@ -216,6 +241,7 @@ def run_v2_release_suite(
                 passed=classification is V2CaseClassification.PASSED,
                 duration_ms=_elapsed_ms(started),
                 expectations=case.expectations,
+                verified_metrics=verified_metrics,
                 failure_reason=failure_reason,
             )
         )
@@ -268,19 +294,40 @@ def assess_v2_release_gate(
         for result in results
         if result.expectations.terminal_statuses
     ) and any(result.expectations.terminal_statuses for result in results)
-    metrics_complete = all_passed
+    requirements = policy.requirements
+    fake_evidence = _verified_count(
+        results_by_id,
+        "provider_failure_retry_exhaustion",
+        "fake_evidence_count",
+        requirements.fake_evidence_max,
+    )
+    side_effect_tools = _verified_count(
+        results_by_id,
+        "read_only_safety",
+        "side_effect_tool_count",
+        requirements.side_effect_tool_max,
+    )
+    scope_leakage = _verified_count(
+        results_by_id,
+        "knowledge_isolation",
+        "scope_leakage_count",
+        requirements.scope_leakage_max,
+    )
     metrics = V2ReleaseMetrics(
         terminal_status_correctness=terminal_status_correctness,
         terminal_reason_complete=proven("terminal_reason_complete"),
         evidence_grounding_correct=proven("evidence_grounding_correct"),
         citation_completeness=proven("citation_complete"),
-        scope_isolation=proven("scope_isolation_correct"),
+        scope_isolation=(
+            proven("scope_isolation_correct")
+            and scope_leakage.available
+            and scope_leakage.observed <= scope_leakage.expected_max
+        ),
         budget_compliance=proven("budget_compliant"),
-        fake_evidence_count=(0 if metrics_complete else None),
-        side_effect_tool_count=(0 if metrics_complete else None),
-        scope_leakage_count=(0 if metrics_complete else None),
+        fake_evidence=fake_evidence,
+        side_effect_tools=side_effect_tools,
+        scope_leakage=scope_leakage,
     )
-    requirements = policy.requirements
     requirements_passed = (
         (not requirements.all_deterministic_cases_must_pass or all_passed)
         and metrics.terminal_status_correctness
@@ -297,18 +344,30 @@ def assess_v2_release_gate(
             or metrics.citation_completeness
         )
         and (not requirements.budget_compliance_required or metrics.budget_compliance)
-        and metrics.fake_evidence_count is not None
-        and metrics.fake_evidence_count <= requirements.fake_evidence_max
-        and metrics.side_effect_tool_count is not None
-        and metrics.side_effect_tool_count <= requirements.side_effect_tool_max
-        and metrics.scope_leakage_count is not None
-        and metrics.scope_leakage_count <= requirements.scope_leakage_max
+        and metrics.fake_evidence.available
+        and metrics.fake_evidence.observed <= metrics.fake_evidence.expected_max
+        and metrics.side_effect_tools.available
+        and metrics.side_effect_tools.observed <= metrics.side_effect_tools.expected_max
+        and metrics.scope_leakage.available
+        and metrics.scope_leakage.observed <= metrics.scope_leakage.expected_max
+    )
+    verified_counts_available = all(
+        count.available
+        for count in (
+            metrics.fake_evidence,
+            metrics.side_effect_tools,
+            metrics.scope_leakage,
+        )
     )
     status = (
-        V2ReleaseStatus.FAIL
+        V2ReleaseStatus.BLOCKED
+        if (
+            external_provider_blocked_cases
+            or eval_infrastructure_blocked_cases
+            or not verified_counts_available
+        )
+        else V2ReleaseStatus.FAIL
         if product_failure_cases
-        else V2ReleaseStatus.BLOCKED
-        if external_provider_blocked_cases or eval_infrastructure_blocked_cases
         else V2ReleaseStatus.PASS
         if requirements_passed
         else V2ReleaseStatus.FAIL
@@ -343,6 +402,48 @@ def _load_yaml(path: Path) -> object:
 def _is_infrastructure_failure(completed: subprocess.CompletedProcess[str]) -> bool:
     output = f"{completed.stdout}\n{completed.stderr}".lower()
     return completed.returncode == 5 or "no module named pytest" in output
+
+
+def _parse_verified_metrics(
+    case_id: str, output: str
+) -> tuple[V2VerifiedMetrics, str | None]:
+    facts: dict[str, int] = {}
+    allowed_metrics = REQUIRED_VERIFIED_METRICS_BY_CASE.get(case_id, frozenset())
+    try:
+        for line in output.splitlines():
+            if not line.startswith(RELEASE_FACT_MARKER):
+                continue
+            raw_fact = json.loads(line.removeprefix(RELEASE_FACT_MARKER))
+            if not isinstance(raw_fact, dict):
+                raise ValueError("release fact must be a JSON object")
+            for name, value in raw_fact.items():
+                if name not in allowed_metrics or name in facts:
+                    raise ValueError("invalid or duplicate release metric")
+                if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                    raise ValueError("release metric must be a non-negative integer")
+                facts[name] = value
+        return V2VerifiedMetrics.model_validate(facts), None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return V2VerifiedMetrics(), "deterministic_fact_adapter_invalid"
+
+
+def _verified_count(
+    results_by_id: dict[str, V2ReleaseCaseResult],
+    case_id: str,
+    metric_name: str,
+    expected_max: int,
+) -> V2VerifiedCount:
+    result = results_by_id.get(case_id)
+    observed = (
+        getattr(result.verified_metrics, metric_name)
+        if result is not None and result.passed
+        else None
+    )
+    return V2VerifiedCount(
+        expected_max=expected_max,
+        observed=observed,
+        available=observed is not None,
+    )
 
 
 def _elapsed_ms(started: float) -> float:

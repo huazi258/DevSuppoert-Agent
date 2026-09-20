@@ -1,5 +1,6 @@
 """Regression coverage for the formal V2 read-only runtime boundary."""
 
+import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
@@ -220,8 +221,15 @@ def test_postgres_runtime_composes_only_v2_investigation_dependencies(
 
 
 def test_v2_tool_registry_excludes_side_effect_tools() -> None:
+    side_effect_terms = ("rollback", "restart", "action", "approval", "recovery")
+    observed_side_effect_tools = [
+        definition.name.value
+        for definition in v2_tool_registry.list()
+        if any(term in definition.name.value for term in side_effect_terms)
+    ]
     assert ToolName.ROLLBACK_DEPLOYMENT not in V2_READ_ONLY_TOOL_NAMES
     assert {definition.name for definition in v2_tool_registry.list()} == V2_READ_ONLY_TOOL_NAMES
+    assert observed_side_effect_tools == []
     with pytest.raises(UnknownToolError):
         v2_tool_registry.get(ToolName.ROLLBACK_DEPLOYMENT)
     with pytest.raises(ValueError, match="read-only"):
@@ -233,6 +241,10 @@ def test_v2_tool_registry_excludes_side_effect_tools() -> None:
             deployment_adapter=None,
             available_tools=frozenset({ToolName.ROLLBACK_DEPLOYMENT}),
         )
+    print(
+        "V2_RELEASE_FACT="
+        + json.dumps({"side_effect_tool_count": len(observed_side_effect_tools)})
+    )
 
 
 def test_v2_graph_concludes_and_terminalizes_the_current_round(

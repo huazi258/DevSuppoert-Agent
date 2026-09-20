@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -402,6 +403,7 @@ def test_retryable_tool_failure_exhaustion_fails_without_evidence(
     assert exhausted["evidence"] == []
     assert exhausted["terminal_reason"].value == "retry_budget_exhausted"
     assert exhausted["workflow_failure_category"] is not None
+    print("V2_RELEASE_FACT=" + json.dumps({"fake_evidence_count": len(exhausted["evidence"])}))
 
 
 @pytest.mark.parametrize("error_code", ["invalid_request", "capability_unavailable"])

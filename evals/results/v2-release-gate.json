@@ -15,16 +15,28 @@
       "citation_completeness": true,
       "scope_isolation": true,
       "budget_compliance": true,
-      "fake_evidence_count": 0,
-      "side_effect_tool_count": 0,
-      "scope_leakage_count": 0
+      "fake_evidence": {
+        "expected_max": 0,
+        "observed": 0,
+        "available": true
+      },
+      "side_effect_tools": {
+        "expected_max": 0,
+        "observed": 0,
+        "available": true
+      },
+      "scope_leakage": {
+        "expected_max": 0,
+        "observed": 0,
+        "available": true
+      }
     },
     "cases": [
       {
         "case_id": "successful_investigation",
         "classification": "passed",
         "passed": true,
-        "duration_ms": 2673.68,
+        "duration_ms": 4078.08,
         "expectations": {
           "terminal_statuses": [
             "CONCLUDED"
@@ -33,9 +45,12 @@
           "evidence_grounding_correct": true,
           "citation_complete": true,
           "scope_isolation_correct": false,
-          "budget_compliant": false,
-          "fake_evidence_count": 0,
-          "side_effect_tool_count": 0
+          "budget_compliant": false
+        },
+        "verified_metrics": {
+          "fake_evidence_count": null,
+          "side_effect_tool_count": null,
+          "scope_leakage_count": null
         },
         "failure_reason": null
       },
@@ -43,7 +58,7 @@
         "case_id": "insufficient_evidence",
         "classification": "passed",
         "passed": true,
-        "duration_ms": 2101.61,
+        "duration_ms": 2572.89,
         "expectations": {
           "terminal_statuses": [
             "INCONCLUSIVE"
@@ -52,9 +67,12 @@
           "evidence_grounding_correct": true,
           "citation_complete": false,
           "scope_isolation_correct": false,
-          "budget_compliant": false,
-          "fake_evidence_count": 0,
-          "side_effect_tool_count": 0
+          "budget_compliant": false
+        },
+        "verified_metrics": {
+          "fake_evidence_count": null,
+          "side_effect_tool_count": null,
+          "scope_leakage_count": null
         },
         "failure_reason": null
       },
@@ -62,7 +80,7 @@
         "case_id": "provider_failure_retry_exhaustion",
         "classification": "passed",
         "passed": true,
-        "duration_ms": 2045.42,
+        "duration_ms": 2490.3,
         "expectations": {
           "terminal_statuses": [
             "FAILED"
@@ -71,9 +89,12 @@
           "evidence_grounding_correct": true,
           "citation_complete": false,
           "scope_isolation_correct": false,
-          "budget_compliant": false,
+          "budget_compliant": false
+        },
+        "verified_metrics": {
           "fake_evidence_count": 0,
-          "side_effect_tool_count": 0
+          "side_effect_tool_count": null,
+          "scope_leakage_count": null
         },
         "failure_reason": null
       },
@@ -81,7 +102,7 @@
         "case_id": "budget_exhaustion",
         "classification": "passed",
         "passed": true,
-        "duration_ms": 2768.09,
+        "duration_ms": 3770.75,
         "expectations": {
           "terminal_statuses": [
             "INCONCLUSIVE",
@@ -91,9 +112,12 @@
           "evidence_grounding_correct": false,
           "citation_complete": false,
           "scope_isolation_correct": false,
-          "budget_compliant": true,
-          "fake_evidence_count": 0,
-          "side_effect_tool_count": 0
+          "budget_compliant": true
+        },
+        "verified_metrics": {
+          "fake_evidence_count": null,
+          "side_effect_tool_count": null,
+          "scope_leakage_count": null
         },
         "failure_reason": null
       },
@@ -101,16 +125,19 @@
         "case_id": "knowledge_isolation",
         "classification": "passed",
         "passed": true,
-        "duration_ms": 2083.91,
+        "duration_ms": 2819.62,
         "expectations": {
           "terminal_statuses": [],
           "terminal_reason_complete": false,
           "evidence_grounding_correct": false,
           "citation_complete": true,
           "scope_isolation_correct": true,
-          "budget_compliant": false,
-          "fake_evidence_count": 0,
-          "side_effect_tool_count": 0
+          "budget_compliant": false
+        },
+        "verified_metrics": {
+          "fake_evidence_count": null,
+          "side_effect_tool_count": null,
+          "scope_leakage_count": 0
         },
         "failure_reason": null
       },
@@ -118,16 +145,19 @@
         "case_id": "adapter_boundary",
         "classification": "passed",
         "passed": true,
-        "duration_ms": 2670.73,
+        "duration_ms": 3227.22,
         "expectations": {
           "terminal_statuses": [],
           "terminal_reason_complete": false,
           "evidence_grounding_correct": true,
           "citation_complete": false,
           "scope_isolation_correct": false,
-          "budget_compliant": false,
-          "fake_evidence_count": 0,
-          "side_effect_tool_count": 0
+          "budget_compliant": false
+        },
+        "verified_metrics": {
+          "fake_evidence_count": null,
+          "side_effect_tool_count": null,
+          "scope_leakage_count": null
         },
         "failure_reason": null
       },
@@ -135,7 +165,7 @@
         "case_id": "round_continuation",
         "classification": "passed",
         "passed": true,
-        "duration_ms": 2789.22,
+        "duration_ms": 3826.77,
         "expectations": {
           "terminal_statuses": [
             "CONCLUDED",
@@ -145,9 +175,12 @@
           "evidence_grounding_correct": true,
           "citation_complete": false,
           "scope_isolation_correct": false,
-          "budget_compliant": false,
-          "fake_evidence_count": 0,
-          "side_effect_tool_count": 0
+          "budget_compliant": false
+        },
+        "verified_metrics": {
+          "fake_evidence_count": null,
+          "side_effect_tool_count": null,
+          "scope_leakage_count": null
         },
         "failure_reason": null
       },
@@ -155,16 +188,19 @@
         "case_id": "read_only_safety",
         "classification": "passed",
         "passed": true,
-        "duration_ms": 2473.49,
+        "duration_ms": 3328.83,
         "expectations": {
           "terminal_statuses": [],
           "terminal_reason_complete": false,
           "evidence_grounding_correct": false,
           "citation_complete": false,
           "scope_isolation_correct": false,
-          "budget_compliant": false,
-          "fake_evidence_count": 0,
-          "side_effect_tool_count": 0
+          "budget_compliant": false
+        },
+        "verified_metrics": {
+          "fake_evidence_count": null,
+          "side_effect_tool_count": 0,
+          "scope_leakage_count": null
         },
         "failure_reason": null
       }

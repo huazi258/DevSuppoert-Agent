@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -328,6 +329,23 @@ def test_formal_v2_scoped_rag_acceptance_preserves_only_authorized_citations(
     assert all(item["environment"] in {"common", "local"} for item in report_citations)
     assert all(
         item["service_id"] in {None, str(target_a.order.id)} for item in report_citations
+    )
+    retrieved_chunk_ids = {UUID(item.data["chunk_id"]) for item in retrieved["evidence"]}
+    invalid_report_citations = [
+        item
+        for item in report_citations
+        if item["target_id"] != str(target_a.target.id)
+        or item["environment"] not in {"common", "local"}
+        or item["service_id"] not in {None, str(target_a.order.id)}
+    ]
+    print(
+        "V2_RELEASE_FACT="
+        + json.dumps(
+            {
+                "scope_leakage_count": len(retrieved_chunk_ids & forbidden)
+                + len(invalid_report_citations)
+            }
+        )
     )
 
 
