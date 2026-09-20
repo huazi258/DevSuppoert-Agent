@@ -12,11 +12,9 @@ import {
   getWorkflowTimeline,
   retryWorkflow,
   startWorkflow,
-  submitApproval,
 } from "../lib/api";
 import {
   formatDate,
-  type ApprovalDecision,
   type FinalReport,
   type Incident,
   type WorkflowProgressResponse,
@@ -33,14 +31,46 @@ interface IncidentConsoleProps {
   incidentId: string;
 }
 
-const terminalStatuses = new Set(["RESOLVED", "NEEDS_MANUAL_ACTION"]);
+const terminalStatuses = new Set(["CONCLUDED", "INCONCLUSIVE", "FAILED"]);
+
+function confidence(value: number | null): string {
+  return value === null ? "暂未评估" : `${Math.round(value * 100)}%`;
+}
 
 function isWorkflowNotStarted(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404 && error.detail === "Workflow not started";
 }
 
 function messageFor(error: unknown, fallback: string): string {
-  return error instanceof ApiError ? error.detail : fallback;
+  return error instanceof ApiError && error.status === 0 ? error.detail : fallback;
+}
+
+function progressSummary(progress: WorkflowProgressResponse | null): string | null {
+  if (!progress) {
+    return null;
+  }
+  if (progress.phase === "accepted") {
+    return "调查已受理，正在等待首个已持久化进度。";
+  }
+  if (progress.phase === "running") {
+    return progress.current_goal ?? "正在收集证据并验证假设。";
+  }
+  if (progress.phase === "failed") {
+    return progress.failure?.message ?? "调查运行遇到受控错误。";
+  }
+  return progress.current_goal;
+}
+
+function suggestions(
+  workflow: WorkflowResponse | null,
+  report: FinalReport | null,
+): string[] {
+  const reportSuggestions = report?.content.manual_suggestions ?? [];
+  if (reportSuggestions.length > 0) {
+    return reportSuggestions;
+  }
+  const recommended = workflow?.final_conclusion?.recommended_next_action;
+  return recommended ? [recommended] : [];
 }
 
 export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
@@ -54,7 +84,6 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
   const [mutationPending, setMutationPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
-  const [approvalRetryDecision, setApprovalRetryDecision] = useState<ApprovalDecision | null>(null);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
   const [progressError, setProgressError] = useState<string | null>(null);
   const [timelineError, setTimelineError] = useState<string | null>(null);
@@ -74,14 +103,15 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
         setProgressError(null);
       } catch (progressLoadError: unknown) {
         setProgress(null);
-        setProgressError(messageFor(progressLoadError, "Unable to load investigation progress."));
+        setProgressError(messageFor(progressLoadError, "调查进度加载失败，请稍后重试。"));
       }
       try {
         const nextTimeline = await getWorkflowTimeline(incidentId);
         setTimeline(nextTimeline);
         setTimelineError(null);
       } catch (timelineLoadError: unknown) {
-        setTimelineError(messageFor(timelineLoadError, "Unable to load investigation timeline."));
+        setTimeline(null);
+        setTimelineError(messageFor(timelineLoadError, "调查过程加载失败，请稍后重试。"));
       }
       try {
         const nextWorkflow = await getWorkflow(incidentId);
@@ -92,7 +122,8 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
           setWorkflow(null);
           setWorkflowError(null);
         } else {
-          setWorkflowError(messageFor(workflowLoadError, "Unable to load the workflow."));
+          setWorkflow(null);
+          setWorkflowError(messageFor(workflowLoadError, "调查详情加载失败，请稍后重试。"));
         }
       }
     } catch (incidentLoadError: unknown) {
@@ -101,12 +132,11 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
       setProgress(null);
       setTimeline(null);
       setReport(null);
-      setApprovalRetryDecision(null);
       setWorkflowError(null);
       setProgressError(null);
       setTimelineError(null);
       setReportError(null);
-      setError(messageFor(incidentLoadError, "Unable to load the Incident."));
+      setError(messageFor(incidentLoadError, "故障调查加载失败，请稍后重试。"));
     } finally {
       setLoading(false);
       setWorkflowLoading(false);
@@ -122,7 +152,6 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
     setReport(null);
     setError(null);
     setMutationError(null);
-    setApprovalRetryDecision(null);
     setWorkflowError(null);
     setProgressError(null);
     setTimelineError(null);
@@ -132,12 +161,7 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
   }, [incidentId, refresh]);
 
   useEffect(() => {
-    if (
-      !incident ||
-      incident.status !== "INVESTIGATING" ||
-      terminalStatuses.has(incident.status) ||
-      mutationPending
-    ) {
+    if (!incident || incident.status !== "INVESTIGATING" || mutationPending) {
       return;
     }
     const interval = window.setInterval(() => {
@@ -153,7 +177,7 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
   }, [incident, mutationPending, refresh]);
 
   const shouldFetchReport = Boolean(
-    incident && (terminalStatuses.has(incident.status) || workflow?.report_outcome !== null && workflow?.report_outcome !== undefined),
+    incident && (terminalStatuses.has(incident.status) || workflow?.report_outcome),
   );
 
   useEffect(() => {
@@ -169,8 +193,8 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
       .catch((reportLoadError: unknown) => {
         setReportError(
           reportLoadError instanceof ApiError && reportLoadError.status === 404
-            ? "Final report is not available yet."
-            : messageFor(reportLoadError, "Unable to load the Final Report."),
+            ? "调查报告尚未生成。"
+            : messageFor(reportLoadError, "调查报告加载失败，请稍后重试。"),
         );
       });
   }, [incidentId, shouldFetchReport]);
@@ -180,10 +204,9 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
     setMutationError(null);
     try {
       await startWorkflow(incidentId);
-      setWorkflowError(null);
       await refresh();
     } catch (startError: unknown) {
-      setMutationError(messageFor(startError, "Unable to start the workflow."));
+      setMutationError(messageFor(startError, "开始调查失败，请稍后重试。"));
       await refresh();
     } finally {
       setMutationPending(false);
@@ -194,30 +217,10 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
     setMutationPending(true);
     setMutationError(null);
     try {
-      const retried = await retryWorkflow(incidentId);
-      setWorkflow(retried);
-      setWorkflowError(null);
+      await retryWorkflow(incidentId);
       await refresh();
     } catch (retryError: unknown) {
-      setMutationError(messageFor(retryError, "Unable to retry the investigation."));
-      await refresh();
-    } finally {
-      setMutationPending(false);
-    }
-  }
-
-  async function decideApproval(decision: ApprovalDecision) {
-    setMutationPending(true);
-    setMutationError(null);
-    try {
-      await submitApproval(incidentId, decision);
-      setApprovalRetryDecision(null);
-      await refresh();
-    } catch (approvalError: unknown) {
-      setMutationError(messageFor(approvalError, "Unable to record the Approval decision."));
-      if (approvalError instanceof ApiError && approvalError.status === 503) {
-        setApprovalRetryDecision(decision);
-      }
+      setMutationError(messageFor(retryError, "重试调查失败，请稍后重试。"));
       await refresh();
     } finally {
       setMutationPending(false);
@@ -225,55 +228,45 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
   }
 
   if (loading && incident === null) {
-    return <main className="page-shell console-shell"><p className="empty-state">Loading Incident…</p></main>;
+    return <main className="page-shell console-shell"><p className="empty-state">正在加载故障调查…</p></main>;
   }
 
   if (incident === null) {
     return (
       <main className="page-shell console-shell">
-        <Link className="back-link" href="/">← All Incidents</Link>
-        <p className="error-banner" role="alert">{error ?? "Incident is not available."}</p>
+        <Link className="back-link" href="/">← 返回故障调查列表</Link>
+        <p className="error-banner" role="alert">{error ?? "故障调查不存在或暂不可用。"}</p>
       </main>
     );
   }
 
-  const canStart =
-    error === null &&
-    incident.status === "OPEN" &&
-    workflow === null &&
-    !workflowLoading &&
-    workflowError === null;
-  const retryEligibilityKnown =
-    error === null &&
-    incident.status === "INVESTIGATING" &&
-    workflow?.retry_available === true &&
-    !workflowLoading &&
-    workflowError === null &&
-    approvalRetryDecision === null;
-  const canRetryInvestigation = retryEligibilityKnown && !mutationPending;
-  const canApprove =
-    error === null &&
-    String(incident.status) === "WAITING_APPROVAL" &&
-    workflow?.current_stage === "waiting_approval" &&
-    workflow.policy_outcome?.decision === "APPROVAL_REQUIRED" &&
-    workflow.action !== null &&
-    workflow.approval_outcome === null &&
-    !workflowLoading &&
-    workflowError === null &&
-    approvalRetryDecision === null;
+  const canStart = incident.status === "OPEN" && workflow === null && !workflowLoading;
+  const canRetry =
+    incident.status === "FAILED" &&
+    Boolean(workflow?.retry_available || progress?.retry_available) &&
+    !workflowLoading;
+  const currentConclusion = workflow?.final_conclusion ?? report?.content.conclusion ?? null;
+  const currentRootCause =
+    incident.status === "CONCLUDED" ? currentConclusion?.root_cause ?? null : null;
+  const unresolved = report?.content.unknowns ?? workflow?.hypotheses
+    .filter((hypothesis) => hypothesis.status !== "CONFIRMED")
+    .map((hypothesis) => hypothesis.summary) ?? [];
+  const nextSteps = suggestions(workflow, report);
 
   return (
     <main className="page-shell console-shell">
-      <Link className="back-link" href="/">← All Incidents</Link>
+      <Link className="back-link" href="/">← 返回故障调查列表</Link>
       <header className="console-header">
         <div>
-          <p className="eyebrow">Incident Console</p>
+          <p className="eyebrow">故障调查概览</p>
           <h1>{incident.service}</h1>
+          <p>{incident.description}</p>
           <p className="mono compact-id">{incident.id}</p>
         </div>
         <dl className="header-facts">
-          <div><dt>Environment</dt><dd>{incident.environment}</dd></div>
-          <div><dt>Incident Status</dt><dd><StatusBadge value={incident.status} /></dd></div>
+          <div><dt>环境</dt><dd>{incident.environment}</dd></div>
+          <div><dt>发生时间</dt><dd>{formatDate(incident.time_range_start)} 至 {formatDate(incident.time_range_end)}</dd></div>
+          <div><dt>调查状态</dt><dd><StatusBadge value={incident.status} /></dd></div>
         </dl>
       </header>
 
@@ -286,82 +279,46 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
 
       {canStart ? (
         <section className="panel start-panel">
-          <div><p className="eyebrow">Workflow</p><h2>Investigation has not started</h2><p>Start the persisted workflow for this Incident.</p></div>
+          <div><p className="eyebrow">准备就绪</p><h2>尚未开始调查</h2><p>开始后，系统会以只读方式收集证据并验证假设。</p></div>
           <button className="button primary-button" disabled={mutationPending} onClick={() => void startInvestigation()} type="button">
-            {mutationPending ? "Starting…" : "Start Investigation"}
+            {mutationPending ? "正在开始…" : "开始调查"}
           </button>
         </section>
       ) : null}
 
-      {progress ? (
-        <section className="panel pending-workflow-panel" aria-labelledby="progress-heading">
-          <p className="eyebrow">Workflow</p>
-          <h2 id="progress-heading">Investigation Progress</h2>
-          <dl className="detail-grid">
-            <div><dt>Phase</dt><dd><StatusBadge value={progress.phase} /></dd></div>
-            <div className="full-detail"><dt>Current goal</dt><dd>{progress.current_goal ?? "—"}</dd></div>
-            <div><dt>Hypotheses</dt><dd>{progress.hypothesis_count}</dd></div>
-            <div><dt>Evidence</dt><dd>{progress.evidence_count}</dd></div>
-            <div><dt>Tools</dt><dd>{progress.tool_call_count}</dd></div>
-          </dl>
-          {progress.phase === "accepted" ? (
-            <p>Investigation accepted. Waiting for the first persisted workflow checkpoint…</p>
-          ) : null}
-          {progress.failure ? (
-            <p>Investigation interrupted: {progress.failure.message}</p>
-          ) : null}
-        </section>
-      ) : null}
+      <section className="panel" aria-labelledby="current-investigation-heading">
+        <p className="eyebrow">当前调查状态</p>
+        <h2 id="current-investigation-heading">{currentConclusion?.summary ?? progressSummary(progress) ?? "等待开始调查"}</h2>
+        <dl className="detail-grid">
+          <div><dt>状态</dt><dd><StatusBadge value={incident.status} /></dd></div>
+          {currentConclusion ? <div><dt>置信度</dt><dd>{confidence(currentConclusion.confidence)}</dd></div> : null}
+          {currentRootCause ? <div className="full-detail"><dt>当前根因判断</dt><dd>{currentRootCause}</dd></div> : null}
+          {unresolved.length > 0 ? <div className="full-detail"><dt>未确认事项</dt><dd>{unresolved.join("；")}</dd></div> : null}
+          {progress?.failure ? <div className="full-detail"><dt>受控失败说明</dt><dd>{progress.failure.message}</dd></div> : null}
+        </dl>
+        {canRetry ? (
+          <div className="retry-controls">
+            <p>运行时允许继续该调查，可在不改变已持久化证据的前提下重试。</p>
+            <button className="button secondary-button" disabled={mutationPending} onClick={() => void retryInvestigation()} type="button">
+              {mutationPending ? "正在重试…" : "重试调查"}
+            </button>
+          </div>
+        ) : null}
+      </section>
 
-      {workflowLoading && workflow ? <p className="subtle-status">Refreshing workflow…</p> : null}
+      <section className="panel" aria-labelledby="next-steps-heading">
+        <p className="eyebrow">建议下一步</p>
+        <h2 id="next-steps-heading">供人工参考</h2>
+        {nextSteps.length > 0 ? (
+          <ul className="simple-list">{nextSteps.map((step) => <li key={step}>{step}</li>)}</ul>
+        ) : <p className="empty-state">调查尚未形成可供人工执行的建议。</p>}
+      </section>
+
+      {workflow ? <WorkflowView workflow={workflow} /> : null}
       {timeline ? <InvestigationTimeline timeline={timeline} /> : null}
-      {workflow ? (
-        <>
-          <WorkflowView workflow={workflow} />
-          <section className="panel" aria-labelledby="decision-heading">
-            <p className="eyebrow">Decision and action</p>
-            <h2 id="decision-heading">Policy, Approval, and Recovery</h2>
-            {retryEligibilityKnown ? (
-              <div className="approval-controls">
-                <p>Investigation execution was interrupted after its progress was persisted. Retry continues the same investigation thread.</p>
-                <button className="button primary-button" disabled={!canRetryInvestigation} onClick={() => void retryInvestigation()} type="button">
-                  {mutationPending ? "Retrying…" : "Retry Investigation"}
-                </button>
-              </div>
-            ) : null}
-            <div className="decision-grid">
-              {workflow.proposed_action ? (
-                <article className="record-card"><h3>Proposed Action</h3><p><strong>{workflow.proposed_action.action_type}</strong> — {workflow.proposed_action.summary}</p><p>{workflow.proposed_action.reason}</p><p>Risk: {workflow.proposed_action.risk}</p><p className="subtle-status">Based on {workflow.proposed_action.supporting_evidence_ids.length} supporting evidence record{workflow.proposed_action.supporting_evidence_ids.length === 1 ? "" : "s"}.</p></article>
-              ) : null}
-              {workflow.policy_outcome ? (
-                <article className="record-card"><h3>Policy</h3><p><StatusBadge value={workflow.policy_outcome.decision} /></p><p>{workflow.policy_outcome.reason}</p></article>
-              ) : null}
-              {workflow.action ? (
-                <article className="record-card"><h3>Authoritative Action</h3><p><StatusBadge value={workflow.action.status} /></p><dl className="detail-grid"><div><dt>Service</dt><dd>{workflow.action.parameters.service}</dd></div><div><dt>Environment</dt><dd>{workflow.action.parameters.environment}</dd></div><div><dt>Current version</dt><dd>{workflow.action.parameters.current_version}</dd></div><div><dt>Target version</dt><dd>{workflow.action.parameters.target_version}</dd></div><div className="full-detail"><dt>Reason</dt><dd>{workflow.action.parameters.reason}</dd></div></dl></article>
-              ) : null}
-            </div>
-            {canApprove ? (
-              <div className="approval-controls"><p>Approve or reject the authoritative Action above. Action parameters cannot be edited here.</p><button className="button primary-button" disabled={mutationPending} onClick={() => void decideApproval("APPROVE")} type="button">Approve</button><button className="button danger-button" disabled={mutationPending} onClick={() => void decideApproval("REJECT")} type="button">Reject</button></div>
-            ) : null}
-            {approvalRetryDecision && error === null ? (
-              <div className="approval-controls">
-                <p>The approval decision may already be persisted, but workflow resume failed. Only the same decision can be retried.</p>
-                <button className="button primary-button" disabled={mutationPending} onClick={() => void decideApproval(approvalRetryDecision)} type="button">
-                  {mutationPending ? "Retrying…" : `Retry ${approvalRetryDecision === "APPROVE" ? "Approve" : "Reject"}`}
-                </button>
-              </div>
-            ) : null}
-            <div className="decision-grid">
-              {workflow.approval_outcome ? <article className="record-card"><h3>Approval</h3><p><StatusBadge value={workflow.approval_outcome.status} /></p></article> : null}
-              {workflow.execution_outcome ? <article className="record-card"><h3>Execution</h3><p><StatusBadge value={workflow.execution_outcome.status} /></p><p>{workflow.execution_outcome.service ?? "—"} / {workflow.execution_outcome.environment ?? "—"} → {workflow.execution_outcome.target_version ?? "—"}</p><p>Executed: {String(workflow.execution_outcome.executed)}</p></article> : null}
-              {workflow.verification_outcome ? <article className="record-card"><h3>Recovery Verification</h3><p><StatusBadge value={workflow.verification_outcome.status} /></p><p>{workflow.verification_outcome.summary}</p></article> : null}
-            </div>
-          </section>
-        </>
-      ) : null}
-      {progress || workflow ? <InvestigationTechnicalDetails progress={progress} workflow={workflow} /> : null}
       {report ? <FinalReportView report={report} /> : null}
-      <footer className="console-footer">Created {formatDate(incident.created_at)} · Updated {formatDate(incident.updated_at)}</footer>
+      {progress || workflow ? <InvestigationTechnicalDetails progress={progress} workflow={workflow} /> : null}
+      <footer className="console-footer">创建于 {formatDate(incident.created_at)} · 更新于 {formatDate(incident.updated_at)}</footer>
     </main>
   );
 }

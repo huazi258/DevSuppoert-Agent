@@ -8,17 +8,6 @@ const statusGroups: Record<string, string> = {
   CONCLUDED: "status-success",
   INCONCLUSIVE: "status-warning",
   FAILED: "status-rejected",
-  WAITING_APPROVAL: "status-pending",
-  REMEDIATING: "status-active",
-  VERIFYING: "status-active",
-  RESOLVED: "status-success",
-  NEEDS_MANUAL_ACTION: "status-warning",
-  ACTIVE: "status-active",
-  SUPPORTED: "status-supported",
-  REJECTED: "status-rejected",
-  CONFIRMED: "status-success",
-  PASS: "status-success",
-  FAIL: "status-rejected",
 };
 
 const statusLabels: Record<string, string> = {

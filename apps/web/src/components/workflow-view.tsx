@@ -1,5 +1,4 @@
 import type { WorkflowEvidence, WorkflowHypothesis, WorkflowResponse } from "../lib/types";
-import { StatusBadge } from "./status-badge";
 
 interface WorkflowViewProps {
   workflow: WorkflowResponse;
@@ -10,105 +9,57 @@ interface EvidenceRelationship {
   contradicting: number;
 }
 
-const EVIDENCE_LABELS: Record<string, string> = {
-  search_knowledge: "Knowledge",
-  query_logs: "Logs",
-  query_metrics: "Metrics",
-  query_traces: "Traces",
-  get_deployment_history: "Deployment",
+const evidenceLabels: Record<string, string> = {
+  search_knowledge: "知识库证据",
+  query_logs: "日志证据",
+  query_metrics: "指标证据",
+  query_traces: "链路证据",
+  get_deployment_history: "部署事实",
 };
 
-function confidence(value: number | null): string {
-  return value === null ? "—" : `${Math.round(value * 100)}%`;
-}
+const evidenceTypeLabels: Record<string, string> = {
+  knowledge_retrieval: "知识检索",
+  log_event: "日志事件",
+  metric_snapshot: "指标快照",
+  trace: "链路追踪",
+  deployment_fact: "部署事实",
+};
 
 function evidenceLabel(evidence: WorkflowEvidence): string {
-  return EVIDENCE_LABELS[evidence.source] ?? EVIDENCE_LABELS[evidence.evidence_type] ?? "Runtime Evidence";
+  return evidenceLabels[evidence.source] ?? evidenceTypeLabels[evidence.evidence_type] ?? "运行证据";
 }
 
-function referenceSummary(summary: string): string {
-  const maximumLength = 220;
-  return summary.length <= maximumLength ? summary : `${summary.slice(0, maximumLength - 1).trimEnd()}…`;
-}
-
-function buildEvidenceRelationships(hypotheses: WorkflowHypothesis[]): Map<string, EvidenceRelationship> {
+function buildEvidenceRelationships(
+  hypotheses: WorkflowHypothesis[],
+  workflow: WorkflowResponse,
+): Map<string, EvidenceRelationship> {
   const relationships = new Map<string, EvidenceRelationship>();
+  const add = (evidenceIds: string[], relationship: keyof EvidenceRelationship) => {
+    for (const evidenceId of evidenceIds) {
+      const current = relationships.get(evidenceId) ?? { supporting: 0, contradicting: 0 };
+      relationships.set(evidenceId, { ...current, [relationship]: current[relationship] + 1 });
+    }
+  };
   for (const hypothesis of hypotheses) {
-    for (const evidenceId of hypothesis.supporting_evidence_ids) {
-      const current = relationships.get(evidenceId) ?? { supporting: 0, contradicting: 0 };
-      relationships.set(evidenceId, { ...current, supporting: current.supporting + 1 });
-    }
-    for (const evidenceId of hypothesis.contradicting_evidence_ids) {
-      const current = relationships.get(evidenceId) ?? { supporting: 0, contradicting: 0 };
-      relationships.set(evidenceId, { ...current, contradicting: current.contradicting + 1 });
-    }
+    add(hypothesis.supporting_evidence_ids, "supporting");
+    add(hypothesis.contradicting_evidence_ids, "contradicting");
+  }
+  if (workflow.final_conclusion) {
+    add(workflow.final_conclusion.supporting_evidence_ids, "supporting");
+    add(workflow.final_conclusion.contradicting_evidence_ids, "contradicting");
   }
   return relationships;
 }
 
-function EvidenceReferenceList({
-  evidenceById,
-  evidenceIds,
-  relationship,
-}: {
-  evidenceById: Map<string, WorkflowEvidence>;
-  evidenceIds: string[];
-  relationship: "Supporting" | "Contradicting";
-}) {
-  const heading = `${relationship} evidence`;
-  if (evidenceIds.length === 0) {
-    return <section className="evidence-reference-list"><h4>{heading}</h4><p className="empty-state">None recorded.</p></section>;
+function relationshipText(relationship: EvidenceRelationship | undefined): string | null {
+  if (!relationship) {
+    return null;
   }
-
-  return (
-    <section className={`evidence-reference-list ${relationship.toLowerCase()}`}>
-      <h4>{heading}</h4>
-      <ul>
-        {evidenceIds.map((evidenceId) => {
-          const evidence = evidenceById.get(evidenceId);
-          return (
-            <li key={evidenceId}>
-              {evidence ? (
-                <a href={`#evidence-${evidence.id}`}>
-                  <strong>{evidenceLabel(evidence)}:</strong> {referenceSummary(evidence.summary)}
-                </a>
-              ) : (
-                <span className="evidence-reference-unavailable">Referenced evidence unavailable.</span>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-    </section>
-  );
-}
-
-function HypothesisCard({
-  evidenceById,
-  hypothesis,
-}: {
-  evidenceById: Map<string, WorkflowEvidence>;
-  hypothesis: WorkflowHypothesis;
-}) {
-  return (
-    <article className="record-card hypothesis-card">
-      <div className="record-header"><h3>{hypothesis.summary}</h3><StatusBadge value={hypothesis.status} /></div>
-      <dl className="detail-grid">
-        <div><dt>Confidence</dt><dd>{confidence(hypothesis.confidence)}</dd></div>
-        {hypothesis.next_check ? <div><dt>Next check</dt><dd>{hypothesis.next_check}</dd></div> : null}
-      </dl>
-      <EvidenceReferenceList
-        evidenceById={evidenceById}
-        evidenceIds={hypothesis.supporting_evidence_ids}
-        relationship="Supporting"
-      />
-      <EvidenceReferenceList
-        evidenceById={evidenceById}
-        evidenceIds={hypothesis.contradicting_evidence_ids}
-        relationship="Contradicting"
-      />
-    </article>
-  );
+  const items = [
+    relationship.supporting > 0 ? `支持 ${relationship.supporting} 项假设或结论` : null,
+    relationship.contradicting > 0 ? `反驳 ${relationship.contradicting} 项假设或结论` : null,
+  ].filter((item): item is string => item !== null);
+  return items.length > 0 ? items.join("；") : null;
 }
 
 function EvidenceCard({
@@ -118,94 +69,43 @@ function EvidenceCard({
   evidence: WorkflowEvidence;
   relationship: EvidenceRelationship | undefined;
 }) {
-  const label = evidenceLabel(evidence);
-  const relationshipText = [
-    relationship?.supporting ? `Supports ${relationship.supporting} hypothesis${relationship.supporting === 1 ? "" : "es"}` : null,
-    relationship?.contradicting ? `Contradicts ${relationship.contradicting} hypothesis${relationship.contradicting === 1 ? "" : "es"}` : null,
-  ].filter(Boolean);
-
+  const relationshipSummary = relationshipText(relationship);
   return (
     <article className="record-card evidence-card" id={`evidence-${evidence.id}`}>
-      <h4>{label}</h4>
+      <div className="record-header"><h3>{evidenceLabel(evidence)}</h3><span className="subtle-status">来源 Tool：{evidence.source}</span></div>
       <p>{evidence.summary}</p>
       {evidence.citation ? (
-        <section className="citation-block" aria-label="Knowledge source">
-          <h5>Source</h5>
+        <section className="citation-block" aria-label="知识引用">
+          <h4>知识引用</h4>
           <dl>
-            <div><dt>Document reference</dt><dd>{evidence.citation.document_reference}</dd></div>
-            <div><dt>Section</dt><dd>{evidence.citation.section}</dd></div>
-            <div><dt>Source</dt><dd>{evidence.citation.source}</dd></div>
+            <div><dt>文档</dt><dd>{evidence.citation.document_title}</dd></div>
+            <div><dt>章节</dt><dd>{evidence.citation.section}</dd></div>
+            <div><dt>引用标识</dt><dd>{evidence.citation.document_reference}</dd></div>
           </dl>
         </section>
-      ) : label === "Knowledge" && evidence.reference ? (
-        <p className="evidence-provenance"><strong>Reference:</strong> {evidence.reference}</p>
+      ) : evidence.reference ? (
+        <p className="evidence-provenance">引用：{evidence.reference}</p>
       ) : null}
-      {relationshipText.length > 0 ? <p className="evidence-relationships">Referenced by: {relationshipText.join(" · ")}</p> : null}
+      {relationshipSummary ? <p className="evidence-relationships">证据关系：{relationshipSummary}</p> : null}
     </article>
   );
 }
 
-function EvidenceGroup({
-  evidence,
-  relationships,
-  title,
-}: {
-  evidence: WorkflowEvidence[];
-  relationships: Map<string, EvidenceRelationship>;
-  title: "Knowledge" | "Runtime Evidence";
-}) {
-  if (evidence.length === 0) {
-    return null;
-  }
-  const headingId = `${title.toLowerCase().replaceAll(" ", "-")}-evidence-heading`;
-  return (
-    <section className="evidence-group" aria-labelledby={headingId}>
-      <h3 id={headingId}>{title}</h3>
-      <div className="stack-list">
-        {evidence.map((item) => <EvidenceCard evidence={item} key={item.id} relationship={relationships.get(item.id)} />)}
-      </div>
-    </section>
-  );
-}
-
 export function WorkflowView({ workflow }: WorkflowViewProps) {
-  const evidenceById = new Map(workflow.evidence.map((evidence) => [evidence.id, evidence]));
-  const relationships = buildEvidenceRelationships(workflow.hypotheses);
-  const knowledgeEvidence = workflow.evidence.filter((evidence) => evidenceLabel(evidence) === "Knowledge");
-  const runtimeEvidence = workflow.evidence.filter((evidence) => evidenceLabel(evidence) !== "Knowledge");
-
+  const relationships = buildEvidenceRelationships(workflow.hypotheses, workflow);
   return (
-    <section className="workflow-view" aria-label="Investigation details">
-      <section className="panel">
-        <div className="panel-heading"><h2>Hypotheses</h2><span>{workflow.hypotheses.length}</span></div>
-        {workflow.hypotheses.length === 0 ? <p className="empty-state">No hypotheses recorded yet.</p> : (
-          <div className="stack-list">
-            {workflow.hypotheses.map((hypothesis) => <HypothesisCard evidenceById={evidenceById} hypothesis={hypothesis} key={hypothesis.id} />)}
-          </div>
-        )}
-      </section>
-
-      <section className="panel">
-        <div className="panel-heading"><h2>Evidence</h2><span>{workflow.evidence.length}</span></div>
-        {workflow.evidence.length === 0 ? <p className="empty-state">No evidence recorded yet.</p> : (
-          <div className="evidence-groups">
-            <EvidenceGroup evidence={knowledgeEvidence} relationships={relationships} title="Knowledge" />
-            <EvidenceGroup evidence={runtimeEvidence} relationships={relationships} title="Runtime Evidence" />
-          </div>
-        )}
-      </section>
-
-      {workflow.final_conclusion ? (
-        <section className="panel">
-          <p className="eyebrow">Final conclusion</p>
-          <h2>{workflow.final_conclusion.summary}</h2>
-          <dl className="detail-grid">
-            <div><dt>Root cause</dt><dd>{workflow.final_conclusion.root_cause ?? "—"}</dd></div>
-            <div><dt>Confidence</dt><dd>{confidence(workflow.final_conclusion.confidence)}</dd></div>
-            <div className="full-detail"><dt>Recommended next action</dt><dd>{workflow.final_conclusion.recommended_next_action ?? "—"}</dd></div>
-          </dl>
-        </section>
-      ) : null}
+    <section className="panel" aria-labelledby="key-evidence-heading">
+      <div className="panel-heading">
+        <div><p className="eyebrow">关键证据</p><h2 id="key-evidence-heading">证据与引用</h2></div>
+        <span>{workflow.evidence.length}</span>
+      </div>
+      {workflow.evidence.length === 0 ? <p className="empty-state">尚未记录可展示的证据。</p> : (
+        <div className="stack-list">
+          {workflow.evidence.map((evidence) => (
+            <EvidenceCard evidence={evidence} key={evidence.id} relationship={relationships.get(evidence.id)} />
+          ))}
+        </div>
+      )}
     </section>
   );
 }

@@ -1,8 +1,8 @@
 import type {
-  ApprovalDecision,
   CreateIncidentInput,
   FinalReport,
   Incident,
+  IncidentStatus,
   InvestigationTargetOption,
   WorkflowResponse,
   WorkflowProgressResponse,
@@ -12,6 +12,11 @@ import type {
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_DEVSUPPORT_API_BASE_URL ?? "http://127.0.0.1:8002";
+
+type IncidentApiResponse = Omit<Incident, "status"> & {
+  status: string;
+  investigation_status: IncidentStatus;
+};
 
 export class ApiError extends Error {
   status: number;
@@ -62,23 +67,29 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return payload as T;
 }
 
-export function listIncidents(): Promise<Incident[]> {
-  return request<Incident[]>("/incidents");
+function toV2Incident(response: IncidentApiResponse): Incident {
+  const { investigation_status: status, ...incident } = response;
+  return { ...incident, status };
+}
+
+export async function listIncidents(): Promise<Incident[]> {
+  return (await request<IncidentApiResponse[]>("/incidents")).map(toV2Incident);
 }
 
 export function listInvestigationTargets(): Promise<InvestigationTargetOption[]> {
   return request<InvestigationTargetOption[]>("/incidents/investigation-targets");
 }
 
-export function createIncident(input: CreateIncidentInput): Promise<Incident> {
-  return request<Incident>("/incidents", {
+export async function createIncident(input: CreateIncidentInput): Promise<Incident> {
+  const response = await request<IncidentApiResponse>("/incidents", {
     method: "POST",
     body: JSON.stringify(input),
   });
+  return toV2Incident(response);
 }
 
-export function getIncident(id: string): Promise<Incident> {
-  return request<Incident>(`/incidents/${id}`);
+export async function getIncident(id: string): Promise<Incident> {
+  return toV2Incident(await request<IncidentApiResponse>(`/incidents/${id}`));
 }
 
 export function startWorkflow(id: string): Promise<WorkflowStartResponse> {
@@ -99,13 +110,6 @@ export function getWorkflowProgress(id: string): Promise<WorkflowProgressRespons
 
 export function getWorkflowTimeline(id: string): Promise<WorkflowTimelineResponse> {
   return request<WorkflowTimelineResponse>(`/incidents/${id}/workflow/timeline`);
-}
-
-export async function submitApproval(id: string, decision: ApprovalDecision): Promise<void> {
-  await request<unknown>(`/incidents/${id}/approval`, {
-    method: "POST",
-    body: JSON.stringify({ decision }),
-  });
 }
 
 export function getFinalReport(id: string): Promise<FinalReport> {

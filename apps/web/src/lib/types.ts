@@ -52,6 +52,16 @@ export interface WorkflowHypothesis {
   next_check: string | null;
 }
 
+export interface WorkflowEvidenceCitation {
+  id: string;
+  document_id: string;
+  chunk_id: string;
+  document_title: string;
+  source: string;
+  section: string;
+  document_reference: string;
+}
+
 export interface WorkflowEvidence {
   id: string;
   evidence_type: string;
@@ -59,15 +69,6 @@ export interface WorkflowEvidence {
   summary: string;
   reference: string | null;
   citation: WorkflowEvidenceCitation | null;
-}
-
-export interface WorkflowEvidenceCitation {
-  id: string;
-  document_id: string;
-  chunk_id: string;
-  source: string;
-  section: string;
-  document_reference: string;
 }
 
 export interface WorkflowToolError {
@@ -94,98 +95,33 @@ export interface WorkflowFinalConclusion {
   recommended_next_action: string | null;
 }
 
-export interface WorkflowProposedAction {
-  action_type: string;
-  summary: string;
-  reason: string;
-  risk: string;
-  supporting_evidence_ids: string[];
-}
-
-export interface WorkflowPolicy {
-  decision: string;
-  reason_code: string;
-  reason: string;
-  action_id: string | null;
-}
-
-export interface WorkflowActionParameters {
-  service: string;
-  environment: string;
-  current_version: string;
-  target_version: string;
-  reason: string;
-}
-
-export interface WorkflowAction {
-  action_id: string;
-  action_type: string;
-  status: string;
-  parameters: WorkflowActionParameters;
-  executed_at: string | null;
-}
-
-export interface WorkflowApprovalOutcome {
-  approval_id: string;
-  action_id: string;
-  status: string;
-}
-
-export interface WorkflowExecutionOutcome {
-  action_id: string | null;
-  approval_id: string | null;
-  status: string;
-  service: string | null;
-  environment: string | null;
-  target_version: string | null;
-  executed: boolean;
-}
-
-export interface WorkflowVerificationOutcome {
-  verification_id: string | null;
-  action_id: string | null;
-  status: string;
-  summary: string;
-}
-
 export interface WorkflowReportOutcome {
   report_id: string;
   incident_id: string;
-  final_status: string;
+  final_status: IncidentStatus;
 }
 
 export interface WorkflowResponse {
   incident_id: string;
-  incident_status: string;
+  incident_status: IncidentStatus;
   current_stage: string;
   hypotheses: WorkflowHypothesis[];
   evidence: WorkflowEvidence[];
   tool_history: WorkflowToolHistory[];
   current_goal: string | null;
   final_conclusion: WorkflowFinalConclusion | null;
-  proposed_action: WorkflowProposedAction | null;
-  policy_outcome: WorkflowPolicy | null;
-  action: WorkflowAction | null;
-  approval_outcome: WorkflowApprovalOutcome | null;
-  execution_outcome: WorkflowExecutionOutcome | null;
-  verification_outcome: WorkflowVerificationOutcome | null;
   report_outcome: WorkflowReportOutcome | null;
+  terminal_reason: string | null;
   retry_available: boolean;
 }
 
 export interface WorkflowStartResponse {
   incident_id: string;
-  incident_status: string;
+  incident_status: IncidentStatus;
   accepted: true;
 }
 
-export type WorkflowProgressPhase =
-  | "not_started"
-  | "accepted"
-  | "running"
-  | "failed"
-  | "waiting_approval"
-  | "completed";
+export type WorkflowProgressPhase = "not_started" | "accepted" | "running" | "failed" | "completed";
 
 export interface WorkflowProgressLatestTool {
   tool_name: string;
@@ -202,7 +138,7 @@ export interface WorkflowProgressFailure {
 
 export interface WorkflowProgressResponse {
   incident_id: string;
-  incident_status: string;
+  incident_status: IncidentStatus;
   phase: WorkflowProgressPhase;
   checkpoint_available: boolean;
   current_stage: string | null;
@@ -227,12 +163,6 @@ export type InvestigationTimelineEventType =
   | "evidence_collected"
   | "hypothesis_updated"
   | "conclusion_reached"
-  | "action_proposed"
-  | "policy_decision"
-  | "approval_wait"
-  | "approval_decision"
-  | "action_execution"
-  | "recovery_verification"
   | "investigation_interrupted"
   | "investigation_completed";
 
@@ -253,112 +183,47 @@ export interface WorkflowTimelineResponse {
   events: InvestigationTimelineEvent[];
 }
 
-export type ApprovalDecision = "APPROVE" | "REJECT";
-
-export interface FinalReportIncidentSummary {
-  incident_id: string;
+export interface FinalReportInputSummary {
   service: string;
   environment: string;
   description: string;
   time_range_start: string;
   time_range_end: string;
-  final_status: "RESOLVED" | "NEEDS_MANUAL_ACTION";
-  created_at: string;
 }
 
-export interface FinalReportRootCause {
+export interface FinalReportConclusion {
   summary: string;
   root_cause: string | null;
   confidence: number | null;
   supporting_evidence_ids: string[];
   contradicting_evidence_ids: string[];
-  recommended_next_action: string | null;
-}
-
-export interface FinalReportHypothesis {
-  id: string;
-  summary: string;
-  status: string;
-  confidence: number | null;
-  supporting_evidence_ids: string[];
-  contradicting_evidence_ids: string[];
-  next_check: string | null;
+  citations: WorkflowEvidenceCitation[];
 }
 
 export interface FinalReportEvidence {
   id: string;
-  evidence_type: string;
   source: string;
   summary: string;
   reference: string | null;
-  citation?: WorkflowEvidenceCitation | null;
-}
-
-export interface FinalReportRecommendedAction {
-  action_type: string;
-  summary: string;
-  reason: string;
-  risk: string;
-  supporting_evidence_ids: string[];
-}
-
-export interface FinalReportAction {
-  action_id: string;
-  action_type: string;
-  status: string;
-  parameters: Record<string, unknown>;
-  created_at: string;
-  executed_at: string | null;
-}
-
-export interface FinalReportApproval {
-  approval_id: string;
-  action_id: string;
-  status: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface FinalReportExecution {
-  action_id: string | null;
-  approval_id: string | null;
-  status: string;
-  service: string | null;
-  environment: string | null;
-  target_version: string | null;
-  executed: boolean;
-}
-
-export interface FinalReportVerification {
-  verification_id: string;
-  action_id: string;
-  status: string;
-  summary: string;
-  details: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
+  citation: WorkflowEvidenceCitation | null;
 }
 
 export interface FinalReportTimelineItem {
-  type: string;
-  timestamp: string;
-  record_id: string;
+  event: string;
   summary: string;
 }
 
 export interface FinalReportContent {
-  schema_version: "v0";
-  incident_summary: FinalReportIncidentSummary;
-  root_cause: FinalReportRootCause | null;
-  hypotheses: FinalReportHypothesis[];
+  schema_version: "v2";
+  input_summary: FinalReportInputSummary;
+  conclusion: FinalReportConclusion | null;
+  hypotheses: WorkflowHypothesis[];
   key_evidence: FinalReportEvidence[];
-  recommended_action: FinalReportRecommendedAction | null;
-  action: FinalReportAction | null;
-  approval: FinalReportApproval | null;
-  execution: FinalReportExecution | null;
-  verification: FinalReportVerification | null;
+  unknowns: string[];
+  manual_suggestions: string[];
+  terminal_reason: string | null;
   timeline: FinalReportTimelineItem[];
-  final_status: "RESOLVED" | "NEEDS_MANUAL_ACTION";
+  final_status: IncidentStatus;
 }
 
 export interface FinalReport {
@@ -371,7 +236,7 @@ export interface FinalReport {
 }
 
 export function formatDate(value: string): string {
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat("zh-CN", {
     dateStyle: "medium",
     timeStyle: "medium",
   }).format(new Date(value));

@@ -1,6 +1,4 @@
-import type { ReactNode } from "react";
-
-import type { FinalReport } from "../lib/types";
+import type { FinalReport, FinalReportEvidence } from "../lib/types";
 import { formatDate } from "../lib/types";
 import { StatusBadge } from "./status-badge";
 
@@ -8,46 +6,67 @@ interface FinalReportViewProps {
   report: FinalReport;
 }
 
-function optionalSection(title: string, content: ReactNode) {
-  return <section className="report-section"><h3>{title}</h3>{content}</section>;
+function confidence(value: number | null): string {
+  return value === null ? "暂未评估" : `${Math.round(value * 100)}%`;
+}
+
+function ReportEvidence({ evidence }: { evidence: FinalReportEvidence }) {
+  return (
+    <li>
+      <strong>{evidence.source}</strong>：{evidence.summary}
+      {evidence.citation ? (
+        <span>（{evidence.citation.document_title} / {evidence.citation.section} / {evidence.citation.document_reference}）</span>
+      ) : evidence.reference ? <span>（{evidence.reference}）</span> : null}
+    </li>
+  );
 }
 
 export function FinalReportView({ report }: FinalReportViewProps) {
   const content = report.content;
+  const confirmedRootCause =
+    content.final_status === "CONCLUDED" ? content.conclusion?.root_cause ?? null : null;
   return (
     <section className="panel" aria-labelledby="final-report-heading">
       <div className="panel-heading">
-        <div><p className="eyebrow">Persisted final report</p><h2 id="final-report-heading">Final Report</h2></div>
+        <div><p className="eyebrow">已持久化报告</p><h2 id="final-report-heading">本轮调查报告</h2></div>
         <StatusBadge value={content.final_status} />
       </div>
-      {optionalSection("Incident Summary", (
+      <section className="report-section">
+        <h3>调查结论</h3>
+        {content.conclusion ? (
+          <dl className="detail-grid">
+            <div className="full-detail"><dt>结论摘要</dt><dd>{content.conclusion.summary}</dd></div>
+            <div><dt>置信度</dt><dd>{confidence(content.conclusion.confidence)}</dd></div>
+            {confirmedRootCause ? <div className="full-detail"><dt>根因判断</dt><dd>{confirmedRootCause}</dd></div> : null}
+          </dl>
+        ) : <p className="empty-state">本轮调查未形成可确认的根因结论。</p>}
+      </section>
+      <section className="report-section">
+        <h3>未确认事项</h3>
+        {content.unknowns.length > 0 ? <ul className="simple-list">{content.unknowns.map((item) => <li key={item}>{item}</li>)}</ul> : <p className="empty-state">无。</p>}
+      </section>
+      <section className="report-section">
+        <h3>关键证据与引用</h3>
+        {content.key_evidence.length > 0 ? <ul className="simple-list">{content.key_evidence.map((item) => <ReportEvidence evidence={item} key={item.id} />)}</ul> : <p className="empty-state">本轮没有可引用的关键证据。</p>}
+      </section>
+      <section className="report-section">
+        <h3>人工下一步建议</h3>
+        {content.manual_suggestions.length > 0 ? <ul className="simple-list">{content.manual_suggestions.map((item) => <li key={item}>{item}</li>)}</ul> : <p className="empty-state">暂无额外建议。</p>}
+      </section>
+      <section className="report-section">
+        <h3>调查输入</h3>
         <dl className="detail-grid">
-          <div><dt>Service</dt><dd>{content.incident_summary.service}</dd></div>
-          <div><dt>Environment</dt><dd>{content.incident_summary.environment}</dd></div>
-          <div><dt>Window start</dt><dd>{formatDate(content.incident_summary.time_range_start)}</dd></div>
-          <div><dt>Window end</dt><dd>{formatDate(content.incident_summary.time_range_end)}</dd></div>
-          <div className="full-detail"><dt>Description</dt><dd>{content.incident_summary.description}</dd></div>
+          <div><dt>服务</dt><dd>{content.input_summary.service}</dd></div>
+          <div><dt>环境</dt><dd>{content.input_summary.environment}</dd></div>
+          <div><dt>开始时间</dt><dd>{formatDate(content.input_summary.time_range_start)}</dd></div>
+          <div><dt>结束时间</dt><dd>{formatDate(content.input_summary.time_range_end)}</dd></div>
+          <div className="full-detail"><dt>观察到的现象</dt><dd>{content.input_summary.description}</dd></div>
         </dl>
-      ))}
-      {optionalSection("Root Cause", content.root_cause ? (
-        <div><p>{content.root_cause.summary}</p><p>{content.root_cause.root_cause ?? "No confirmed root cause recorded."}</p></div>
-      ) : <p className="empty-state">No confirmed root cause recorded.</p>)}
-      {optionalSection("Timeline", (
-        <ol className="timeline">
-          {content.timeline.map((item) => <li key={item.record_id}><strong>{item.type}</strong><p>{item.summary}</p><small>{formatDate(item.timestamp)}</small></li>)}
-        </ol>
-      ))}
-      {optionalSection("Hypotheses", content.hypotheses.length > 0 ? (
-        <ul className="simple-list">{content.hypotheses.map((item) => <li key={item.id}>{item.summary} — {item.status}</li>)}</ul>
-      ) : <p className="empty-state">No hypotheses recorded.</p>)}
-      {optionalSection("Key Evidence", content.key_evidence.length > 0 ? (
-        <ul className="simple-list">{content.key_evidence.map((item) => <li key={item.id}>{item.evidence_type}: {item.summary}</li>)}</ul>
-      ) : <p className="empty-state">No key Evidence recorded.</p>)}
-      {optionalSection("Recommended Action", content.recommended_action ? <div><p>{content.recommended_action.summary}</p><p>{content.recommended_action.reason}</p><p>Risk: {content.recommended_action.risk}</p></div> : <p className="empty-state">No recommended action recorded.</p>)}
-      {optionalSection("Action", content.action ? <div><p>{content.action.action_type} — {content.action.status}</p><pre>{JSON.stringify(content.action.parameters, null, 2)}</pre></div> : <p className="empty-state">No Action recorded.</p>)}
-      {optionalSection("Approval", content.approval ? <p>{content.approval.status} · {formatDate(content.approval.updated_at)}</p> : <p className="empty-state">No Approval recorded.</p>)}
-      {optionalSection("Execution", content.execution ? <p>{content.execution.status} · executed: {String(content.execution.executed)}</p> : <p className="empty-state">No Execution recorded.</p>)}
-      {optionalSection("Verification", content.verification ? <div><p>{content.verification.status} — {content.verification.summary}</p><pre>{JSON.stringify(content.verification.details, null, 2)}</pre></div> : <p className="empty-state">No Verification recorded.</p>)}
+      </section>
+      <section className="report-section">
+        <h3>终态原因</h3>
+        <p className="mono">{content.terminal_reason ?? "未记录"}</p>
+      </section>
     </section>
   );
 }
