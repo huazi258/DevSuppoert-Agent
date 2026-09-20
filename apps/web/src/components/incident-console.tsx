@@ -5,11 +5,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   ApiError,
+  continueInvestigation,
   getFinalReport,
   getIncident,
   getWorkflow,
   getWorkflowProgress,
   getWorkflowTimeline,
+  listInvestigationRounds,
   retryWorkflow,
   startWorkflow,
 } from "../lib/api";
@@ -17,14 +19,18 @@ import {
   formatDate,
   type FinalReport,
   type Incident,
+  type InvestigationRound,
+  type SupplementalObservationInput,
   type WorkflowProgressResponse,
   type WorkflowResponse,
   type WorkflowTimelineResponse,
 } from "../lib/types";
 import { FinalReportView } from "./final-report";
+import { ContinuationForm } from "./continuation-form";
 import { InvestigationTechnicalDetails } from "./investigation-technical-details";
 import { InvestigationTimeline } from "./investigation-timeline";
 import { StatusBadge } from "./status-badge";
+import { RoundHistory } from "./round-history";
 import { WorkflowView } from "./workflow-view";
 
 interface IncidentConsoleProps {
@@ -79,6 +85,7 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
   const [progress, setProgress] = useState<WorkflowProgressResponse | null>(null);
   const [timeline, setTimeline] = useState<WorkflowTimelineResponse | null>(null);
   const [report, setReport] = useState<FinalReport | null>(null);
+  const [rounds, setRounds] = useState<InvestigationRound[]>([]);
   const [loading, setLoading] = useState(true);
   const [workflowLoading, setWorkflowLoading] = useState(false);
   const [mutationPending, setMutationPending] = useState(false);
@@ -88,6 +95,8 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
   const [progressError, setProgressError] = useState<string | null>(null);
   const [timelineError, setTimelineError] = useState<string | null>(null);
   const [reportError, setReportError] = useState<string | null>(null);
+  const [roundsError, setRoundsError] = useState<string | null>(null);
+  const [roundsLoading, setRoundsLoading] = useState(true);
   const refreshInFlight = useRef(false);
   const reportRequested = useRef(false);
 
@@ -97,6 +106,16 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
       const nextIncident = await getIncident(incidentId);
       setIncident(nextIncident);
       setError(null);
+      setRoundsLoading(true);
+      try {
+        setRounds(await listInvestigationRounds(incidentId));
+        setRoundsError(null);
+      } catch (roundsLoadError: unknown) {
+        setRounds([]);
+        setRoundsError(messageFor(roundsLoadError, "历史调查轮次加载失败，请稍后重试。"));
+      } finally {
+        setRoundsLoading(false);
+      }
       try {
         const nextProgress = await getWorkflowProgress(incidentId);
         setProgress(nextProgress);
@@ -132,10 +151,13 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
       setProgress(null);
       setTimeline(null);
       setReport(null);
+      setRounds([]);
       setWorkflowError(null);
       setProgressError(null);
       setTimelineError(null);
       setReportError(null);
+      setRoundsError(null);
+      setRoundsLoading(false);
       setError(messageFor(incidentLoadError, "故障调查加载失败，请稍后重试。"));
     } finally {
       setLoading(false);
@@ -150,12 +172,15 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
     setProgress(null);
     setTimeline(null);
     setReport(null);
+    setRounds([]);
     setError(null);
     setMutationError(null);
     setWorkflowError(null);
     setProgressError(null);
     setTimelineError(null);
     setReportError(null);
+    setRoundsError(null);
+    setRoundsLoading(true);
     setLoading(true);
     void refresh();
   }, [incidentId, refresh]);
@@ -227,6 +252,32 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
     }
   }
 
+  async function continueWithObservation(input: SupplementalObservationInput): Promise<boolean> {
+    setMutationPending(true);
+    setMutationError(null);
+    try {
+      await continueInvestigation(incidentId, input);
+      reportRequested.current = false;
+      setWorkflow(null);
+      setProgress(null);
+      setTimeline(null);
+      setReport(null);
+      setRounds([]);
+      setWorkflowError(null);
+      setProgressError(null);
+      setTimelineError(null);
+      setReportError(null);
+      setRoundsError(null);
+      await refresh();
+      return true;
+    } catch (continuationError: unknown) {
+      setMutationError(messageFor(continuationError, "创建新的调查轮次失败，请稍后重试。"));
+      return false;
+    } finally {
+      setMutationPending(false);
+    }
+  }
+
   if (loading && incident === null) {
     return <main className="page-shell console-shell"><p className="empty-state">正在加载故障调查…</p></main>;
   }
@@ -276,6 +327,7 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
       {progressError ? <p className="error-banner" role="alert">{progressError}</p> : null}
       {timelineError ? <p className="error-banner" role="alert">{timelineError}</p> : null}
       {reportError ? <p className="empty-state">{reportError}</p> : null}
+      {roundsError ? <p className="empty-state">{roundsError}</p> : null}
 
       {canStart ? (
         <section className="panel start-panel">
@@ -314,9 +366,11 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
         ) : <p className="empty-state">调查尚未形成可供人工执行的建议。</p>}
       </section>
 
+      {terminalStatuses.has(incident.status) ? <ContinuationForm onContinue={continueWithObservation} /> : null}
       {workflow ? <WorkflowView workflow={workflow} /> : null}
       {timeline ? <InvestigationTimeline timeline={timeline} /> : null}
       {report ? <FinalReportView report={report} /> : null}
+      <RoundHistory loading={roundsLoading} rounds={rounds} />
       {progress || workflow ? <InvestigationTechnicalDetails progress={progress} workflow={workflow} /> : null}
       <footer className="console-footer">创建于 {formatDate(incident.created_at)} · 更新于 {formatDate(incident.updated_at)}</footer>
     </main>

@@ -3,7 +3,10 @@ import type {
   FinalReport,
   Incident,
   IncidentStatus,
+  InvestigationContinuationResponse,
+  InvestigationRound,
   InvestigationTargetOption,
+  SupplementalObservationInput,
   WorkflowResponse,
   WorkflowProgressResponse,
   WorkflowStartResponse,
@@ -90,6 +93,20 @@ export async function createIncident(input: CreateIncidentInput): Promise<Incide
 
 export async function getIncident(id: string): Promise<Incident> {
   return toV2Incident(await request<IncidentApiResponse>(`/incidents/${id}`));
+}
+
+export function continueInvestigation(
+  id: string,
+  input: SupplementalObservationInput,
+): Promise<InvestigationContinuationResponse> {
+  return request<InvestigationContinuationResponse>(`/incidents/${id}/continuations`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function listInvestigationRounds(id: string): Promise<InvestigationRound[]> {
+  return request<InvestigationRound[]>(`/incidents/${id}/rounds`);
 }
 
 export function startWorkflow(id: string): Promise<WorkflowStartResponse> {

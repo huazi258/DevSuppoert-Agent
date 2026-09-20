@@ -41,6 +41,7 @@ h3 { font-size: 1rem; margin-bottom: 0.55rem; }
 .panel, .record-card { background: var(--surface); border: 1px solid var(--line); border-radius: 0.5rem; }
 .panel { margin-bottom: 1.25rem; padding: 1.25rem; }
 .record-card { padding: 1rem; }
+.round-card-current { border-color: var(--navy); box-shadow: inset 4px 0 0 var(--navy); }
 .panel-heading, .record-header { align-items: flex-start; display: flex; gap: 0.75rem; justify-content: space-between; }
 .panel-heading > span { color: var(--muted); font-size: 0.875rem; }
 

@@ -122,6 +122,29 @@ class InvestigationContinuationResponse(BaseModel):
     accepted: bool = True
 
 
+class InvestigationRoundReportSummaryResponse(BaseModel):
+    """Safe report metadata attached to one immutable investigation round."""
+
+    id: UUID
+    conclusion_summary: str | None = None
+    final_status: InvestigationStatus | None = None
+
+
+class InvestigationRoundResponse(BaseModel):
+    """Read-only, user-facing projection of one V2 investigation round."""
+
+    round_id: UUID
+    round_number: int
+    status: InvestigationStatus
+    thread_id: str
+    started_at: datetime
+    completed_at: datetime | None = None
+    terminal_reason: str | None = None
+    triggering_observation: ObservationResponse | None = None
+    report: InvestigationRoundReportSummaryResponse | None = None
+    is_current: bool
+
+
 class ReportResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID

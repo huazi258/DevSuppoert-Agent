@@ -42,6 +42,46 @@ export interface CreateIncidentInput {
   time_range_end: string;
 }
 
+export interface SupplementalObservationInput {
+  content: string;
+  observed_at?: string;
+}
+
+export interface SupplementalObservation {
+  id: string;
+  content: string;
+  observed_at: string;
+}
+
+export interface InvestigationContinuationResponse {
+  incident_id: string;
+  round_id: string;
+  round_number: number;
+  status: IncidentStatus;
+  observation: SupplementalObservation;
+  previous_round_id: string;
+  accepted: true;
+}
+
+export interface InvestigationRoundReportSummary {
+  id: string;
+  conclusion_summary: string | null;
+  final_status: IncidentStatus | null;
+}
+
+export interface InvestigationRound {
+  round_id: string;
+  round_number: number;
+  status: IncidentStatus;
+  thread_id: string;
+  started_at: string;
+  completed_at: string | null;
+  terminal_reason: string | null;
+  triggering_observation: SupplementalObservation | null;
+  report: InvestigationRoundReportSummary | null;
+  is_current: boolean;
+}
+
 export interface WorkflowHypothesis {
   id: string;
   summary: string;

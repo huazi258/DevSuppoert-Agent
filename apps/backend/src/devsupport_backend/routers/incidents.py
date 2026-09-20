@@ -26,12 +26,22 @@ from devsupport_backend.investigation_continuation import (
 )
 from devsupport_backend.investigation_lifecycle import InvestigationLifecycleError
 from devsupport_backend.investigation_status import InvestigationStatus
-from devsupport_backend.models import Approval, Incident, InvestigationTarget, Report, Service
+from devsupport_backend.models import (
+    Approval,
+    Incident,
+    InvestigationRound,
+    InvestigationTarget,
+    Observation,
+    Report,
+    Service,
+)
 from devsupport_backend.schemas.approvals import ApprovalCreate, ApprovalResponse
 from devsupport_backend.schemas.incidents import (
     IncidentCreate,
     IncidentResponse,
     InvestigationContinuationResponse,
+    InvestigationRoundReportSummaryResponse,
+    InvestigationRoundResponse,
     InvestigationServiceOptionResponse,
     InvestigationTargetOptionResponse,
     ObservationResponse,
@@ -275,6 +285,91 @@ def continue_investigation(
         WorkflowStateConflict,
     ) as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+
+@router.get("/{incident_id}/rounds", response_model=list[InvestigationRoundResponse])
+def list_investigation_rounds(
+    incident_id: UUID,
+    session: SessionDependency,
+) -> list[InvestigationRoundResponse]:
+    """Return safe immutable-round summaries without checkpoints or provider details."""
+    if session.get(Incident, incident_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Incident not found")
+    rounds = list(
+        session.scalars(
+            select(InvestigationRound)
+            .where(InvestigationRound.incident_id == incident_id)
+            .order_by(InvestigationRound.round_number.desc())
+        )
+    )
+    if not rounds:
+        return []
+    round_ids = [round_record.id for round_record in rounds]
+    observations_by_round = {
+        observation.round_id: observation
+        for observation in session.scalars(
+            select(Observation)
+            .where(Observation.incident_id == incident_id, Observation.round_id.in_(round_ids))
+            .order_by(Observation.observed_at.asc(), Observation.id.asc())
+        )
+        if observation.round_id is not None
+    }
+    reports_by_round = {
+        report.round_id: report
+        for report in session.scalars(
+            select(Report).where(Report.incident_id == incident_id, Report.round_id.in_(round_ids))
+        )
+    }
+    current_round_id = rounds[0].id
+    return [
+        InvestigationRoundResponse(
+            round_id=round_record.id,
+            round_number=round_record.round_number,
+            status=round_record.status,
+            thread_id=round_record.thread_id,
+            started_at=round_record.started_at,
+            completed_at=round_record.completed_at,
+            terminal_reason=round_record.terminal_reason,
+            triggering_observation=_observation_response(
+                observations_by_round.get(round_record.id)
+            ),
+            report=_round_report_summary(reports_by_round.get(round_record.id)),
+            is_current=round_record.id == current_round_id,
+        )
+        for round_record in rounds
+    ]
+
+
+def _observation_response(observation: Observation | None) -> ObservationResponse | None:
+    if observation is None:
+        return None
+    return ObservationResponse(
+        id=observation.id,
+        content=observation.content,
+        observed_at=observation.observed_at,
+    )
+
+
+def _round_report_summary(report: Report | None) -> InvestigationRoundReportSummaryResponse | None:
+    """Read only the V2 conclusion summary from an immutable report snapshot."""
+    if report is None:
+        return None
+    conclusion = report.content.get("conclusion")
+    conclusion_summary = (
+        conclusion.get("summary")
+        if isinstance(conclusion, dict) and isinstance(conclusion.get("summary"), str)
+        else None
+    )
+    final_status = report.content.get("final_status")
+    try:
+        status_value = InvestigationStatus(final_status) if isinstance(final_status, str) else None
+    except ValueError:
+        status_value = None
+    return InvestigationRoundReportSummaryResponse(
+        id=report.id,
+        conclusion_summary=conclusion_summary,
+        final_status=status_value,
+    )
 
 
 @router.post("/{incident_id}/workflow/retry", response_model=WorkflowResponse)

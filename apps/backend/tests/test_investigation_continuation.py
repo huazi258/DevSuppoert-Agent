@@ -195,7 +195,11 @@ def _terminal_incident(session: Session) -> tuple[Incident, InvestigationRound]:
         incident_id=incident.id,
         round_id=first_round.id,
         version=1,
-        content={"schema_version": "v2", "round": 1, "conclusion": "first"},
+        content={
+            "schema_version": "v2",
+            "conclusion": {"summary": "第一轮已形成结论。"},
+            "final_status": "CONCLUDED",
+        },
     )
     session.add(report)
     session.commit()
@@ -392,3 +396,66 @@ def test_continuation_api_returns_only_new_round_and_observation_facts(
     assert body["observation"]["content"] == "API 补充观察。"
     assert "remediation" not in body
     assert "recovery" not in body
+
+
+def test_round_history_api_returns_safe_immutable_round_summaries(
+    database_session: Session,
+) -> None:
+    incident, first_round = _terminal_incident(database_session)
+    first_report = database_session.scalar(select(Report).where(Report.round_id == first_round.id))
+    assert first_report is not None
+    first_report_snapshot = dict(first_report.content)
+    runtime = _ContinuationRuntime(database_session)
+    service = InvestigationContinuationService(database_session, runtime)
+
+    second = service.continue_with_observation(incident.id, "第二轮待验证观察。")
+    second_round = database_session.get(InvestigationRound, second.round_id)
+    assert second_round is not None
+    InvestigationLifecycleService(database_session).terminalize(
+        second_round.id,
+        InvestigationStatus.FAILED,
+        terminal_reason="workflow_failure",
+    )
+    second_report = Report(
+        incident_id=incident.id,
+        round_id=second_round.id,
+        version=2,
+        content={
+            "schema_version": "v2",
+            "conclusion": None,
+            "final_status": "FAILED",
+        },
+    )
+    database_session.add(second_report)
+    database_session.commit()
+    third = service.continue_with_observation(incident.id, "第三轮待验证观察。")
+
+    def override_get_session():
+        yield database_session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with TestClient(app) as client:
+            response = client.get(f"/incidents/{incident.id}/rounds")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    history = response.json()
+    assert [item["round_number"] for item in history] == [3, 2, 1]
+    assert history[0]["round_id"] == str(third.round_id)
+    assert history[0]["is_current"] is True
+    assert history[0]["status"] == "INVESTIGATING"
+    assert history[0]["triggering_observation"]["content"] == "第三轮待验证观察。"
+    assert history[0]["report"] is None
+    assert history[1]["status"] == "FAILED"
+    assert history[1]["terminal_reason"] == "workflow_failure"
+    assert history[1]["report"]["conclusion_summary"] is None
+    assert history[2]["status"] == "CONCLUDED"
+    assert history[2]["triggering_observation"] is None
+    assert history[2]["report"]["conclusion_summary"] == "第一轮已形成结论。"
+    assert history[2]["report"]["id"] == str(first_report.id)
+    assert first_report.content == first_report_snapshot
+    serialized_history = response.text.lower()
+    for forbidden in ("provider", "secret", "checkpoint", "endpoint"):
+        assert forbidden not in serialized_history
