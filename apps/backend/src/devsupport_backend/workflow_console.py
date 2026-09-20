@@ -328,6 +328,8 @@ class WorkflowConsoleService:
     def read_progress(self, incident_id: UUID) -> WorkflowProgressResponse:
         """Read persisted progress; the stage is the latest checkpoint, not a live trace."""
         incident = self._get_incident(incident_id)
+        if incident.investigation_status is InvestigationStatus.OPEN:
+            return self._progress_without_checkpoint(incident)
         round_record = self._current_round(incident)
         state = self._runtime.get_state(round_record.thread_id)
         if state is None:
@@ -377,6 +379,10 @@ class WorkflowConsoleService:
     def read_timeline(self, incident_id: UUID) -> WorkflowTimelineResponse:
         """Project the bounded persisted investigation narrative without loading report records."""
         incident = self._get_incident(incident_id)
+        if incident.investigation_status is InvestigationStatus.OPEN:
+            return self._timeline_without_checkpoint(
+                incident, WorkflowCheckpointHistory(records=())
+            )
         round_record = self._current_round(incident)
         history = self._runtime.get_checkpoint_history(round_record.thread_id)
         for record in history.records:
@@ -407,7 +413,6 @@ class WorkflowConsoleService:
         if (
             incident.investigation_status is not InvestigationStatus.OPEN
             or round_record.status is not InvestigationStatus.OPEN
-            or self._runtime.get_state(round_record.thread_id) is not None
         ):
             raise WorkflowConflictError("Workflow cannot be started for this Incident")
         InvestigationLifecycleService(self._session).start(round_record.id)
@@ -525,6 +530,8 @@ class WorkflowConsoleService:
             raise WorkflowConflictError("Incident has no current InvestigationRound") from None
 
     def _read_state(self, incident: Incident, round_record: InvestigationRound) -> AgentState:
+        if incident.investigation_status is InvestigationStatus.OPEN:
+            raise WorkflowNotStartedError("Workflow not started")
         state = self._runtime.get_state(round_record.thread_id)
         if state is None:
             raise WorkflowNotStartedError("Workflow not started")

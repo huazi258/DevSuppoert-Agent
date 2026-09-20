@@ -291,7 +291,9 @@ export function IncidentConsole({ incidentId }: IncidentConsoleProps) {
     );
   }
 
-  const canStart = incident.status === "OPEN" && workflow === null && !workflowLoading;
+  // A failed optional progress read must not hide the only way to begin an OPEN
+  // V2 investigation.  The backend still atomically validates this transition.
+  const canStart = incident.status === "OPEN" && workflow === null && !mutationPending;
   const canRetry =
     incident.status === "FAILED" &&
     Boolean(workflow?.retry_available || progress?.retry_available) &&

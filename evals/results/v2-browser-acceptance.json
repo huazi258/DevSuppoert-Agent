@@ -1,0 +1,92 @@
+{
+  "acceptance": "v2-browser-acceptance",
+  "executed_at": "2026-09-20T13:09:24Z",
+  "status": "PASS",
+  "browser_flow_passed": true,
+  "readonly_ui_passed": true,
+  "continuation_passed": true,
+  "knowledge_management_passed": true,
+  "sensitive_data_exposed": false,
+  "steps": [
+    {
+      "name": "compose_health_and_home",
+      "status": "PASS",
+      "observed_route": "/",
+      "services": {
+        "postgres": "healthy",
+        "backend": "healthy",
+        "web": "healthy"
+      },
+      "localized_home": true,
+      "configured_target_count": 1,
+      "configured_service_count": 1,
+      "v1_remediation_entry_points": []
+    },
+    {
+      "name": "create_incident",
+      "status": "PASS",
+      "observed_route": "/incidents/ec93727f-08bc-48fe-a01d-de956763e8dc",
+      "incident_id": "ec93727f-08bc-48fe-a01d-de956763e8dc",
+      "target": "browser-acceptance-local",
+      "service": "checkout",
+      "environment": "trusted-local",
+      "current_round_number": 1,
+      "current_round_status": "OPEN",
+      "requires_root_cause_or_remediation_input": false
+    },
+    {
+      "name": "investigation_detail_safe_terminal",
+      "status": "PASS",
+      "observed_route": "/incidents/ec93727f-08bc-48fe-a01d-de956763e8dc",
+      "current_round_number": 1,
+      "current_round_status": "FAILED",
+      "terminal_reason": "retry_budget_exhausted",
+      "report_exists": true,
+      "detail_hierarchy": {
+        "conclusion": true,
+        "manual_suggestions": true,
+        "evidence_and_citations": true,
+        "timeline": true,
+        "report": true,
+        "technical_details_collapsed": true
+      },
+      "recovery_or_resolution_claim_present": false
+    },
+    {
+      "name": "round_continuation",
+      "status": "PASS",
+      "observed_route": "/incidents/ec93727f-08bc-48fe-a01d-de956763e8dc",
+      "current_round_number": 2,
+      "current_round_status": "FAILED",
+      "terminal_reason": "retry_budget_exhausted",
+      "current_round_report_exists": true,
+      "prior_round_report_preserved": true,
+      "prior_round_evidence_preserved": true,
+      "observation_labeled_unverified": true
+    },
+    {
+      "name": "knowledge_management",
+      "status": "PASS",
+      "observed_route": "/knowledge",
+      "target": "browser-acceptance-local",
+      "scope": "service",
+      "service": "checkout",
+      "environment": "trusted-local",
+      "markdown_upload_visible_in_list": true,
+      "upload_status": "enabled",
+      "final_status": "disabled",
+      "provider_or_secret_fields_present": false
+    }
+  ],
+  "sensitive_output_safety": {
+    "secret_exposed": false,
+    "provider_endpoint_exposed": false,
+    "raw_logs_exposed": false,
+    "llm_prompt_or_response_exposed": false,
+    "tool_arguments_exposed": false
+  },
+  "notes": [
+    "The controlled local run used an unavailable model provider to exercise safe failure, report persistence, and continuation without fabricating a conclusion.",
+    "No real model investigation success is asserted by this browser acceptance artifact."
+  ]
+}

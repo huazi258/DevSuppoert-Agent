@@ -314,6 +314,7 @@ def test_progress_projects_open_and_accepted_incidents_without_checkpoint(
         assert progress.failure is None
         assert progress.hypothesis_count == progress.evidence_count == progress.tool_call_count == 0
     assert runtime.start_calls == runtime.retry_calls == 0
+    assert runtime.thread_ids == [accepted_incident.thread_id]
 
 
 def test_progress_projects_running_checkpoint_facts_without_tool_arguments(
@@ -534,7 +535,7 @@ def test_timeline_without_checkpoint_is_a_read_only_lifecycle_projection(
     assert timeline.checkpoint_available is False
     assert runtime.start_calls == 0
     assert runtime.retry_calls == 0
-    assert runtime.history_thread_ids == [incident.thread_id]
+    assert runtime.history_thread_ids == ([] if status == "OPEN" else [incident.thread_id])
     if status == "OPEN":
         assert timeline.events == []
     else:
@@ -853,16 +854,19 @@ def test_accept_start_marks_open_incident_without_executing_runtime(
         service.accept_start(incident.id)
 
 
-def test_accept_start_rejects_existing_persisted_checkpoint(database_session: Session) -> None:
+def test_accept_start_uses_locked_v2_lifecycle_state_without_checkpoint_read(
+    database_session: Session,
+) -> None:
     incident = _incident(database_session)
     runtime = FakeRuntime(state=_state(incident))
 
-    with pytest.raises(WorkflowConflictError):
-        WorkflowConsoleService(database_session, runtime).accept_start(incident.id)
+    response = WorkflowConsoleService(database_session, runtime).accept_start(incident.id)
 
     database_session.refresh(incident)
-    assert incident.status == "OPEN"
+    assert response.accepted is True
+    assert incident.status == "INVESTIGATING"
     assert runtime.start_calls == 0
+    assert runtime.thread_ids == []
 
 
 def test_execute_accepted_start_uses_the_accepted_thread(database_session: Session) -> None:

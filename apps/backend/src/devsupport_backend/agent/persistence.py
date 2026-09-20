@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from threading import Lock
 
 from langgraph.checkpoint.postgres import PostgresSaver
 from sqlalchemy.engine import make_url
 
 from devsupport_backend.config import settings
+
+_setup_lock = Lock()
+_setup_complete = False
 
 
 def psycopg_dsn(database_url: str) -> str:
@@ -23,5 +27,15 @@ def psycopg_dsn(database_url: str) -> str:
 def open_postgres_checkpointer() -> Iterator[PostgresSaver]:
     """Open and initialize the official saver using the sole application database setting."""
     with PostgresSaver.from_conn_string(psycopg_dsn(settings.database_url)) as checkpointer:
-        checkpointer.setup()
+        _ensure_checkpointer_setup(checkpointer)
         yield checkpointer
+
+
+def _ensure_checkpointer_setup(checkpointer: PostgresSaver) -> None:
+    """Run LangGraph schema setup once per backend process to avoid concurrent DDL."""
+    global _setup_complete
+    with _setup_lock:
+        if _setup_complete:
+            return
+        checkpointer.setup()
+        _setup_complete = True
