@@ -1,19 +1,73 @@
 services:
   postgres:
     image: pgvector/pgvector:pg17
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: devsupport
-      POSTGRES_USER: devsupport
-      POSTGRES_PASSWORD: devsupport
-    ports:
-      - "${DEVSUPPORT_POSTGRES_PORT:-15432}:5432"
+      POSTGRES_DB: ${DEVSUPPORT_POSTGRES_DB:-devsupport}
+      POSTGRES_USER: ${DEVSUPPORT_POSTGRES_USER:-devsupport}
+      POSTGRES_PASSWORD: ${DEVSUPPORT_POSTGRES_PASSWORD:?Set DEVSUPPORT_POSTGRES_PASSWORD in .env}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks:
+      - devsupport
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U devsupport -d devsupport"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 3s
       retries: 20
+      start_period: 10s
+
+  backend:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DEVSUPPORT_DATABASE_URL: ${DEVSUPPORT_DATABASE_URL:?Set DEVSUPPORT_DATABASE_URL in .env}
+    command: ["sh", "-c", "alembic upgrade head && exec uvicorn devsupport_backend.main:app --host 0.0.0.0 --port 8000"]
+    ports:
+      - "${DEVSUPPORT_BACKEND_BIND_ADDRESS:-127.0.0.1}:${DEVSUPPORT_BACKEND_PORT:-8002}:8000"
+    networks:
+      - devsupport
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_DEVSUPPORT_API_BASE_URL: ${NEXT_PUBLIC_DEVSUPPORT_API_BASE_URL:-/api}
+        DEVSUPPORT_BACKEND_API_URL: ${DEVSUPPORT_BACKEND_API_URL:-http://backend:8000}
+    restart: unless-stopped
+    environment:
+      DEVSUPPORT_BACKEND_API_URL: ${DEVSUPPORT_BACKEND_API_URL:-http://backend:8000}
+    ports:
+      - "${DEVSUPPORT_WEB_BIND_ADDRESS:-127.0.0.1}:${DEVSUPPORT_WEB_PORT:-3000}:3000"
+    networks:
+      - devsupport
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1));"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+networks:
+  devsupport:
 
 volumes:
   postgres_data:

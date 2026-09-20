@@ -17,7 +17,7 @@ import type {
 } from "./types";
 
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_DEVSUPPORT_API_BASE_URL ?? "http://127.0.0.1:8002";
+  process.env.NEXT_PUBLIC_DEVSUPPORT_API_BASE_URL ?? "/api";
 
 type IncidentApiResponse = Omit<Incident, "status"> & {
   status: string;

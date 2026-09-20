@@ -61,7 +61,7 @@ class ProviderBackendConfig(BaseModel):
 class Settings(BaseSettings):
     """Configuration loaded from environment variables when the backend starts."""
 
-    app_name: str = "DevSupport Agent V0"
+    app_name: str = "DevSupport Agent V2"
     app_environment: str = "local"
     database_url: str = "postgresql+psycopg://devsupport:devsupport@127.0.0.1:15432/devsupport"
     embedding_model: str | None = Field(
