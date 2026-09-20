@@ -20,10 +20,22 @@ from devsupport_backend.approvals import (
 )
 from devsupport_backend.config import settings
 from devsupport_backend.database import SessionLocal, get_session
+from devsupport_backend.investigation_continuation import (
+    InvestigationContinuationError,
+    InvestigationContinuationService,
+)
+from devsupport_backend.investigation_lifecycle import InvestigationLifecycleError
 from devsupport_backend.investigation_status import InvestigationStatus
 from devsupport_backend.models import Approval, Incident, InvestigationTarget, Report, Service
 from devsupport_backend.schemas.approvals import ApprovalCreate, ApprovalResponse
-from devsupport_backend.schemas.incidents import IncidentCreate, IncidentResponse, ReportResponse
+from devsupport_backend.schemas.incidents import (
+    IncidentCreate,
+    IncidentResponse,
+    InvestigationContinuationResponse,
+    ObservationResponse,
+    ReportResponse,
+    SupplementalObservationCreate,
+)
 from devsupport_backend.schemas.workflows import (
     WorkflowProgressResponse,
     WorkflowResponse,
@@ -161,6 +173,51 @@ def start_workflow(
     except LookupError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
     except (WorkflowConflictError, WorkflowStateConflict) as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+
+@router.post(
+    "/{incident_id}/continuations",
+    response_model=InvestigationContinuationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def continue_investigation(
+    incident_id: UUID,
+    payload: SupplementalObservationCreate,
+    background_tasks: BackgroundTasks,
+    session: SessionDependency,
+    workflow_runtime: WorkflowRuntimeDependency,
+) -> InvestigationContinuationResponse:
+    """Accept a new read-only V2 round from one terminal Incident observation."""
+    try:
+        continuation = InvestigationContinuationService(
+            session, workflow_runtime
+        ).continue_with_observation(
+            incident_id,
+            payload.content,
+            observed_at=payload.observed_at,
+        )
+        background_tasks.add_task(execute_accepted_start, incident_id)
+        return InvestigationContinuationResponse(
+            incident_id=continuation.incident_id,
+            round_id=continuation.round_id,
+            round_number=continuation.round_number,
+            status=continuation.status,
+            observation=ObservationResponse(
+                id=continuation.observation_id,
+                content=continuation.observation_content,
+                observed_at=continuation.observation_observed_at,
+            ),
+            previous_round_id=continuation.previous_round_id,
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except (
+        InvestigationContinuationError,
+        InvestigationLifecycleError,
+        WorkflowConflictError,
+        WorkflowStateConflict,
+    ) as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
 

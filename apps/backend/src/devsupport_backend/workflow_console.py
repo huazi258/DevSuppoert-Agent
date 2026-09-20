@@ -44,6 +44,7 @@ from devsupport_backend.models import (
     Incident,
     InvestigationRound,
     InvestigationTarget,
+    Observation,
 )
 from devsupport_backend.rag.embeddings import OpenAICompatibleEmbeddingClient
 from devsupport_backend.rag.retrieval import RAGService
@@ -199,6 +200,13 @@ class PostgresWorkflowRuntime:
         with open_postgres_checkpointer() as checkpointer:
             return WorkflowService(self._production_graph(checkpointer, target_config)).start(
                 incident,
+                symptoms=list(
+                    self._session.scalars(
+                        select(Observation.content)
+                        .where(Observation.round_id == round_record.id)
+                        .order_by(Observation.observed_at, Observation.id)
+                    )
+                ),
                 thread_id=round_record.thread_id,
                 round_id=round_record.id,
             )

@@ -62,6 +62,48 @@ class IncidentResponse(BaseModel):
     updated_at: datetime
 
 
+class SupplementalObservationCreate(BaseModel):
+    """Unverified user input that starts a new round only after terminalization."""
+
+    content: str = Field(max_length=10_000)
+    observed_at: datetime | None = None
+
+    @field_validator("content")
+    @classmethod
+    def require_non_blank_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("must not be blank")
+        return normalized
+
+    @field_validator("observed_at")
+    @classmethod
+    def require_timezone_aware_time(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("must include a timezone")
+        return value
+
+
+class ObservationResponse(BaseModel):
+    """Safe persisted representation of one supplemental observation."""
+
+    id: UUID
+    content: str
+    observed_at: datetime
+
+
+class InvestigationContinuationResponse(BaseModel):
+    """Acknowledgement for a newly accepted, independently traceable V2 round."""
+
+    incident_id: UUID
+    round_id: UUID
+    round_number: int
+    status: InvestigationStatus
+    observation: ObservationResponse
+    previous_round_id: UUID
+    accepted: bool = True
+
+
 class ReportResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
