@@ -19,6 +19,34 @@ export interface InvestigationTargetOption {
   services: InvestigationServiceOption[];
 }
 
+export type KnowledgeScope = "shared" | "service";
+export type KnowledgeDocumentType = "architecture" | "runbook" | "postmortem" | "config_note";
+export type KnowledgeDocumentStatus = "enabled" | "disabled";
+
+export interface KnowledgeDocument {
+  id: string;
+  title: string;
+  target_id: string;
+  target_display_name: string;
+  scope: KnowledgeScope;
+  service_id: string | null;
+  service_display_name: string | null;
+  environment: string;
+  document_type: KnowledgeDocumentType;
+  version: string;
+  status: KnowledgeDocumentStatus;
+  updated_at: string;
+}
+
+export interface KnowledgeUploadInput {
+  target_id: string;
+  scope: KnowledgeScope;
+  service_id?: string;
+  environment: string;
+  document_type: KnowledgeDocumentType;
+  version: string;
+}
+
 export interface Incident {
   id: string;
   target_id: string;

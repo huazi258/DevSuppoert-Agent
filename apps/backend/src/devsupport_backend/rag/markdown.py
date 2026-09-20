@@ -47,7 +47,6 @@ def parse_markdown(path: Path, knowledge_root: Path) -> ParsedKnowledgeDocument:
 
     front_matter, content = _split_front_matter(path, raw_content)
     metadata = _parse_metadata(path, front_matter)
-    title = _find_title(path, content)
     try:
         relative_path = path.relative_to(knowledge_root)
     except ValueError as error:
@@ -55,11 +54,34 @@ def parse_markdown(path: Path, knowledge_root: Path) -> ParsedKnowledgeDocument:
             f"{path}: is outside knowledge root {knowledge_root}"
         ) from error
 
-    return ParsedKnowledgeDocument(
+    return parse_markdown_content(
+        raw_content,
         source_path=f"{knowledge_root.name}/{relative_path.as_posix()}",
-        title=title,
         metadata=metadata,
-        content=content.strip(),
+        content=content,
+    )
+
+
+def parse_markdown_content(
+    raw_content: str,
+    *,
+    source_path: str,
+    metadata: dict[str, str],
+    content: str | None = None,
+) -> ParsedKnowledgeDocument:
+    """Parse Markdown text using deployment-owned metadata supplied by the caller.
+
+    Browser uploads deliberately do not trust legacy front-matter scope fields.  They still use
+    the same title validation, content normalization, hashing, and chunking path as CLI imports.
+    """
+    normalized_content = (content if content is not None else raw_content).strip()
+    if not normalized_content:
+        raise KnowledgeDocumentParseError(f"{source_path}: document content must not be blank")
+    return ParsedKnowledgeDocument(
+        source_path=source_path,
+        title=_find_title(Path(source_path), normalized_content),
+        metadata=metadata,
+        content=normalized_content,
         content_hash=hashlib.sha256(raw_content.encode("utf-8")).hexdigest(),
     )
 

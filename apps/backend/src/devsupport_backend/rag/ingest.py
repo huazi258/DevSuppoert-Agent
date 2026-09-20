@@ -6,6 +6,7 @@ import argparse
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -24,6 +25,7 @@ from devsupport_backend.rag.markdown import (
     ParsedKnowledgeDocument,
     chunk_markdown,
     parse_markdown,
+    parse_markdown_content,
 )
 
 DEFAULT_KNOWLEDGE_DIR = Path(__file__).resolve().parents[5] / "knowledge"
@@ -124,6 +126,63 @@ def _ingest_document(
         skipped_documents=result.skipped_documents,
         created_chunks=result.created_chunks + len(chunks),
     )
+
+
+def ingest_uploaded_markdown(
+    session: Session,
+    *,
+    raw_content: str,
+    source_path: str,
+    target_id: UUID,
+    scope: str,
+    service_id: UUID | None,
+    service_name: str | None,
+    environment: str,
+    document_type: str,
+    version: str,
+    embedding_client: EmbeddingClient,
+) -> KnowledgeDocument:
+    """Atomically persist one structured browser upload after all parsing and embedding succeeds."""
+    metadata = {
+        "document_id": str(uuid4()),
+        "source": source_path,
+        "document_type": document_type,
+        "environment": environment,
+        "version": version,
+    }
+    parsed_document = parse_markdown_content(
+        raw_content,
+        source_path=source_path,
+        metadata=metadata,
+    )
+    chunks = chunk_markdown(parsed_document)
+    vectors = embedding_client.embed([chunk.content for chunk in chunks])
+    if len(vectors) != len(chunks) or any(not vector for vector in vectors):
+        raise EmbeddingError("embedding client did not return one non-empty vector per chunk")
+
+    document = KnowledgeDocument(
+        title=parsed_document.title,
+        source_path=parsed_document.source_path,
+        content_hash=parsed_document.content_hash,
+        target_id=target_id,
+        scope=scope,
+        service_id=service_id,
+        service=service_name,
+        environment=environment,
+        document_type=document_type,
+        version=version,
+        status="enabled",
+        metadata_data={**metadata, "content_hash": parsed_document.content_hash},
+    )
+    document.chunks.extend(_database_chunks(chunks, metadata, vectors))
+    try:
+        session.add(document)
+        session.commit()
+        session.refresh(document)
+    except Exception:
+        session.rollback()
+        raise
+    return document
 
 
 def _database_chunks(

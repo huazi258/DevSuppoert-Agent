@@ -6,6 +6,9 @@ import type {
   InvestigationContinuationResponse,
   InvestigationRound,
   InvestigationTargetOption,
+  KnowledgeDocument,
+  KnowledgeDocumentStatus,
+  KnowledgeUploadInput,
   SupplementalObservationInput,
   WorkflowResponse,
   WorkflowProgressResponse,
@@ -48,7 +51,7 @@ function errorDetail(payload: unknown, fallback: string): string {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("Accept", "application/json");
-  if (init.body !== undefined) {
+  if (init.body !== undefined && !(init.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
 
@@ -81,6 +84,36 @@ export async function listIncidents(): Promise<Incident[]> {
 
 export function listInvestigationTargets(): Promise<InvestigationTargetOption[]> {
   return request<InvestigationTargetOption[]>("/incidents/investigation-targets");
+}
+
+export function listKnowledgeDocuments(targetId?: string): Promise<KnowledgeDocument[]> {
+  const query = targetId ? `?target_id=${encodeURIComponent(targetId)}` : "";
+  return request<KnowledgeDocument[]>(`/knowledge${query}`);
+}
+
+export function uploadKnowledgeDocument(
+  input: KnowledgeUploadInput,
+  file: File,
+): Promise<KnowledgeDocument> {
+  const body = new FormData();
+  body.append("target_id", input.target_id);
+  body.append("scope", input.scope);
+  if (input.service_id) body.append("service_id", input.service_id);
+  body.append("environment", input.environment);
+  body.append("document_type", input.document_type);
+  body.append("version", input.version);
+  body.append("file", file);
+  return request<KnowledgeDocument>("/knowledge", { method: "POST", body });
+}
+
+export function updateKnowledgeDocumentStatus(
+  id: string,
+  status: KnowledgeDocumentStatus,
+): Promise<KnowledgeDocument> {
+  return request<KnowledgeDocument>(`/knowledge/${id}/status`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
 }
 
 export async function createIncident(input: CreateIncidentInput): Promise<Incident> {
