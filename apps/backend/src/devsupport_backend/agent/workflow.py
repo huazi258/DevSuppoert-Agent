@@ -492,7 +492,8 @@ def build_production_investigation_graph(
 def build_v2_production_investigation_graph(
     dependencies: V2InvestigationWorkflowDependencies,
     *,
-    session: Session,
+    session: Session | None = None,
+    session_factory: Callable[[], Session] | None = None,
     limits: InvestigationLoopLimits | None = None,
     budget: InvestigationBudget | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
@@ -501,6 +502,8 @@ def build_v2_production_investigation_graph(
     """Compile the formal V2 graph: evidence investigation, report, then END only."""
     from devsupport_backend.agent.v2_terminalization import V2Terminalizer
 
+    if (session is None) == (session_factory is None):
+        raise ValueError("provide exactly one of session or session_factory")
     if limits is not None and budget is not None:
         raise ValueError("pass either limits or budget, not both")
     effective_budget = budget or (
@@ -516,7 +519,17 @@ def build_v2_production_investigation_graph(
         llm_client=accounting_llm_client,
         evaluator=evaluator,
     )
-    terminalizer = V2Terminalizer(session)
+    def terminalize(state: AgentState, status: InvestigationStatus) -> AgentState:
+        if session_factory is None:
+            assert session is not None
+            return V2Terminalizer(session).terminalize(state, status)
+        with session_factory() as terminal_session:
+            try:
+                return V2Terminalizer(terminal_session).terminalize(state, status)
+            except Exception:
+                terminal_session.rollback()
+                raise
+
     graph = StateGraph(AgentState)
 
     graph.add_node(
@@ -620,7 +633,7 @@ def build_v2_production_investigation_graph(
         "conclusion_terminalization",
         observe_investigation_node(
             "conclusion_terminalization",
-            lambda state: terminalizer.terminalize(state, InvestigationStatus.CONCLUDED),
+            lambda state: terminalize(state, InvestigationStatus.CONCLUDED),
             observer,
         ),
     )
@@ -628,7 +641,7 @@ def build_v2_production_investigation_graph(
         "inconclusive_terminalization",
         observe_investigation_node(
             "inconclusive_terminalization",
-            lambda state: terminalizer.terminalize(state, InvestigationStatus.INCONCLUSIVE),
+            lambda state: terminalize(state, InvestigationStatus.INCONCLUSIVE),
             observer,
         ),
     )
@@ -636,7 +649,7 @@ def build_v2_production_investigation_graph(
         "failure_terminalization",
         observe_investigation_node(
             "failure_terminalization",
-            lambda state: terminalizer.terminalize(state, InvestigationStatus.FAILED),
+            lambda state: terminalize(state, InvestigationStatus.FAILED),
             observer,
         ),
     )

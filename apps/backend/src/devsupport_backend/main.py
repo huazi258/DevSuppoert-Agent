@@ -1,13 +1,30 @@
 """FastAPI application entry point."""
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from devsupport_backend.agent.persistence import (
+    close_postgres_checkpointer_pool,
+    initialize_postgres_checkpointer,
+)
 from devsupport_backend.config import settings
 from devsupport_backend.routers.incidents import router as incidents_router
 from devsupport_backend.routers.knowledge import router as knowledge_router
 
-app = FastAPI(title=settings.app_name)
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Initialize LangGraph persistence before request sessions can be checked out."""
+    initialize_postgres_checkpointer()
+    try:
+        yield
+    finally:
+        close_postgres_checkpointer_pool()
+
+
+app = FastAPI(title=settings.app_name, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],

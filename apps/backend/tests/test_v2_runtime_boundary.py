@@ -197,7 +197,7 @@ def test_postgres_runtime_composes_only_v2_investigation_dependencies(
     sentinel = object()
     monkeypatch.setattr(workflow_console_module, "OpenAICompatibleLLMClient", _Factory)
     monkeypatch.setattr(workflow_console_module, "OpenAICompatibleEmbeddingClient", _Factory)
-    monkeypatch.setattr(workflow_console_module, "RAGService", lambda *_: object())
+    monkeypatch.setattr(workflow_console_module, "RAGService", lambda *_, **__: object())
     monkeypatch.setattr(
         PostgresWorkflowRuntime,
         "_tool_execution_dependencies",

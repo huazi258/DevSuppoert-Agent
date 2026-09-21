@@ -112,6 +112,45 @@ def test_hybrid_search_keeps_vector_only_and_keyword_only_candidates(
     assert all(result.fusion_score > 0 for result in results)
 
 
+def test_session_factory_returns_database_connections_before_query_embedding(
+    database_session: Session,
+) -> None:
+    """Provider latency must not keep a RAG database session checked out."""
+
+    _add_document(
+        database_session,
+        service="order-service",
+        environment="local",
+        document_type="runbook",
+        content="timeout investigation guidance",
+        embedding=[1.0, 0.0],
+        source="session-lifecycle-test",
+        section="Provider boundary",
+    )
+    created_sessions: list[Session] = []
+
+    def session_factory() -> Session:
+        session = Session(
+            bind=database_session.connection(),
+            join_transaction_mode="create_savepoint",
+            expire_on_commit=False,
+        )
+        created_sessions.append(session)
+        return session
+
+    class EmbeddingClient:
+        def embed(self, _: Sequence[str]) -> list[list[float]]:
+            assert created_sessions
+            assert all(not session.in_transaction() for session in created_sessions)
+            return [[1.0, 0.0]]
+
+    results = RAGService(
+        None, EmbeddingClient(), session_factory=session_factory
+    ).search("timeout")
+
+    assert len(results) == 1
+
+
 def test_metadata_filters_include_common_environment_and_complete_citation(
     database_session: Session,
 ) -> None:

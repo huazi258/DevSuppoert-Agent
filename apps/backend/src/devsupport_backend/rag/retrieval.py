@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -97,14 +97,18 @@ class RAGService:
 
     def __init__(
         self,
-        session: Session,
+        session: Session | None,
         embedding_client: EmbeddingClient,
         *,
         candidate_multiplier: int = DEFAULT_CANDIDATE_MULTIPLIER,
+        session_factory: Callable[[], Session] | None = None,
     ) -> None:
         if candidate_multiplier < 1:
             raise ValueError("candidate_multiplier must be at least one")
+        if (session is None) == (session_factory is None):
+            raise ValueError("provide exactly one of session or session_factory")
         self._session = session
+        self._session_factory = session_factory
         self._embedding_client = embedding_client
         self._candidate_multiplier = candidate_multiplier
 
@@ -164,12 +168,15 @@ class RAGService:
         return self._fuse(vector_candidates, keyword_candidates, top_k)
 
     def _corpus_dimensions(self, filters: RetrievalFilters) -> set[int]:
-        statement = (
-            select(KnowledgeChunk.embedding)
-            .join(KnowledgeDocument)
-            .where(KnowledgeChunk.embedding.is_not(None), *self._filter_clauses(filters))
-        )
-        dimensions = {len(vector) for vector in self._session.scalars(statement)}
+        def load(session: Session) -> set[int]:
+            statement = (
+                select(KnowledgeChunk.embedding)
+                .join(KnowledgeDocument)
+                .where(KnowledgeChunk.embedding.is_not(None), *self._filter_clauses(filters))
+            )
+            return {len(vector) for vector in session.scalars(statement)}
+
+        dimensions = self._read(load)
         if len(dimensions) > 1:
             raise RetrievalError(
                 "filtered knowledge corpus contains mixed embedding dimensions: "
@@ -198,15 +205,18 @@ class RAGService:
     def _corpus_dimensions_for_scope(
         self, scope: KnowledgeScope, document_type: str | None
     ) -> set[int]:
-        statement = (
-            select(KnowledgeChunk.embedding)
-            .join(KnowledgeDocument)
-            .where(
-                KnowledgeChunk.embedding.is_not(None),
-                *self._scope_filter_clauses(scope, document_type),
+        def load(session: Session) -> set[int]:
+            statement = (
+                select(KnowledgeChunk.embedding)
+                .join(KnowledgeDocument)
+                .where(
+                    KnowledgeChunk.embedding.is_not(None),
+                    *self._scope_filter_clauses(scope, document_type),
+                )
             )
-        )
-        dimensions = {len(vector) for vector in self._session.scalars(statement)}
+            return {len(vector) for vector in session.scalars(statement)}
+
+        dimensions = self._read(load)
         if len(dimensions) > 1:
             raise RetrievalError(
                 "scoped knowledge corpus contains mixed embedding dimensions: "
@@ -230,10 +240,12 @@ class RAGService:
             .order_by(distance, KnowledgeChunk.id)
             .limit(candidate_limit)
         )
-        return [
-            (chunk, document, float(vector_score))
-            for chunk, document, vector_score in self._session.execute(statement)
-        ]
+        return self._read(
+            lambda session: [
+                (chunk, document, float(vector_score))
+                for chunk, document, vector_score in session.execute(statement)
+            ]
+        )
 
     def _keyword_candidates(
         self,
@@ -253,10 +265,12 @@ class RAGService:
             .order_by(keyword_score.desc(), KnowledgeChunk.id)
             .limit(candidate_limit)
         )
-        return [
-            (chunk, document, float(score))
-            for chunk, document, score in self._session.execute(statement)
-        ]
+        return self._read(
+            lambda session: [
+                (chunk, document, float(score))
+                for chunk, document, score in session.execute(statement)
+            ]
+        )
 
     def _vector_candidates_for_scope(
         self,
@@ -278,10 +292,12 @@ class RAGService:
             .order_by(distance, KnowledgeChunk.id)
             .limit(candidate_limit)
         )
-        return [
-            (chunk, document, float(vector_score))
-            for chunk, document, vector_score in self._session.execute(statement)
-        ]
+        return self._read(
+            lambda session: [
+                (chunk, document, float(vector_score))
+                for chunk, document, vector_score in session.execute(statement)
+            ]
+        )
 
     def _keyword_candidates_for_scope(
         self,
@@ -302,10 +318,24 @@ class RAGService:
             .order_by(keyword_score.desc(), KnowledgeChunk.id)
             .limit(candidate_limit)
         )
-        return [
-            (chunk, document, float(score))
-            for chunk, document, score in self._session.execute(statement)
-        ]
+        return self._read(
+            lambda session: [
+                (chunk, document, float(score))
+                for chunk, document, score in session.execute(statement)
+            ]
+        )
+
+    def _read(self, operation: Callable[[Session], set[int] | list]) -> set[int] | list:
+        """Perform one bounded database read, never across provider network I/O."""
+        if self._session_factory is None:
+            assert self._session is not None
+            return operation(self._session)
+        with self._session_factory() as session:
+            try:
+                return operation(session)
+            except Exception:
+                session.rollback()
+                raise
 
     @staticmethod
     def _filter_clauses(filters: RetrievalFilters) -> list[object]:

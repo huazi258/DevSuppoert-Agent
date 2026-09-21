@@ -881,6 +881,50 @@ def test_execute_accepted_start_uses_the_accepted_thread(database_session: Sessi
     assert runtime.thread_ids[-1] == incident.thread_id
 
 
+def test_execute_accepted_start_releases_its_database_transaction_before_runtime_io(
+    database_session: Session,
+) -> None:
+    """A background graph must not retain its acceptance-query connection during provider I/O."""
+
+    incident = _incident(database_session)
+
+    class Runtime(FakeRuntime):
+        def start(self, received_incident: Incident):
+            assert not database_session.in_transaction()
+            return super().start(received_incident)
+
+    runtime = Runtime(state=_state(incident), states=[None])
+    service = WorkflowConsoleService(database_session, runtime)
+
+    service.accept_start(incident.id)
+    service.execute_accepted_start(incident.id)
+
+    assert runtime.start_calls == 1
+
+
+def test_progress_polling_releases_database_transaction_before_checkpoint_reads(
+    database_session: Session,
+) -> None:
+    """Repeated polling may wait on checkpoint I/O but must not occupy SQLAlchemy connections."""
+
+    incident = _incident(database_session, status="INVESTIGATING")
+
+    class Runtime(FakeRuntime):
+        def get_state(self, thread_id: str) -> AgentState | None:
+            assert not database_session.in_transaction()
+            return super().get_state(thread_id)
+
+        def get_failure(self, thread_id: str):
+            assert not database_session.in_transaction()
+            return super().get_failure(thread_id)
+
+    runtime = Runtime(state=_state(incident), states=[_state(incident)] * 8)
+    service = WorkflowConsoleService(database_session, runtime)
+
+    for _ in range(8):
+        assert service.read_progress(incident.id).checkpoint_available is True
+
+
 def test_execute_accepted_start_requires_an_accepted_incident(database_session: Session) -> None:
     incident = _incident(database_session)
     runtime = FakeRuntime(state=_state(incident))
