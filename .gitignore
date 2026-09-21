@@ -1,4 +1,5 @@
 .env
+.env.local-full-acceptance
 .venv/
 __pycache__/
 *.py[cod]

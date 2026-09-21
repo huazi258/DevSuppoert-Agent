@@ -1,0 +1,7 @@
+services:
+  # This overlay is intentionally opt-in.  It layers the generated, non-secret
+  # OpenTelemetry Demo target configuration over the operator-owned .env file.
+  backend:
+    env_file:
+      - path: .env.local-full-acceptance
+        required: true
